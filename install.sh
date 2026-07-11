@@ -55,6 +55,9 @@ fi
 
 case "$alias_name" in
   ""|*[!A-Za-z0-9_]*) echo "error: invalid alias name '$alias_name'" >&2; exit 1 ;;
+  [0-9]*) echo "error: alias name '$alias_name' cannot start with a digit" >&2; exit 1 ;;
+  if|then|else|elif|fi|for|while|until|do|done|case|esac|function|select|in|time)
+    echo "error: alias name '$alias_name' is a shell reserved word" >&2; exit 1 ;;
 esac
 
 case "$(basename "${SHELL:-}")" in
@@ -96,6 +99,12 @@ $alias_name() {
       local d; d="\$(git-wt "\$@")" || return \$?
       [ "\$stay" = 0 ] && [ -n "\$d" ] && cd "\$d"
       return 0 ;;
+  esac
+  # A leading token that is not a numeric target index (e.g. an unknown verb
+  # or a stray flag) passes straight through, so git-wt prints its own error
+  # instead of the wrapper building a confusing 'git-wt <tok> path'.
+  case "\${1:-}" in
+    *[!0-9]*) git-wt "\$@"; return \$? ;;
   esac
   # <N> [action]: switch (default) & remove cd the shell; path/show print.
   case "\${2:-}" in

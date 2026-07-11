@@ -19,27 +19,22 @@ have to stop, save everything, switch branches, and remember where you left off.
 Git history so nothing is duplicated. Jump between them instantly, keep your
 main work untouched, and throw away experiments safely.
 
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'monospace'}}}%%
-flowchart LR
-    subgraph Before["Without git-wt"]
-        A[Your project folder] -->|switch to bugfix| B[(stashed changes)]
-        B -->|switch back| A
-        A -->|switch to experiment| C[(more stashed changes)]
-        C -->|now where was I?| A
-    end
+```
+Before git-wt (one folder, lots of switching)
+┌─────────────────┐
+│  Your project   │  switch to bugfix ──► save changes in stash
+│     folder      │  switch back     ──► restore stash
+│                 │  switch again    ──► "wait, where was I?"
+└─────────────────┘
 
-    subgraph After["With git-wt"]
-        M[myapp]
-        F[myapp-bugfix-123]
-        E[myapp-try-new-ui]
-        M <--->|wt add bugfix/123| F
-        M <--->|wt add try/new-ui| E
-        M <--->|wt 1| F
-        F <--->|wt 1 remove| M
-    end
+After git-wt (a folder per branch)
+┌───────────────┐      ┌──────────────────┐      ┌─────────────────┐
+│     myapp     │◄────►│ myapp-bugfix-123 │      │ myapp-try-new-ui│
+│  (main work)  │ add  │  (urgent fix)    │ jump │  (experiment)   │
+│               │◄────►│                  │◄────►│                 │
+└───────────────┘ rm   └──────────────────┘      └─────────────────┘
 
-    Before -->|replace switching with separate folders| After
+Replace branch switching with separate folders next door.
 ```
 
 ### What you can do

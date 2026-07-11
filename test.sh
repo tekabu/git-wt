@@ -115,7 +115,7 @@ check "list filter keeps index"      exit=0 out="2  feature/login" -- list logi
 check "list --col branch only"       exit=0 out="feature/login" -- list --col 2 logi
 check "list --col id+branch"         exit=0 out="2  feature/login" -- list --col 1,2 logi
 check "list --col reorder"           exit=0 out="feature/login  2" -- list --col 2,1 logi
-check "list --col bad number"        exit=1 err="no column 4" -- list --col 4
+check "list --col bad number"        exit=1 err="no column 6" -- list --col 6
 check "list --col non-numeric"       exit=1 err="bad column 'x'" -- list --col x
 check "bare --col (no list word)"    exit=0 out="main" -- --col 2
 check "bare -c short flag"           exit=0 out="main" -- -c 1,2

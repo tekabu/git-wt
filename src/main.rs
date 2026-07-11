@@ -52,7 +52,8 @@ ADD:
 
     Branch resolution, in order:
       1. Local branch exists      -> check it out
-      2. origin/<branch> exists   -> create a tracking branch from it
+      2. <remote>/<branch> exists -> create a tracking branch from it
+                                     (prefers origin, else first remote match)
       3. Neither                  -> prompt, then create from --from (HEAD)
 
     With no BRANCH, a picker lists local branches: fzf when installed,
@@ -190,7 +191,7 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
                     "-y" => yes = true,
                     "-f" | "--force" => force = true,
                     other => {
-                        return Err(format!("unknown option '{other}' for remove"));
+                        return Err(format!("unexpected argument '{other}' for remove"));
                     }
                 }
             }
@@ -715,14 +716,11 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     }
 
     let has_local = git_quiet(root, &["show-ref", "--verify", &format!("refs/heads/{branch}")]);
-    let has_remote = git_quiet(
-        root,
-        &["show-ref", "--verify", &format!("refs/remotes/origin/{branch}")],
-    );
+    let remote = find_remote_branch(root, &branch);
 
     // --from only affects creating a NEW branch; if the branch already exists
     // it is silently overridden, so warn + confirm.
-    if from.is_some() && (has_local || has_remote) {
+    if from.is_some() && (has_local || remote.is_some()) {
         if !confirm(&format!(
             "branch '{branch}' already exists; --from ignored. Continue? [y/N] "
         ))? {
@@ -742,11 +740,11 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
         eprintln!("Checking out existing local branch '{branch}'");
         argv.push(dir_s.clone());
         argv.push(branch.clone());
-    } else if has_remote {
-        eprintln!("Tracking remote branch 'origin/{branch}'");
+    } else if let Some(r) = &remote {
+        eprintln!("Tracking remote branch '{r}/{branch}'");
         argv.extend(["--track".into(), "-b".into(), branch.clone()]);
         argv.push(dir_s.clone());
-        argv.push(format!("origin/{branch}"));
+        argv.push(format!("{r}/{branch}"));
     } else {
         if !confirm(&format!(
             "Branch '{branch}' does not exist. Create it from '{from_ref}'? [y/N] "
@@ -767,8 +765,8 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     // context without polluting the captured path.
     let origin = if has_local {
         format!("branch {branch}")
-    } else if has_remote {
-        format!("branch {branch} tracking origin/{branch}")
+    } else if let Some(r) = &remote {
+        format!("branch {branch} tracking {r}/{branch}")
     } else {
         format!("branch {branch} from {from_ref}")
     };
@@ -780,6 +778,28 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     // `dir=$(git-wt add feat/x)`. Status/progress went to stderr.
     println!("{dir_s}");
     Ok(())
+}
+
+/// Find a remote whose tracking ref `<remote>/<branch>` exists, so `add`
+/// works with any remote name (not just `origin`). Prefers `origin`; otherwise
+/// the first configured remote that has the branch.
+fn find_remote_branch(root: &Path, branch: &str) -> Option<String> {
+    let has = |r: &str| {
+        git_quiet(
+            root,
+            &["show-ref", "--verify", &format!("refs/remotes/{r}/{branch}")],
+        )
+    };
+    if has("origin") {
+        return Some("origin".into());
+    }
+    git_stdout(root, &["remote"])
+        .ok()?
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .find(|r| has(r))
+        .map(String::from)
 }
 
 /// Resolve the worktree directory for `add`. Returns `Ok(None)` when the user

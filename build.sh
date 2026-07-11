@@ -29,7 +29,13 @@ bump() {  # $1 = current x.y.z, $2 = major|minor|patch -> new x.y.z
 case "$arg" in
   "")                    new="$cur" ;;
   major|minor|patch)     new="$(bump "$cur" "$arg")" ;;
-  [0-9]*.[0-9]*.[0-9]*)  new="$arg" ;;
+  [0-9]*.[0-9]*.[0-9]*)
+    # The glob allows trailing junk (e.g. 1.2.3xyz); reject anything that is
+    # not strictly digits and dots.
+    case "$arg" in
+      *[!0-9.]*) echo "error: '$arg' is not a valid x.y.z version" >&2; exit 1 ;;
+    esac
+    new="$arg" ;;
   *) echo "error: '$arg' is not a version or major|minor|patch" >&2; exit 1 ;;
 esac
 

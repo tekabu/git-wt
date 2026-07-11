@@ -6,7 +6,7 @@
 //! Grammar is target-first for existing worktrees (`git-wt <N> <action>`) with
 //! an explicit `add` verb for creation.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -17,9 +17,11 @@ git-wt — worktrees in sibling directories named <repo>-<branch>
 
 USAGE:
     git-wt                       List worktrees, numbered from 1
-    git-wt list [SEARCH] [--col 1,2,3]
+    git-wt list [SEARCH] [--col ...] [--long|--short]
                                  List, optional fuzzy filter; --col picks/orders
-                                 columns (1=id, 2=branch, 3=dir)
+                                 columns (1=id, 2=branch, 3=dir, 4=status,
+                                 5=last-commit). --long shows all; --short is a
+                                 one-line id+branch+status summary.
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
@@ -62,6 +64,11 @@ STDOUT:
 
         cd \"$(git-wt 1 path)\"
         dir=\"$(git-wt add feature/login)\"
+
+COLOR:
+    Color and status/last-commit columns turn on only when stdout is a
+    terminal, so 'git-wt list | cat' stays plain and parseable. Honors
+    NO_COLOR (disable) and CLICOLOR_FORCE (force on).
 ";
 
 fn main() {
@@ -219,6 +226,7 @@ fn check_index(n: usize, len: usize) -> Result<usize, String> {
 fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
     let mut search: Option<String> = None;
     let mut cols: Option<Vec<usize>> = None;
+    let mut mode = ListMode::Normal;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -227,6 +235,8 @@ fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
                 cols = Some(parse_cols(v)?);
             }
             s if s.starts_with("--col=") => cols = Some(parse_cols(&s["--col=".len()..])?),
+            "--long" | "-l" => mode = ListMode::Long,
+            "--short" | "-s" => mode = ListMode::Short,
             s if s.starts_with('-') && s != "-" => {
                 return Err(format!("unknown option '{s}'\nTry 'git-wt --help'"));
             }
@@ -238,10 +248,24 @@ fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
             }
         }
     }
-    cmd_list(root, search.as_deref(), cols)
+    cmd_list(root, search.as_deref(), cols, mode)
 }
 
-fn cmd_list(root: &Path, search: Option<&str>, cols: Option<Vec<usize>>) -> Result<(), String> {
+/// Verbosity for `list`. Normal enriches to status + last-commit only on a
+/// terminal; on a pipe it stays the plain id/branch/dir contract.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListMode {
+    Short,
+    Normal,
+    Long,
+}
+
+fn cmd_list(
+    root: &Path,
+    search: Option<&str>,
+    cols: Option<Vec<usize>>,
+    mode: ListMode,
+) -> Result<(), String> {
     let trees = worktrees(root)?;
 
     // Keep the original 1-based index so `git-wt <N> ...` means the same tree
@@ -261,52 +285,132 @@ fn cmd_list(root: &Path, search: Option<&str>, cols: Option<Vec<usize>>) -> Resu
         }
     }
 
-    // Columns to show, in order: 1 = id, 2 = branch, 3 = dir (full path).
-    let cols = cols.unwrap_or_else(|| vec![1, 2, 3]);
+    let stdout_tty = std::io::stdout().is_terminal();
+    let color = color_enabled(stdout_tty);
+    let explicit = cols.is_some();
+
+    // Columns to show, in order: 1=id, 2=branch, 3=dir, 4=status, 5=last.
+    // Without --col: Short is a compact summary, Long shows everything, and
+    // Normal enriches only on a TTY so a piped `git-wt list` keeps the plain
+    // id/branch/dir contract.
+    let cols = match (cols, mode) {
+        (Some(c), _) => c,
+        (None, ListMode::Short) => vec![1, 2, 4],
+        (None, ListMode::Long) => vec![1, 2, 3, 4, 5],
+        (None, ListMode::Normal) if stdout_tty => vec![1, 2, 3, 4, 5],
+        (None, ListMode::Normal) => vec![1, 2, 3],
+    };
+
+    // Branch color needs status too, so fetch it whenever we color or show it.
+    let need_status = color || cols.contains(&4);
+    let need_last = cols.contains(&5);
+    let header = !explicit && stdout_tty && mode != ListMode::Short;
+
     // Right-align the index to the widest possible so filtered output lines up.
     let numw = trees.len().to_string().len();
 
+    // Per-row metadata, fetched once (read-only git calls).
+    let meta: Vec<(Status, String)> = rows
+        .iter()
+        .map(|(_, w)| {
+            let st = if need_status && !w.bare {
+                worktree_status(&w.path)
+            } else {
+                Status::Unknown
+            };
+            let last = if need_last { last_commit(&w.path) } else { String::new() };
+            (st, last)
+        })
+        .collect();
+
+    // Plain (uncolored) cells drive column widths; color is applied at print
+    // time so the ANSI escapes never skew alignment.
     let cells: Vec<Vec<String>> = rows
         .iter()
-        .map(|(i, w)| {
+        .zip(&meta)
+        .map(|((i, w), (st, last))| {
             cols.iter()
                 .map(|c| match c {
                     1 => format!("{:>numw$}", i + 1, numw = numw),
                     2 => label(w),
-                    _ => w.path.display().to_string(),
+                    3 => w.path.display().to_string(),
+                    4 => status_text(*st).to_string(),
+                    _ => last.clone(),
                 })
                 .collect()
         })
         .collect();
 
-    // Per-column width so ragged columns still align.
+    let header_cells: Vec<String> = cols.iter().map(|c| col_header(*c).to_string()).collect();
+
+    // Per-column width over the header and every data row.
     let mut widths = vec![0usize; cols.len()];
-    for row in &cells {
+    for row in cells.iter().chain(header.then_some(&header_cells)) {
         for (k, cell) in row.iter().enumerate() {
             widths[k] = widths[k].max(cell.chars().count());
         }
     }
 
-    for row in &cells {
-        let mut line = String::new();
-        let last = row.len() - 1;
-        for (k, cell) in row.iter().enumerate() {
-            if k > 0 {
-                line.push_str("  ");
-            }
-            // Pad every column but the last (no trailing whitespace).
-            if k == last {
-                line.push_str(cell);
-            } else {
-                line.push_str(&format!("{:<w$}", cell, w = widths[k]));
-            }
-        }
+    if header {
+        let line = render_row(&header_cells, &cols, &widths, Status::Unknown, false);
+        println!("{}", paint(&line, DIM, color));
+    }
+
+    for (row, (st, _)) in cells.iter().zip(&meta) {
+        let line = render_row(row, &cols, &widths, *st, color);
         println!("{line}");
     }
     Ok(())
 }
 
-/// Parse `--col` value like "1,2,3" into column ids. 1=id, 2=branch, 3=dir.
+/// Header label for a column id.
+fn col_header(c: usize) -> &'static str {
+    match c {
+        1 => "#",
+        2 => "branch",
+        3 => "path",
+        4 => "status",
+        _ => "last",
+    }
+}
+
+/// Join one row's cells with two-space gaps, padding all but the last column.
+/// When `color`, the branch (col 2) and status (col 4) cells are tinted by
+/// `st`. Padding is computed on the plain text, then color wraps it, so ANSI
+/// never affects alignment.
+fn render_row(
+    row: &[String],
+    cols: &[usize],
+    widths: &[usize],
+    st: Status,
+    color: bool,
+) -> String {
+    let mut line = String::new();
+    let last = row.len() - 1;
+    for (k, cell) in row.iter().enumerate() {
+        if k > 0 {
+            line.push_str("  ");
+        }
+        let padded = if k == last {
+            cell.clone()
+        } else {
+            format!("{:<w$}", cell, w = widths[k])
+        };
+        let code = status_color(st);
+        let tinted = matches!(cols[k], 2 | 4) && color && !code.is_empty();
+        if tinted {
+            line.push_str(&paint(&padded, code, true));
+        } else {
+            line.push_str(&padded);
+        }
+    }
+    line
+}
+
+/// Parse `--col` value like "1,2,4" into column ids.
+/// 1=id, 2=branch, 3=dir, 4=status, 5=last-commit.
+const COL_HELP: &str = "1=id, 2=branch, 3=dir, 4=status, 5=last";
+
 fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
     let mut v = Vec::new();
     for part in s.split(',') {
@@ -316,9 +420,9 @@ fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
         }
         let n: usize = p
             .parse()
-            .map_err(|_| format!("bad column '{p}' (use 1=id, 2=branch, 3=dir)"))?;
-        if n < 1 || n > 3 {
-            return Err(format!("no column {n} (use 1=id, 2=branch, 3=dir)"));
+            .map_err(|_| format!("bad column '{p}' (use {COL_HELP})"))?;
+        if n < 1 || n > 5 {
+            return Err(format!("no column {n} (use {COL_HELP})"));
         }
         v.push(n);
     }
@@ -326,6 +430,99 @@ fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
         return Err("--col needs columns, e.g. 1,2,3".into());
     }
     Ok(v)
+}
+
+// ---------------------------------------------------------------------------
+// Color, status, and metadata (no dependencies; ANSI on a TTY only)
+// ---------------------------------------------------------------------------
+
+const RESET: &str = "\x1b[0m";
+const GREEN: &str = "32";
+const YELLOW: &str = "33";
+const RED: &str = "31";
+const DIM: &str = "2";
+
+/// Whether to emit ANSI for a stream that is (or isn't) a terminal. Honors the
+/// `NO_COLOR` (any value disables) and `CLICOLOR_FORCE` (nonzero forces on)
+/// conventions; otherwise follows the stream's TTY-ness.
+fn color_enabled(is_tty: bool) -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if let Some(v) = std::env::var_os("CLICOLOR_FORCE") {
+        if !v.is_empty() && v != "0" {
+            return true;
+        }
+    }
+    is_tty
+}
+
+/// Wrap `s` in an ANSI SGR code when `on`, else return it unchanged. The code
+/// is a bare parameter string like "32" or "2".
+fn paint(s: &str, code: &str, on: bool) -> String {
+    if on {
+        format!("\x1b[{code}m{s}{RESET}")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Working-tree cleanliness of a worktree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Status {
+    Clean,
+    Dirty,
+    Untracked,
+    /// Bare worktree, or git couldn't report (shown blank).
+    Unknown,
+}
+
+/// Classify `git status --porcelain` output. Any `??` line means untracked;
+/// other entries mean dirty; empty means clean.
+fn classify_status(porcelain: &str) -> Status {
+    if porcelain.trim().is_empty() {
+        return Status::Clean;
+    }
+    if porcelain.lines().any(|l| l.starts_with("??")) {
+        Status::Untracked
+    } else {
+        Status::Dirty
+    }
+}
+
+/// Run `git status --porcelain` in the worktree and classify it.
+fn worktree_status(path: &Path) -> Status {
+    match git_stdout(path, &["status", "--porcelain"]) {
+        Ok(s) => classify_status(&s),
+        Err(_) => Status::Unknown,
+    }
+}
+
+fn status_text(s: Status) -> &'static str {
+    match s {
+        Status::Clean => "clean",
+        Status::Dirty => "dirty",
+        Status::Untracked => "untracked",
+        Status::Unknown => "",
+    }
+}
+
+/// ANSI color for a status, or "" (no color) for Unknown.
+fn status_color(s: Status) -> &'static str {
+    match s {
+        Status::Clean => GREEN,
+        Status::Dirty => YELLOW,
+        Status::Untracked => RED,
+        Status::Unknown => "",
+    }
+}
+
+/// Relative time of the worktree's last commit (e.g. "2 minutes ago"), or ""
+/// when unavailable (bare / no commits).
+fn last_commit(path: &Path) -> String {
+    git_stdout(path, &["log", "-1", "--format=%ar"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 /// Case-insensitive subsequence match over "<label> <path>".
@@ -397,7 +594,15 @@ fn cmd_remove(
     })?;
 
     git_run(root, &["worktree", "prune"])?;
-    eprintln!("Removed {path_s}");
+
+    // The `remove` verb only detaches the worktree; the branch itself stays.
+    let leaf = leaf_of(&wanted.path);
+    let branch_note = match &wanted.branch {
+        Some(b) => format!("branch {b} kept"),
+        None => "detached".into(),
+    };
+    let on = std::io::stderr().is_terminal() && color_enabled(true);
+    eprintln!("{} {leaf}  ({branch_note})", paint("Removed", GREEN, on));
 
     // Only when the shell was inside the removed tree does its cwd now dangle,
     // so print the main path for a wrapper to cd back. Removing some other tree
@@ -557,6 +762,19 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
 
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     git_run(root, &refs)?;
+
+    // One-line summary on stderr (never stdout) so interactive users get
+    // context without polluting the captured path.
+    let origin = if has_local {
+        format!("branch {branch}")
+    } else if has_remote {
+        format!("branch {branch} tracking origin/{branch}")
+    } else {
+        format!("branch {branch} from {from_ref}")
+    };
+    let leaf = leaf_of(&dir);
+    let on = std::io::stderr().is_terminal() && color_enabled(true);
+    eprintln!("{} {leaf}  ({origin})", paint("Created", GREEN, on));
 
     // Print the new worktree path on stdout (alone) so scripts can capture it:
     // `dir=$(git-wt add feat/x)`. Status/progress went to stderr.
@@ -765,6 +983,14 @@ fn sanitize(branch: &str) -> String {
 /// resolved (e.g. it no longer exists), so equal paths still compare equal.
 fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Last path component (directory leaf) as a display string, or the whole path
+/// when it has none.
+fn leaf_of(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.display().to_string())
 }
 
 fn label(w: &Worktree) -> String {
@@ -987,6 +1213,47 @@ mod tests {
             check_index(4, 3),
             Err("no worktree #4; there are 3 (see 'git-wt list')".into())
         );
+    }
+
+    #[test]
+    fn classify_status_reads_porcelain() {
+        assert_eq!(classify_status(""), Status::Clean);
+        assert_eq!(classify_status("   \n"), Status::Clean);
+        assert_eq!(classify_status(" M src/main.rs"), Status::Dirty);
+        assert_eq!(classify_status("?? new.txt"), Status::Untracked);
+        // Untracked wins when both are present.
+        assert_eq!(classify_status(" M a\n?? b"), Status::Untracked);
+    }
+
+    #[test]
+    fn paint_wraps_only_when_on() {
+        assert_eq!(paint("x", GREEN, false), "x");
+        assert_eq!(paint("x", GREEN, true), "\x1b[32mx\x1b[0m");
+    }
+
+    #[test]
+    fn parse_cols_accepts_status_and_last() {
+        assert_eq!(parse_cols("1,4,5").unwrap(), vec![1, 4, 5]);
+        assert!(parse_cols("6").is_err());
+    }
+
+    #[test]
+    fn leaf_of_returns_last_component() {
+        assert_eq!(leaf_of(Path::new("/code/myapp-feat-x")), "myapp-feat-x");
+        assert_eq!(leaf_of(Path::new("myapp")), "myapp");
+    }
+
+    #[test]
+    fn render_row_pads_and_tints() {
+        let cols = vec![1, 2];
+        let row = vec!["1".to_string(), "main".to_string()];
+        let widths = vec![1, 7];
+        // No color: branch is left-padded to width, no ANSI.
+        let plain = render_row(&row, &cols, &widths, Status::Clean, false);
+        assert_eq!(plain, "1  main");
+        // Color: branch cell tinted green (padding inside the escape).
+        let tinted = render_row(&row, &cols, &widths, Status::Clean, true);
+        assert_eq!(tinted, "1  \x1b[32mmain\x1b[0m");
     }
 
     #[test]

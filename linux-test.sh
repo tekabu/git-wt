@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Run git-wt's tests on Linux via Docker.
 #
-#   ./docker-test.sh                  # build image, run unit + live tests
-#   ./docker-test.sh --build-install  # verify build.sh + install.sh on Linux
-#   ./docker-test.sh --shell          # build image, drop into a shell
-#   ./docker-test.sh --rebuild        # force image rebuild (no cache), then test
+#   ./linux-test.sh                  # build image, run unit + live tests
+#   ./linux-test.sh --build-install  # verify build.sh + install.sh on Linux
+#   ./linux-test.sh --shell          # build image, drop into a shell
+#   ./linux-test.sh --rebuild        # force image rebuild (no cache), then test
 #
 # The container is a throwaway Debian box with Rust + git. Nothing is written
 # back to the host; the Linux build target lives inside the image.

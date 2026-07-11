@@ -330,8 +330,8 @@ you want to share to.
 
 ### Build on Linux (Docker)
 
-`./docker-test.sh` builds and runs the unit + live tests in a throwaway Debian
-container. `./docker-test.sh --build-install` additionally verifies the one-file
+`./linux-test.sh` builds and runs the unit + live tests in a throwaway Debian
+container. `./linux-test.sh --build-install` additionally verifies the one-file
 installer end-to-end on Linux. The Docker image's arch matches your host
 (Apple Silicon → `aarch64`); for an x86_64 Linux artifact, build with
 `docker build --platform linux/amd64 -t git-wt-test .` first.

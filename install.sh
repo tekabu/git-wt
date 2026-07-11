@@ -38,6 +38,18 @@ fi
 echo "Installed $bin"
 echo "Ensure ${CARGO_HOME:-\$HOME/.cargo}/bin is on your PATH."
 
+# fzf is an optional runtime helper: when present, the branch picker (git-wt add
+# with no branch) uses fzf's fuzzy search instead of a numbered prompt. Not a
+# build dependency and not required — just hint how to get the nicer picker.
+if ! command -v fzf >/dev/null; then
+  case "$(uname -s)" in
+    Darwin) hint="brew install fzf" ;;
+    Linux)  hint="your package manager, e.g. 'apt install fzf' or 'dnf install fzf'" ;;
+    *)      hint="https://github.com/junegunn/fzf" ;;
+  esac
+  echo "Tip: install fzf for a fuzzy branch picker ($hint). Optional."
+fi
+
 # --- optional shell alias ---------------------------------------------------
 [ -z "$alias_name" ] && { echo "Done."; exit 0; }
 

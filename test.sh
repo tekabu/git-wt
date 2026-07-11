@@ -142,7 +142,7 @@ FULL="$ROOT/full/app"; mkdir -p "$FULL"
   git commit -q --allow-empty -m i; git branch only
   "$BIN" add only >/dev/null 2>&1 )          # main + only both checked out now
 allco="$(cd "$FULL" && printf '\n' | "$BIN" add 2>&1)"
-if printf '%s' "$allco" | grep -q "all are checked out"; then
+if printf '%s' "$allco" | grep -q "All local branches are already checked out"; then
   printf '  \033[32mPASS\033[0m  %s\n' "picker errors when all checked out"; pass=$((pass+1))
 else
   printf '  \033[31mFAIL\033[0m  %s\n' "picker errors when all checked out"; fail=$((fail+1))

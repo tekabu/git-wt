@@ -34,6 +34,13 @@ case "$arg" in
 esac
 
 if [ "$new" != "$cur" ]; then
+  # Confirm before rewriting the manifest version.
+  printf 'Change version %s -> %s? [y/N] ' "$cur" "$new" >&2
+  read -r reply
+  case "$reply" in
+    y|Y|yes|YES) ;;
+    *) echo "Aborted; version unchanged." >&2; exit 1 ;;
+  esac
   # Rewrite only the first `version = "..."` line (the [package] one).
   tmp="$(mktemp)"
   awk -v v="$new" 'BEGIN{done=0}

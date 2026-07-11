@@ -5,8 +5,8 @@
 #   ./install.sh --alias wt      # also add a `wt` shell function that cd's
 #                                #   into the worktree (name is yours to pick)
 #
-# A binary cannot change its parent shell's directory, so the cd-on-create /
-# cd-on-show behaviour needs a shell function. --alias installs one, named as
+# A binary cannot change its parent shell's directory, so the cd-on-switch /
+# cd-on-remove behaviour needs a shell function. --alias installs one, named as
 # you ask, into your shell rc inside a managed block.
 set -euo pipefail
 
@@ -64,24 +64,30 @@ awk 'BEGIN{s=0}
      /# <<< git-wt alias <<</{s=0; next}
      s==0{print}' "$rc" > "$tmp"
 
-# Wrapper: create (or the branch picker) and show cd into the worktree;
-# remove cds back to the main worktree; list/help pass straight through.
-# create/bare use --show so a path is emitted to cd to; a declined prompt or
-# an error prints nothing, so the guard skips the cd.
+# Wrapper for the target-first grammar. Two names, one behavioral difference:
+# cd. For `<N>` with switch/cd (or nothing) it cd's into the worktree; for
+# `<N> remove` it cd's back to the main worktree git prints; path/show and every
+# non-target verb (list/add/help/...) pass straight through, printing only. A
+# declined prompt or an error prints nothing, so the guard skips the cd.
 cat >> "$tmp" <<EOF
 
 # >>> git-wt alias >>>
 # Managed by git-wt install.sh; edits here are overwritten on reinstall.
 $alias_name() {
   case "\${1:-}" in
-    -h|--help|-V|--version|list|ls|-l|--list)
+    -h|--help|-V|--version|version|help|list|ls|add)
       git-wt "\$@"; return \$? ;;
-    show|go|cd|remove|rm)
+  esac
+  # <N> [action]: switch (default) & remove cd the shell; path/show print.
+  case "\${2:-}" in
+    ""|switch|cd)
+      local d; d="\$(git-wt "\$1" path)" || return \$?
+      [ -n "\$d" ] && cd "\$d" ;;
+    remove|rm)
       local d; d="\$(git-wt "\$@")" || return \$?
       [ -n "\$d" ] && cd "\$d" ;;
-    *)  # a branch to create, or nothing -> interactive branch picker
-      local d; d="\$(git-wt --show "\$@")" || return \$?
-      [ -n "\$d" ] && cd "\$d" ;;
+    *)  # path/show and anything else: pass through
+      git-wt "\$@" ;;
   esac
 }
 # <<< git-wt alias <<<

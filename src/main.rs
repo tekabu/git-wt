@@ -1,7 +1,10 @@
-//! git-wt — create git worktrees in a sibling directory named
+//! git-wt — create and manage git worktrees in sibling directories named
 //! `<repo-folder>-<sanitized-branch>`.
 //!
 //! Installed on PATH as `git-wt`, so it is also reachable as `git wt`.
+//!
+//! Grammar is target-first for existing worktrees (`git-wt <N> <action>`) with
+//! an explicit `add` verb for creation.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,53 +16,47 @@ const HELP: &str = "\
 git-wt — worktrees in sibling directories named <repo>-<branch>
 
 USAGE:
-    git-wt <branch> [base-ref]   Create a worktree for <branch>
-    git-wt                       Pick a branch interactively (fzf, else a list)
-    git-wt list                  List worktrees, numbered from 1
-    git-wt show <N>              Print worktree #N's path (for cd)
-    git-wt remove <N|branch>     Remove a worktree; N is from 'list'
+    git-wt                       List worktrees, numbered from 1
+    git-wt list [SEARCH]         List, optional fuzzy filter (indices stay put)
+    git-wt <N>                   == git-wt <N> switch
+    git-wt <N> switch            cd into worktree N (alias: cd)
+    git-wt <N> path              Print worktree N's path only (alias: show)
+    git-wt <N> remove [-y] [-f]  Remove worktree N
+    git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
+    git-wt version
     git-wt --help
-    git-wt --version
 
-    Aliases: ls = list, rm = remove, go/cd = show.
+    Aliases: ls = list, rm = remove, cd = switch, show = path.
 
-OPTIONS:
-    -n, --name <dir>   Create: override the worktree directory name
-    -s, --show         Create: print the new worktree path on stdout (for cd)
-    -f, --force        Remove: discard uncommitted changes
-    -h, --help         Show this help
-    -V, --version      Show version
+ADD OPTIONS:
+    -n, --name NAME       Suffix only -> leaf = <repo>-NAME
+        --dirname DIR     Whole leaf, verbatim (sanitized); with '/' = a path
+    -p, --parentdir DIR   Parent dir (default: primary worktree's parent)
+        --from REF        Base ref for a NEW branch (default: current HEAD)
 
-CREATE:
+REMOVE OPTIONS:
+    -y                    Skip the confirmation prompt
+    -f, --force           Discard uncommitted/untracked changes
+
+ADD:
     The worktree directory is a sibling of the repo root, named
     <repo-folder>-<branch>, with '/', ' ', ':' and '\\' collapsed to '-'.
-    --name overrides it.
 
         ~/code/myapp  +  feature/login  ->  ~/code/myapp-feature-login
 
     Branch resolution, in order:
       1. Local branch exists      -> check it out
       2. origin/<branch> exists   -> create a tracking branch from it
-      3. Neither                  -> prompt, then create from [base-ref] (HEAD)
+      3. Neither                  -> prompt, then create from --from (HEAD)
 
-    Refuses to create when the branch is already checked out in another
-    worktree, or when the target directory already exists.
-
-    With no <branch>, a picker lists local branches with a search filter:
-    fzf when installed, otherwise a numbered prompt.
-
-REMOVE:
-    Target is a number from 'git-wt list', a branch name (only when a worktree
-    has it), or a path. Prompts before removing; --force discards uncommitted
-    changes. On success prints the main worktree path, so a wrapper can cd back
-    to it in case you were standing inside the tree just removed.
+    With no BRANCH, a picker lists local branches: fzf when installed,
+    otherwise a numbered prompt.
 
 STDOUT:
-    Only 'show <N>', 'create --show', and 'remove' print a path, alone, on
-    stdout, so a shell can cd into it. Status text goes to stderr.
+    Only 'switch'/'path' (bare <N>) and 'remove' print a path, alone, on
+    stdout, so a shell wrapper can cd into it. Status text goes to stderr.
 
-        cd \"$(git-wt show 2)\"
-        cd \"$(git-wt feature/login --show)\"
+        cd \"$(git-wt 1 path)\"
 ";
 
 fn main() {
@@ -85,216 +82,154 @@ struct Worktree {
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let mut show_path = false;
-    let mut force = false;
-    let mut name: Option<String> = None;
-    let mut list = false;
-    let mut show_mode = false;
-    let mut remove_mode = false;
-    let mut remove_flag_target: Option<String> = None;
-    let mut positional: Vec<String> = Vec::new();
-
-    // A leading bare word may be a subcommand; anything else is a branch to
-    // create (the default action).
-    let mut rest: &[String] = &args;
-    if let Some(first) = args.first() {
-        match first.as_str() {
-            "list" | "ls" => {
-                list = true;
-                rest = &args[1..];
-            }
-            "show" | "go" | "cd" => {
-                show_mode = true;
-                rest = &args[1..];
-            }
-            "remove" | "rm" => {
-                remove_mode = true;
-                rest = &args[1..];
-            }
-            _ => {}
+    // Meta / no-args first — these don't all need a repo, and no-args = list.
+    match args.first().map(String::as_str) {
+        None => {
+            let root = repo_root()?;
+            return cmd_list(&root, None);
         }
-    }
-
-    let mut iter = rest.iter().peekable();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                print!("{HELP}");
-                return Ok(());
-            }
-            "-V" | "--version" => {
-                println!("git-wt {VERSION}");
-                return Ok(());
-            }
-            "-l" | "--list" => list = true,
-            "-s" | "--show" => show_path = true,
-            "-f" | "--force" => force = true,
-            "-n" | "--name" => {
-                let t = iter.next().ok_or("--name needs a directory name")?;
-                name = Some(t.clone());
-            }
-            "-r" | "--remove" => {
-                let t = iter.next().ok_or("--remove needs a number, branch, or path")?;
-                remove_flag_target = Some(t.clone());
-            }
-            s if s.starts_with("--name=") => name = Some(s["--name=".len()..].to_string()),
-            s if s.starts_with("--remove=") => {
-                remove_flag_target = Some(s["--remove=".len()..].to_string())
-            }
-            s if s.starts_with('-') && s != "-" => {
-                return Err(format!("unknown option: {s}\nTry 'git-wt --help'"));
-            }
-            s => positional.push(s.to_string()),
+        Some("-h") | Some("--help") | Some("help") => {
+            print!("{HELP}");
+            return Ok(());
         }
-    }
-
-    if remove_flag_target.is_some() {
-        remove_mode = true;
-    }
-
-    // Every mode below needs to be inside a repo.
-    let root = repo_root()?;
-
-    if list {
-        if name.is_some() || show_path || force {
-            return Err("list takes no --name/--show/--force".into());
+        Some("-V") | Some("--version") | Some("version") => {
+            println!("git-wt {VERSION}");
+            return Ok(());
         }
-        return cmd_list(&root);
+        _ => {}
     }
 
-    if show_mode {
-        if name.is_some() || show_path || force {
-            return Err("show takes no --name/--show/--force".into());
+    let first = &args[0];
+
+    if first == "list" || first == "ls" {
+        if args.len() > 2 {
+            return Err("too many arguments\nTry 'git-wt --help'".into());
         }
-        let n = single(&positional, "show needs a worktree number (see 'git-wt list')")?;
-        let n: usize = n
-            .parse()
-            .map_err(|_| format!("'{n}' is not a worktree number; see 'git-wt list'"))?;
-        return cmd_show(&root, n);
+        let root = repo_root()?;
+        return cmd_list(&root, args.get(1).map(String::as_str));
     }
 
-    if remove_mode {
-        if name.is_some() || show_path {
-            return Err("remove takes no --name/--show".into());
-        }
-        let target = match &remove_flag_target {
-            Some(t) => t.clone(),
-            None => single(&positional, "remove needs a number, branch, or path")?.clone(),
-        };
-        return cmd_remove(&root, &target, force);
+    if first == "add" {
+        let root = repo_root()?;
+        return cmd_add(&root, &args[1..]);
     }
 
-    // CREATE (default).
-    if force {
-        return Err("create takes no --force".into());
+    // <N> <action> — the target-first grammar.
+    if let Ok(n) = first.parse::<usize>() {
+        let root = repo_root()?;
+        return dispatch_target(&root, n, &args[1..]);
     }
-    if positional.len() > 2 {
-        return Err("too many arguments\nTry 'git-wt --help'".into());
+
+    if first.starts_with('-') {
+        return Err(format!("unknown option '{first}'\nTry 'git-wt --help'"));
     }
-    let branch = match positional.first() {
-        Some(b) => b.clone(),
-        None => pick_branch(&root)?, // interactive picker
-    };
-    let base = positional.get(1).map(String::as_str).unwrap_or("HEAD");
-    cmd_create(&root, &branch, base, name.as_deref(), show_path)
+
+    Err(unknown_command_msg(first))
 }
 
-/// Exactly one positional, or an error.
-fn single<'a>(positional: &'a [String], empty_msg: &str) -> Result<&'a String, String> {
-    match positional.len() {
-        0 => Err(empty_msg.into()),
-        1 => Ok(&positional[0]),
-        _ => Err("too many arguments\nTry 'git-wt --help'".into()),
+/// Message for a leading word that is neither a number nor a known verb.
+/// Legacy verb-first forms get a migration hint; branch-like words get an
+/// `add` suggestion.
+fn unknown_command_msg(tok: &str) -> String {
+    match tok {
+        "show" => "unknown command 'show'; use 'git-wt 1 path'".into(),
+        "remove" | "rm" => format!("unknown command '{tok}'; use 'git-wt 1 remove'"),
+        _ if branch_like(tok) => format!("unknown command '{tok}'; did you mean 'add {tok}'?"),
+        _ => format!("unknown command '{tok}'"),
     }
+}
+
+/// A word looks like a branch when it has a `/` or `-` and no whitespace.
+fn branch_like(s: &str) -> bool {
+    !s.chars().any(char::is_whitespace) && (s.contains('/') || s.contains('-'))
+}
+
+// ---------------------------------------------------------------------------
+// Target dispatch: git-wt <N> [action]
+// ---------------------------------------------------------------------------
+
+fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String> {
+    let trees = worktrees(root)?;
+    let idx = check_index(n, trees.len())?;
+
+    let action = rest.first().map(String::as_str).unwrap_or("switch");
+    match action {
+        "switch" | "cd" | "path" | "show" => {
+            if rest.len() > 1 {
+                return Err("too many arguments\nTry 'git-wt --help'".into());
+            }
+            // The binary always just prints the path; the `wt` wrapper cd's.
+            println!("{}", trees[idx].path.display());
+            Ok(())
+        }
+        "remove" | "rm" => {
+            let mut yes = false;
+            let mut force = false;
+            for a in &rest[1..] {
+                match a.as_str() {
+                    "-y" => yes = true,
+                    "-f" | "--force" => force = true,
+                    other => {
+                        return Err(format!("unknown option '{other}' for remove"));
+                    }
+                }
+            }
+            cmd_remove(root, &trees, idx, yes, force)
+        }
+        "-n" | "--name" => Err("switch/path/remove take no --name".into()),
+        other if other.starts_with('-') => {
+            Err(format!("switch/path/remove take no {other}"))
+        }
+        other => Err(format!("unknown action '{other}' (switch, path, remove)")),
+    }
+}
+
+/// Map a 1-based index to a 0-based one, or an error.
+fn check_index(n: usize, len: usize) -> Result<usize, String> {
+    if n == 0 {
+        return Err("no worktree #0".into());
+    }
+    if n > len {
+        return Err(format!(
+            "no worktree #{n}; there are {len} (see 'git-wt list')"
+        ));
+    }
+    Ok(n - 1)
 }
 
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
-fn cmd_create(
-    root: &Path,
-    branch: &str,
-    base: &str,
-    name: Option<&str>,
-    show: bool,
-) -> Result<(), String> {
-    let dir = match name {
-        Some(n) => custom_path(root, n)?,
-        None => worktree_path(root, branch)?,
-    };
-
-    if dir.exists() {
-        return Err(format!("{} already exists", dir.display()));
-    }
-
-    // Refuse to point a new worktree at a branch that is already checked out;
-    // git shares one ref between worktrees, so the two HEADs would drift.
-    if let Some(w) = worktrees(root)?
-        .into_iter()
-        .find(|w| w.branch.as_deref() == Some(branch))
-    {
-        return Err(format!(
-            "branch '{branch}' is already checked out at {}",
-            w.path.display()
-        ));
-    }
-
-    let has_local = git_quiet(root, &["show-ref", "--verify", &format!("refs/heads/{branch}")]);
-    let has_remote = git_quiet(
-        root,
-        &["show-ref", "--verify", &format!("refs/remotes/origin/{branch}")],
-    );
-
-    let dir_s = dir.to_string_lossy().to_string();
-    let mut argv: Vec<String> = vec!["worktree".into(), "add".into()];
-
-    if has_local {
-        eprintln!("Checking out existing local branch '{branch}'");
-        argv.push(dir_s.clone());
-        argv.push(branch.into());
-    } else if has_remote {
-        eprintln!("Tracking remote branch 'origin/{branch}'");
-        argv.extend(["--track".into(), "-b".into(), branch.into()]);
-        argv.push(dir_s.clone());
-        argv.push(format!("origin/{branch}"));
-    } else {
-        if !confirm(&format!(
-            "Branch '{branch}' does not exist. Create it from '{base}'? [y/N] "
-        ))? {
-            eprintln!("Aborted.");
-            return Ok(());
-        }
-        eprintln!("Creating new branch '{branch}' from '{base}'");
-        argv.extend(["-b".into(), branch.into()]);
-        argv.push(dir_s.clone());
-        argv.push(base.into());
-    }
-
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    git_run(root, &refs)?;
-
-    // With --show, print the path (alone) on stdout so a wrapper can cd to it.
-    if show {
-        println!("{dir_s}");
-    } else {
-        eprintln!("{dir_s}");
-    }
-    Ok(())
-}
-
-fn cmd_list(root: &Path) -> Result<(), String> {
+fn cmd_list(root: &Path, search: Option<&str>) -> Result<(), String> {
     let trees = worktrees(root)?;
 
-    let width = trees
+    // Keep the original 1-based index so `git-wt <N> ...` means the same tree
+    // no matter what filter was applied.
+    let rows: Vec<(usize, &Worktree)> = trees
         .iter()
-        .map(|w| label(w).chars().count())
+        .enumerate()
+        .filter(|(_, w)| match search {
+            Some(s) => fuzzy_match(w, s),
+            None => true,
+        })
+        .collect();
+
+    if let Some(s) = search {
+        if rows.is_empty() {
+            return Err(format!("no worktree matches '{s}'"));
+        }
+    }
+
+    let width = rows
+        .iter()
+        .map(|(_, w)| label(w).chars().count())
         .max()
         .unwrap_or(0);
-    // Right-align the 1-based index to the widest number.
+    // Right-align to the widest possible index so filtered output still lines up.
     let numw = trees.len().to_string().len();
 
-    for (i, w) in trees.iter().enumerate() {
+    for (i, w) in rows {
         println!(
             "{:>numw$}  {:<width$}  {}",
             i + 1,
@@ -307,39 +242,48 @@ fn cmd_list(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `show <N>`: print the Nth worktree's path (1-based) on stdout for `cd`.
-fn cmd_show(root: &Path, n: usize) -> Result<(), String> {
-    let trees = worktrees(root)?;
-    if n == 0 || n > trees.len() {
-        return Err(format!(
-            "no worktree #{n}; there are {} (see 'git-wt list')",
-            trees.len()
-        ));
-    }
-    println!("{}", trees[n - 1].path.display());
-    Ok(())
+/// Case-insensitive subsequence match over "<label> <path>".
+fn fuzzy_match(w: &Worktree, needle: &str) -> bool {
+    let hay = format!("{} {}", label(w), w.path.display()).to_lowercase();
+    is_subseq(&hay, &needle.to_lowercase())
 }
 
-fn cmd_remove(root: &Path, target: &str, force: bool) -> Result<(), String> {
-    let trees = worktrees(root)?;
-    let wanted = resolve_target(root, &trees, target)?;
-
-    if wanted.bare {
-        return Err("refusing to remove the bare/main worktree".into());
+/// True when every char of `needle` appears in `hay`, in order.
+fn is_subseq(hay: &str, needle: &str) -> bool {
+    let mut chars = hay.chars();
+    'outer: for nc in needle.chars() {
+        for hc in chars.by_ref() {
+            if hc == nc {
+                continue 'outer;
+            }
+        }
+        return false;
     }
-    // The main worktree is the first entry git reports.
-    if trees.first().map(|w| &w.path) == Some(&wanted.path) {
-        return Err(format!(
-            "{} is the main worktree, not a linked one",
-            wanted.path.display()
-        ));
+    true
+}
+
+fn cmd_remove(
+    root: &Path,
+    trees: &[Worktree],
+    idx: usize,
+    yes: bool,
+    force: bool,
+) -> Result<(), String> {
+    let wanted = &trees[idx];
+
+    // The main worktree is the first entry git reports; a bare one is never
+    // a checkout to remove.
+    if idx == 0 || wanted.bare {
+        return Err("refusing to remove the main worktree".into());
     }
 
     let path_s = wanted.path.to_string_lossy().to_string();
-    if !confirm(&format!(
-        "Remove worktree '{}' at {path_s}? [y/N] ",
-        label(wanted)
-    ))? {
+    if !yes
+        && !confirm(&format!(
+            "Remove worktree '{}' at {path_s}? [y/N] ",
+            label(wanted)
+        ))?
+    {
         eprintln!("Aborted.");
         return Ok(());
     }
@@ -352,7 +296,7 @@ fn cmd_remove(root: &Path, target: &str, force: bool) -> Result<(), String> {
 
     git_run(root, &argv).map_err(|e| {
         if !force && e.contains("contains modified or untracked files") {
-            format!("{e}\nhint: re-run with --force to discard them")
+            format!("{e}\nhint: re-run with -f to discard them")
         } else {
             e
         }
@@ -369,62 +313,202 @@ fn cmd_remove(root: &Path, target: &str, force: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve a remove target: a 1-based number from `list`, an exact path, a
-/// branch name (only when a worktree has it), or a generated directory name.
-fn resolve_target<'a>(
+// ---------------------------------------------------------------------------
+// Create: git-wt add [BRANCH] [flags]
+// ---------------------------------------------------------------------------
+
+fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
+    let mut branch: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut dirname: Option<String> = None;
+    let mut parentdir: Option<String> = None;
+    let mut from: Option<String> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-n" | "--name" => {
+                name = Some(it.next().ok_or("--name needs a name")?.clone());
+            }
+            "--dirname" => {
+                dirname = Some(it.next().ok_or("--dirname needs a directory")?.clone());
+            }
+            "-p" | "--parentdir" => {
+                parentdir = Some(it.next().ok_or("--parentdir needs a directory")?.clone());
+            }
+            "--from" => {
+                from = Some(it.next().ok_or("--from needs a ref")?.clone());
+            }
+            s if s.starts_with("--name=") => name = Some(s["--name=".len()..].to_string()),
+            s if s.starts_with("--dirname=") => {
+                dirname = Some(s["--dirname=".len()..].to_string())
+            }
+            s if s.starts_with("--parentdir=") => {
+                parentdir = Some(s["--parentdir=".len()..].to_string())
+            }
+            s if s.starts_with("--from=") => from = Some(s["--from=".len()..].to_string()),
+            s if s.starts_with('-') && s != "-" => {
+                return Err(format!("unknown option '{s}'\nTry 'git-wt --help'"));
+            }
+            s => {
+                if branch.is_some() {
+                    return Err("too many arguments\nTry 'git-wt --help'".into());
+                }
+                branch = Some(s.to_string());
+            }
+        }
+    }
+
+    if name.is_some() && dirname.is_some() {
+        return Err("--name and --dirname conflict".into());
+    }
+    if let Some(n) = &name {
+        if n.is_empty() {
+            return Err("--name cannot be empty".into());
+        }
+    }
+    if let Some(d) = &dirname {
+        if d.is_empty() {
+            return Err("--dirname cannot be empty".into());
+        }
+    }
+
+    // No branch -> interactive picker over local branches.
+    let branch = match branch {
+        Some(b) => b,
+        None => pick_branch(root)?,
+    };
+
+    let dir = match resolve_add_path(
+        root,
+        &branch,
+        name.as_deref(),
+        dirname.as_deref(),
+        parentdir.as_deref(),
+    )? {
+        Some(d) => d,
+        None => {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+    };
+
+    if dir.exists() {
+        return Err(format!("{} already exists", dir.display()));
+    }
+
+    // Refuse to point a new worktree at a branch already checked out; git
+    // shares one ref between worktrees, so the two HEADs would drift.
+    if let Some(w) = worktrees(root)?
+        .into_iter()
+        .find(|w| w.branch.as_deref() == Some(branch.as_str()))
+    {
+        return Err(format!(
+            "branch '{branch}' already checked out at {}",
+            w.path.display()
+        ));
+    }
+
+    let has_local = git_quiet(root, &["show-ref", "--verify", &format!("refs/heads/{branch}")]);
+    let has_remote = git_quiet(
+        root,
+        &["show-ref", "--verify", &format!("refs/remotes/origin/{branch}")],
+    );
+
+    // --from only affects creating a NEW branch; if the branch already exists
+    // it is silently overridden, so warn + confirm.
+    if from.is_some() && (has_local || has_remote) {
+        if !confirm(&format!(
+            "branch '{branch}' already exists; --from ignored. Continue? [y/N] "
+        ))? {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let from_ref = from.as_deref().unwrap_or("HEAD");
+    let dir_s = dir.to_string_lossy().to_string();
+    let mut argv: Vec<String> = vec!["worktree".into(), "add".into()];
+
+    if has_local {
+        eprintln!("Checking out existing local branch '{branch}'");
+        argv.push(dir_s.clone());
+        argv.push(branch.clone());
+    } else if has_remote {
+        eprintln!("Tracking remote branch 'origin/{branch}'");
+        argv.extend(["--track".into(), "-b".into(), branch.clone()]);
+        argv.push(dir_s.clone());
+        argv.push(format!("origin/{branch}"));
+    } else {
+        if !confirm(&format!(
+            "Branch '{branch}' does not exist. Create it from '{from_ref}'? [y/N] "
+        ))? {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+        eprintln!("Creating new branch '{branch}' from '{from_ref}'");
+        argv.extend(["-b".into(), branch.clone()]);
+        argv.push(dir_s.clone());
+        argv.push(from_ref.into());
+    }
+
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    git_run(root, &refs)?;
+
+    // `add` is a pass-through in the wrapper (no cd), so the path is status.
+    eprintln!("{dir_s}");
+    Ok(())
+}
+
+/// Resolve the worktree directory for `add`. Returns `Ok(None)` when the user
+/// declines a warn-and-confirm (an override), which the caller treats as an
+/// abort rather than an error.
+fn resolve_add_path(
     root: &Path,
-    trees: &'a [Worktree],
-    target: &str,
-) -> Result<&'a Worktree, String> {
-    // A plain number selects by position in `git-wt list`.
-    if let Ok(n) = target.parse::<usize>() {
-        if n == 0 || n > trees.len() {
-            return Err(format!(
-                "no worktree #{n}; there are {} (see 'git-wt list')",
-                trees.len()
-            ));
-        }
-        return Ok(&trees[n - 1]);
-    }
+    branch: &str,
+    name: Option<&str>,
+    dirname: Option<&str>,
+    parentdir: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let repo = root
+        .file_name()
+        .ok_or("cannot determine repo folder name")?
+        .to_string_lossy()
+        .to_string();
+    let default_parent = root.parent().ok_or("repo root has no parent directory")?;
 
-    // A path is unambiguous, so it wins over a branch name.
-    let as_path = canon(Path::new(target));
-    if let Some(w) = trees.iter().find(|w| canon(&w.path) == as_path) {
-        return Ok(w);
-    }
-
-    let by_branch: Vec<&Worktree> = trees
-        .iter()
-        .filter(|w| w.branch.as_deref() == Some(target))
-        .collect();
-    if by_branch.len() > 1 {
-        let mut msg = format!("branch '{target}' has {} worktrees:\n", by_branch.len());
-        for w in &by_branch {
-            msg.push_str(&format!("  {}\n", w.path.display()));
-        }
-        msg.push_str("hint: pass the number from 'git-wt list' or a path");
-        return Err(msg);
-    }
-    if let Some(w) = by_branch.first() {
-        return Ok(w);
-    }
-
-    if let Ok(generated) = worktree_path(root, target) {
-        if let Some(w) = trees.iter().find(|w| canon(&w.path) == canon(&generated)) {
-            return Ok(w);
-        }
-    }
-    if let Ok(named) = custom_path(root, target) {
-        if let Some(w) = trees.iter().find(|w| canon(&w.path) == canon(&named)) {
-            return Ok(w);
+    // --dirname with a '/' is a path: sanitize skipped, -p ignored.
+    if let Some(d) = dirname {
+        if d.contains('/') {
+            if parentdir.is_some()
+                && !confirm(
+                    "--parentdir ignored because --dirname is a path. Continue? [y/N] ",
+                )?
+            {
+                return Ok(None);
+            }
+            let p = Path::new(d);
+            if p.is_absolute() {
+                return Ok(Some(p.to_path_buf()));
+            }
+            return Ok(Some(default_parent.join(p)));
         }
     }
 
-    Err(format!("no worktree for '{target}' (see 'git-wt list')"))
+    let parent = match parentdir {
+        Some(p) => PathBuf::from(p),
+        None => default_parent.to_path_buf(),
+    };
+    let leaf = match (name, dirname) {
+        (Some(n), _) => format!("{repo}-{}", sanitize(n)),
+        (_, Some(d)) => sanitize(d),
+        _ => format!("{repo}-{}", sanitize(branch)),
+    };
+    Ok(Some(parent.join(leaf)))
 }
 
 // ---------------------------------------------------------------------------
-// Branch picker (no <branch> given)
+// Branch picker (no BRANCH given to `add`)
 // ---------------------------------------------------------------------------
 
 /// Choose a local branch interactively. Prefers fzf's search filter; falls
@@ -502,7 +586,8 @@ fn number_pick(items: &[&str]) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 /// Print a prompt to stderr and read a yes/no answer from stdin. Requires the
-/// user to type and press Enter; empty or anything but y/yes is No.
+/// user to type and press Enter; empty or anything but y/yes is No. EOF / no
+/// tty is No.
 fn confirm(prompt: &str) -> Result<bool, String> {
     eprint!("{prompt}");
     std::io::stderr().flush().ok();
@@ -521,34 +606,6 @@ fn confirm(prompt: &str) -> Result<bool, String> {
 // Paths and naming
 // ---------------------------------------------------------------------------
 
-/// `<parent>/<repo-folder>-<sanitized-branch>`
-fn worktree_path(root: &Path, branch: &str) -> Result<PathBuf, String> {
-    let name = root
-        .file_name()
-        .ok_or("cannot determine repo folder name")?
-        .to_string_lossy();
-    let parent = root.parent().ok_or("repo root has no parent directory")?;
-    Ok(parent.join(format!("{name}-{}", sanitize(branch))))
-}
-
-/// `--name` target. A bare name is a sibling of the repo root; anything
-/// containing a separator is taken as a path, relative to the cwd.
-fn custom_path(root: &Path, name: &str) -> Result<PathBuf, String> {
-    if name.is_empty() {
-        return Err("--name cannot be empty".into());
-    }
-    let p = Path::new(name);
-    if name.contains('/') {
-        if p.is_absolute() {
-            return Ok(p.to_path_buf());
-        }
-        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        return Ok(cwd.join(p));
-    }
-    let parent = root.parent().ok_or("repo root has no parent directory")?;
-    Ok(parent.join(name))
-}
-
 /// Collapse path-hostile characters to single dashes; trim leading/trailing.
 fn sanitize(branch: &str) -> String {
     let mut out = String::with_capacity(branch.len());
@@ -566,12 +623,6 @@ fn sanitize(branch: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
-}
-
-/// Canonical path for comparison; falls back to the input when it can't be
-/// resolved (e.g. it doesn't exist), so equal paths still compare equal.
-fn canon(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn label(w: &Worktree) -> String {
@@ -698,20 +749,95 @@ mod tests {
     }
 
     #[test]
-    fn worktree_path_is_sibling() {
-        let p = worktree_path(Path::new("/code/myapp"), "feature/login").unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp-feature-login"));
+    fn add_path_default_is_sibling() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/myapp-feat-x"));
     }
 
     #[test]
-    fn custom_name_bare_is_sibling() {
-        let p = custom_path(Path::new("/code/myapp"), "myapp-review").unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp-review"));
+    fn add_path_name_is_suffix() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", Some("test"), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/myapp-test"));
     }
 
     #[test]
-    fn custom_name_absolute_is_verbatim() {
-        let p = custom_path(Path::new("/code/myapp"), "/tmp/scratch").unwrap();
+    fn add_path_dirname_is_whole_leaf() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("test"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/test"));
+    }
+
+    #[test]
+    fn add_path_parentdir_overrides() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, Some("/work"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/work/myapp-feat-x"));
+    }
+
+    #[test]
+    fn add_path_dirname_absolute_is_verbatim() {
+        let p =
+            resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("/tmp/scratch"), None)
+                .unwrap()
+                .unwrap();
         assert_eq!(p, PathBuf::from("/tmp/scratch"));
+    }
+
+    #[test]
+    fn add_path_dirname_relative_path_is_parent_relative() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("sub/test"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/sub/test"));
+    }
+
+    #[test]
+    fn subseq_matches_in_order() {
+        assert!(is_subseq("feature-login", "flogin"));
+        assert!(is_subseq("feature-login", "feat"));
+        assert!(!is_subseq("feature-login", "zzz"));
+        assert!(!is_subseq("abc", "cba"));
+    }
+
+    #[test]
+    fn branch_like_detection() {
+        assert!(branch_like("feat/x"));
+        assert!(branch_like("feat-x"));
+        assert!(!branch_like("lsit"));
+        assert!(!branch_like("foo bar"));
+    }
+
+    #[test]
+    fn check_index_bounds() {
+        assert_eq!(check_index(1, 3), Ok(0));
+        assert_eq!(check_index(3, 3), Ok(2));
+        assert_eq!(check_index(0, 3), Err("no worktree #0".into()));
+        assert_eq!(
+            check_index(4, 3),
+            Err("no worktree #4; there are 3 (see 'git-wt list')".into())
+        );
+    }
+
+    #[test]
+    fn unknown_command_messages() {
+        assert_eq!(
+            unknown_command_msg("show"),
+            "unknown command 'show'; use 'git-wt 1 path'"
+        );
+        assert_eq!(
+            unknown_command_msg("remove"),
+            "unknown command 'remove'; use 'git-wt 1 remove'"
+        );
+        assert_eq!(
+            unknown_command_msg("feat/x"),
+            "unknown command 'feat/x'; did you mean 'add feat/x'?"
+        );
+        assert_eq!(unknown_command_msg("lsit"), "unknown command 'lsit'");
     }
 }

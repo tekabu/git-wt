@@ -1,12 +1,16 @@
 # git-wt
 
-Create git worktrees in a sibling directory named `<repo-folder>-<branch>`.
+Create and manage git worktrees in sibling directories named
+`<repo-folder>-<branch>`.
 
 Installed on PATH as `git-wt`, so it also works as `git wt`.
 
 ```
 ~/code/myapp  +  feature/login  ->  ~/code/myapp-feature-login
 ```
+
+Grammar is **target-first** for existing worktrees (`git-wt <N> <action>`) with
+an explicit `add` verb for creation.
 
 ## Install
 
@@ -21,116 +25,123 @@ Runs `cargo install`, dropping the binary in `~/.cargo/bin`. Make sure
 `~/.cargo/bin` is on your `PATH`. If another `git-wt` earlier on `PATH` shadows
 the installed one, the script warns and suggests removing or symlinking it.
 
+### `git-wt` (binary) vs `wt` (wrapper)
+
+Two names, one tool, **one behavioral difference: `cd`.** A binary cannot change
+its parent shell's directory, so the binary always *prints* a path; the `wt`
+shell function *cd's* using that path.
+
+|  | `git-wt` (binary) | `wt` (shell function) |
+|---|---|---|
+| `switch` / bare `N` | prints the path | **cd's** into it |
+| `remove` | prints main path | cd's back to main after removal |
+| everything else | identical | identical (pass-through) |
+| Use for | **scripting** / `$(...)` | **interactive** daily use |
+
+- **Interactive:** run `./install.sh --alias wt`, then use `wt`. `wt 1` drops
+  you in the worktree; `wt 1 remove` returns you to main.
+- **Scripts:** call `git-wt` directly. `dir=$(git-wt 1 path)`.
+
 `--alias <name>` installs a shell function of that name into your rc
 (`~/.zshrc`, `~/.bashrc`, or `~/.profile`) inside a managed block, refreshed on
-reinstall. The function runs `git-wt` for you and `cd`s into the worktree on
-create/`show`, and back to the main worktree after `remove` — something a bare
-binary cannot do (a child process can't change its parent shell's directory).
+reinstall.
 
 ## Usage
 
 ```
-git-wt <branch> [base-ref]   Create a worktree for <branch>
-git-wt                       Pick a branch interactively (fzf, else a list)
-git-wt list                  List worktrees, numbered from 1
-git-wt show <N>              Print worktree #N's path (for cd)
-git-wt remove <N|branch>     Remove a worktree; N is from 'list'
+git-wt                       List worktrees, numbered from 1
+git-wt list [SEARCH]         List, optionally fuzzy-filtered (indices stay put)
+git-wt <N>                   == git-wt <N> switch
+git-wt <N> switch            cd into worktree N (alias: cd)
+git-wt <N> path              Print worktree N's path only (alias: show)
+git-wt <N> remove [-y] [-f]  Remove worktree N
+git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
+git-wt version
 git-wt --help
-git-wt --version
 ```
 
-Aliases: `ls` = `list`, `rm` = `remove`, `go` / `cd` = `show`.
+Aliases: `ls` = `list`, `rm` = `remove`, `cd` = `switch`, `show` = `path`.
 
-### Options
+### Options (create)
 
 ```
--n, --name <dir>   Create: override the worktree directory name
--s, --show         Create: print the new worktree path on stdout (for cd)
--f, --force        Remove: discard uncommitted changes
--h, --help         Show this help
--V, --version      Show version
+-n, --name NAME        Suffix only -> leaf = <repo>-NAME
+    --dirname DIR       Whole leaf, verbatim (sanitized); with '/' = a path
+-p, --parentdir DIR    Parent dir (default: primary worktree's parent)
+    --from REF          Base ref for a NEW branch (default: current HEAD)
 ```
 
-`--name` and `--show` apply to create only; `--force` to remove only.
+`-y` skips the remove confirmation; `-f`/`--force` discards uncommitted changes.
+They are independent.
 
-Prompts appear `[y/N]` when creating a branch that does not exist, and before
-`remove`. Type `y` (or `yes`) and press Enter to proceed; anything else —
-including a bare Enter — aborts.
+Prompts appear `[y/N]` when creating a branch that does not exist, before
+`remove`, and whenever a flag is silently overridden. Type `y` (or `yes`) and
+Enter to proceed; anything else — including bare Enter — aborts.
+
+## List
+
+`git-wt` with no arguments lists worktrees numbered from 1. `git-wt list
+SEARCH` fuzzy-filters that list; the **numbers stay the original indices**, so
+`git-wt <N> remove` always means the same tree regardless of any filter. No
+match is an error (exit 1).
+
+## Switch / path
+
+```sh
+wt 1                     # cd into worktree 1
+git-wt 1 path            # just print its path
+cd "$(git-wt 1 path)"    # equivalent by hand
+```
+
+`path` prints the path plus a single trailing newline, nothing else. All status
+text goes to stderr.
 
 ## Create
 
-Directory is a sibling of the repo root, named `<repo-folder>-<branch>`, with
-`/`, ` `, `:` and `\` collapsed to `-`. `--name` overrides it; a bare name is
-still a sibling, a name containing `/` is a path as given.
-
 ```sh
-git-wt feature/login                       # -> ../myapp-feature-login
-git-wt feature/login --name myapp-review
-git-wt feature/login --name /tmp/scratch
-git-wt feature/login --show                # print the path so a shell can cd
+git-wt add feature/login                 # -> ../myapp-feature-login
+git-wt add feature/login --name review   # -> ../myapp-review
+git-wt add feature/login --dirname scratch   # -> ../scratch
+git-wt add feature/login -p ~/work       # -> ~/work/myapp-feature-login
+git-wt add feature/login --from develop  # new branch off develop
+git-wt add                               # pick a branch interactively
 ```
+
+Directory is a sibling of the repo root, named `<repo-folder>-<branch>`, with
+`/`, ` `, `:` and `\` collapsed to `-`. `--name` replaces the suffix only;
+`--dirname` replaces the whole leaf; `--dirname` containing `/` is taken as a
+path. `--name` and `--dirname` together is an error.
 
 Branch resolution, in order:
 
 1. Local branch exists — check it out
 2. `origin/<branch>` exists — create a tracking branch from it
-3. Neither — prompt `[y/N]`, then create it from `[base-ref]` (default `HEAD`)
+3. Neither — prompt `Branch '<b>' does not exist. Create it from '<from>'?
+   [y/N]`, then create from `--from` (default `HEAD`)
 
-Create refuses when:
-
-- the **target directory already exists**, or
-- the **branch is already checked out** in another worktree (git shares one
-  ref between worktrees, so the two HEADs would drift).
+Create refuses when the target directory already exists, or the branch is
+already checked out in another worktree.
 
 ### Pick a branch
 
-With no `<branch>`, git-wt opens an interactive picker over your local
-branches. It uses [`fzf`](https://github.com/junegunn/fzf) for a live search
-filter when installed, otherwise prints a numbered list and reads a number.
-
-```sh
-git-wt          # choose a branch, then it creates the worktree
-```
+With no `<branch>`, `add` opens an interactive picker over your local branches:
+[`fzf`](https://github.com/junegunn/fzf) for a live search filter when
+installed, otherwise a numbered list read from stdin. Flags still apply, so
+`git-wt add --name review` picks a branch and gives the worktree a custom
+suffix.
 
 ## Remove
 
 ```sh
-git-wt remove 2                 # by number from 'git-wt list'
-git-wt remove feature/login     # by branch (only if a worktree has it)
-git-wt remove --force 2         # also discard uncommitted changes
+git-wt 2 remove             # prompt, then remove worktree 2
+git-wt 2 remove -y          # no prompt
+git-wt 2 remove -f          # also discard uncommitted changes
 ```
 
 Removes the worktree directory and prunes git's admin data; the branch is left
-alone. An invalid number, or a branch with no worktree, is an error. It prompts
-before removing, and on success prints the **main worktree path** on stdout so
-a shell can cd back to it — handy when you just removed the tree you were in.
-
-## cd into a worktree
-
-Only `show <N>`, `create --show`, and `remove` print a path — alone, on stdout
-— so you can `cd`. All status text goes to stderr.
-
-```sh
-cd "$(git-wt show 2)"
-cd "$(git-wt feature/login --show)"
-cd "$(git-wt remove 2)"          # back to the main worktree
-```
-
-The easiest way is to let `install.sh --alias <name>` install a shell function
-that does the `cd` for you (see [Install](#install)). It is equivalent to:
-
-```sh
-wt() {
-  case "${1:-}" in
-    -h|--help|-V|--version|list|ls|-l|--list) git-wt "$@"; return $? ;;
-    show|go|cd|remove|rm) local d; d="$(git-wt "$@")" || return $?; [ -n "$d" ] && cd "$d" ;;
-    *) local d; d="$(git-wt --show "$@")" || return $?; [ -n "$d" ] && cd "$d" ;;
-  esac
-}
-```
-
-A binary cannot change its parent shell's directory, so the `cd` must live in
-a shell function like this.
+alone. Refuses to remove the main/bare worktree. On success prints the main
+worktree path (so the `wt` wrapper can cd you back — handy when you just removed
+the tree you were standing in).
 
 ## Build
 

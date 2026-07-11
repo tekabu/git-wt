@@ -763,7 +763,7 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
 
     // One-line summary on stderr (never stdout) so interactive users get
     // context without polluting the captured path.
-    let origin = if has_local {
+    let summary = if has_local {
         format!("branch {branch}")
     } else if let Some(r) = &remote {
         format!("branch {branch} tracking {r}/{branch}")
@@ -772,7 +772,7 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     };
     let leaf = leaf_of(&dir);
     let on = std::io::stderr().is_terminal() && color_enabled(true);
-    eprintln!("{} {leaf}  ({origin})", paint("Created", GREEN, on));
+    eprintln!("{} {leaf}  ({summary})", paint("Created", GREEN, on));
 
     // Print the new worktree path on stdout (alone) so scripts can capture it:
     // `dir=$(git-wt add feat/x)`. Status/progress went to stderr.

@@ -9,8 +9,50 @@ Installed on PATH as `git-wt`, so it also works as `git wt`.
 ~/code/myapp  +  feature/login  ->  ~/code/myapp-feature-login
 ```
 
-Grammar is **target-first** for existing worktrees (`git-wt <N> <action>`) with
-an explicit `add` verb for creation.
+## What this gives you (the non-technical version)
+
+Ever needed to quickly check something on another branch, fix an urgent bug, or
+try an experiment — but your current work isn’t ready to commit? Normally you
+have to stop, save everything, switch branches, and remember where you left off.
+
+`git-wt` gives you **separate project folders for each branch**, all sharing one
+Git history so nothing is duplicated. Jump between them instantly, keep your
+main work untouched, and throw away experiments safely.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'monospace'}}}%%
+flowchart LR
+    subgraph Before["Without git-wt"]
+        A[Your project folder] -->|switch to bugfix| B[(stashed changes)]
+        B -->|switch back| A
+        A -->|switch to experiment| C[(more stashed changes)]
+        C -->|now where was I?| A
+    end
+
+    subgraph After["With git-wt"]
+        M[myapp]
+        F[myapp-bugfix-123]
+        E[myapp-try-new-ui]
+        M <--->|wt add bugfix/123| F
+        M <--->|wt add try/new-ui| E
+        M <--->|wt 1| F
+        F <--->|wt 1 remove| M
+    end
+
+    Before -->|replace switching with separate folders| After
+```
+
+### What you can do
+
+| You want to… | Just type | What happens |
+|---|---|---|
+| Start a new task on its own branch | `wt add feature/login` | A new folder appears next door, already on that branch |
+| Jump back to another task | `wt 1` | Your terminal moves to that task’s folder |
+| Peek at a branch without disturbing your current work | `git-wt add bugfix/123 --stay` | The folder is created; you stay where you are |
+| Clean up a finished task | `wt 1 remove` | The extra folder disappears; the branch stays in Git |
+
+No more stashing, no more “wait, which branch was I on?”, no more half-finished
+work blocking a quick fix.
 
 ## Install
 

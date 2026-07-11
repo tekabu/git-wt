@@ -75,8 +75,15 @@ cat >> "$tmp" <<EOF
 # Managed by git-wt install.sh; edits here are overwritten on reinstall.
 $alias_name() {
   case "\${1:-}" in
-    ""|-h|--help|-V|--version|version|help|list|ls|add)
+    ""|-h|--help|-V|--version|version|help|list|ls)
       git-wt "\$@"; return \$? ;;
+    add)
+      # Create, then cd into the new worktree — unless --stay was passed.
+      local stay=0 a
+      for a in "\$@"; do [ "\$a" = "--stay" ] && stay=1; done
+      local d; d="\$(git-wt "\$@")" || return \$?
+      [ "\$stay" = 0 ] && [ -n "\$d" ] && cd "\$d"
+      return 0 ;;
   esac
   # <N> [action]: switch (default) & remove cd the shell; path/show print.
   case "\${2:-}" in

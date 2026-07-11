@@ -17,7 +17,9 @@ git-wt — worktrees in sibling directories named <repo>-<branch>
 
 USAGE:
     git-wt                       List worktrees, numbered from 1
-    git-wt list [SEARCH]         List, optional fuzzy filter (indices stay put)
+    git-wt list [SEARCH] [--col 1,2,3]
+                                 List, optional fuzzy filter; --col picks/orders
+                                 columns (1=id, 2=branch, 3=dir)
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
@@ -34,6 +36,7 @@ ADD OPTIONS:
     -p, --parentdir DIR   Parent dir (default: primary worktree's parent)
         --from REF        Base ref for a NEW branch
                           (default: the branch of the worktree you run from)
+        --stay            wrapper: do NOT cd into the new worktree
 
 REMOVE OPTIONS:
     -y                    Skip the confirmation prompt
@@ -88,7 +91,16 @@ fn run() -> Result<(), String> {
     match args.first().map(String::as_str) {
         None => {
             let root = repo_root()?;
-            return cmd_list(&root, None);
+            return list_from_args(&root, &[]);
+        }
+        // A leading list flag with no `list` word: `git-wt --col 1,2`.
+        Some("--col") | Some("-c") => {
+            let root = repo_root()?;
+            return list_from_args(&root, &args);
+        }
+        Some(s) if s.starts_with("--col=") => {
+            let root = repo_root()?;
+            return list_from_args(&root, &args);
         }
         Some("-h") | Some("--help") | Some("help") => {
             print!("{HELP}");
@@ -104,11 +116,8 @@ fn run() -> Result<(), String> {
     let first = &args[0];
 
     if first == "list" || first == "ls" {
-        if args.len() > 2 {
-            return Err("too many arguments\nTry 'git-wt --help'".into());
-        }
         let root = repo_root()?;
-        return cmd_list(&root, args.get(1).map(String::as_str));
+        return list_from_args(&root, &args[1..]);
     }
 
     if first == "add" {
@@ -205,7 +214,34 @@ fn check_index(n: usize, len: usize) -> Result<usize, String> {
 // Commands
 // ---------------------------------------------------------------------------
 
-fn cmd_list(root: &Path, search: Option<&str>) -> Result<(), String> {
+/// Parse `list` arguments (an optional SEARCH plus `--col`) then list. Shared
+/// by `list`/`ls`, the no-args default, and a bare leading `--col`.
+fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
+    let mut search: Option<String> = None;
+    let mut cols: Option<Vec<usize>> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--col" | "-c" => {
+                let v = it.next().ok_or("--col needs columns, e.g. 1,2,3")?;
+                cols = Some(parse_cols(v)?);
+            }
+            s if s.starts_with("--col=") => cols = Some(parse_cols(&s["--col=".len()..])?),
+            s if s.starts_with('-') && s != "-" => {
+                return Err(format!("unknown option '{s}'\nTry 'git-wt --help'"));
+            }
+            s => {
+                if search.is_some() {
+                    return Err("too many arguments\nTry 'git-wt --help'".into());
+                }
+                search = Some(s.to_string());
+            }
+        }
+    }
+    cmd_list(root, search.as_deref(), cols)
+}
+
+fn cmd_list(root: &Path, search: Option<&str>, cols: Option<Vec<usize>>) -> Result<(), String> {
     let trees = worktrees(root)?;
 
     // Keep the original 1-based index so `git-wt <N> ...` means the same tree
@@ -225,25 +261,71 @@ fn cmd_list(root: &Path, search: Option<&str>) -> Result<(), String> {
         }
     }
 
-    let width = rows
-        .iter()
-        .map(|(_, w)| label(w).chars().count())
-        .max()
-        .unwrap_or(0);
-    // Right-align to the widest possible index so filtered output still lines up.
+    // Columns to show, in order: 1 = id, 2 = branch, 3 = dir (full path).
+    let cols = cols.unwrap_or_else(|| vec![1, 2, 3]);
+    // Right-align the index to the widest possible so filtered output lines up.
     let numw = trees.len().to_string().len();
 
-    for (i, w) in rows {
-        println!(
-            "{:>numw$}  {:<width$}  {}",
-            i + 1,
-            label(w),
-            w.path.display(),
-            numw = numw,
-            width = width,
-        );
+    let cells: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(i, w)| {
+            cols.iter()
+                .map(|c| match c {
+                    1 => format!("{:>numw$}", i + 1, numw = numw),
+                    2 => label(w),
+                    _ => w.path.display().to_string(),
+                })
+                .collect()
+        })
+        .collect();
+
+    // Per-column width so ragged columns still align.
+    let mut widths = vec![0usize; cols.len()];
+    for row in &cells {
+        for (k, cell) in row.iter().enumerate() {
+            widths[k] = widths[k].max(cell.chars().count());
+        }
+    }
+
+    for row in &cells {
+        let mut line = String::new();
+        let last = row.len() - 1;
+        for (k, cell) in row.iter().enumerate() {
+            if k > 0 {
+                line.push_str("  ");
+            }
+            // Pad every column but the last (no trailing whitespace).
+            if k == last {
+                line.push_str(cell);
+            } else {
+                line.push_str(&format!("{:<w$}", cell, w = widths[k]));
+            }
+        }
+        println!("{line}");
     }
     Ok(())
+}
+
+/// Parse `--col` value like "1,2,3" into column ids. 1=id, 2=branch, 3=dir.
+fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
+    let mut v = Vec::new();
+    for part in s.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let n: usize = p
+            .parse()
+            .map_err(|_| format!("bad column '{p}' (use 1=id, 2=branch, 3=dir)"))?;
+        if n < 1 || n > 3 {
+            return Err(format!("no column {n} (use 1=id, 2=branch, 3=dir)"));
+        }
+        v.push(n);
+    }
+    if v.is_empty() {
+        return Err("--col needs columns, e.g. 1,2,3".into());
+    }
+    Ok(v)
 }
 
 /// Case-insensitive subsequence match over "<label> <path>".
@@ -281,6 +363,14 @@ fn cmd_remove(
         return Err("refusing to remove the main worktree".into());
     }
 
+    // Was the shell standing inside the tree we're about to remove? Capture it
+    // before removal (canonicalize needs the dir to still exist). Only then does
+    // a wrapper need to cd back to main; otherwise it should stay put.
+    let inside = match std::env::current_dir() {
+        Ok(cwd) => canon(&cwd).starts_with(canon(&wanted.path)),
+        Err(_) => false,
+    };
+
     let path_s = wanted.path.to_string_lossy().to_string();
     if !yes
         && !confirm(&format!(
@@ -309,10 +399,13 @@ fn cmd_remove(
     git_run(root, &["worktree", "prune"])?;
     eprintln!("Removed {path_s}");
 
-    // Print the main worktree path so a wrapper can cd back to it — you may
-    // have been standing inside the tree just removed.
-    if let Some(main) = trees.first() {
-        println!("{}", main.path.display());
+    // Only when the shell was inside the removed tree does its cwd now dangle,
+    // so print the main path for a wrapper to cd back. Removing some other tree
+    // leaves you where you are — print nothing, so the wrapper stays put.
+    if inside {
+        if let Some(main) = trees.first() {
+            println!("{}", main.path.display());
+        }
     }
     Ok(())
 }
@@ -351,6 +444,9 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
                 parentdir = Some(s["--parentdir=".len()..].to_string())
             }
             s if s.starts_with("--from=") => from = Some(s["--from=".len()..].to_string()),
+            // A hint for the `wt` wrapper (stay put instead of cd'ing into the
+            // new worktree). The binary never cd's, so it just accepts it.
+            "--stay" => {}
             s if s.starts_with('-') && s != "-" => {
                 return Err(format!("unknown option '{s}'\nTry 'git-wt --help'"));
             }
@@ -521,6 +617,9 @@ fn resolve_add_path(
 
 /// Choose a local branch interactively. Prefers fzf's search filter; falls
 /// back to a numbered prompt when fzf is not installed.
+///
+/// Branches already checked out in a worktree can't be added again, so they are
+/// dropped from the selectable list and shown separately, for reference.
 fn pick_branch(root: &Path) -> Result<String, String> {
     let out = git_stdout(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
     let branches: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
@@ -528,10 +627,38 @@ fn pick_branch(root: &Path) -> Result<String, String> {
         return Err("no local branches to choose from".into());
     }
 
-    if let Some(sel) = fzf_pick(&branches)? {
+    let trees = worktrees(root)?;
+    let mut selectable: Vec<&str> = Vec::new();
+    let mut checked_out: Vec<(&str, &Path)> = Vec::new();
+    for b in &branches {
+        match trees.iter().find(|w| w.branch.as_deref() == Some(*b)) {
+            Some(w) => checked_out.push((*b, w.path.as_path())),
+            None => selectable.push(*b),
+        }
+    }
+
+    if !checked_out.is_empty() {
+        eprintln!("Already checked out (not selectable):");
+        let w = checked_out
+            .iter()
+            .map(|(b, _)| b.chars().count())
+            .max()
+            .unwrap_or(0);
+        for (b, p) in &checked_out {
+            eprintln!("  {:<w$}  {}", b, p.display(), w = w);
+        }
+        // Separator between the reference list and the selectable choices.
+        eprintln!("{}", "─".repeat(48));
+    }
+
+    if selectable.is_empty() {
+        return Err("no branches available to add (all are checked out)".into());
+    }
+
+    if let Some(sel) = fzf_pick(&selectable)? {
         return Ok(sel);
     }
-    number_pick(&branches)
+    number_pick(&selectable)
 }
 
 /// Run fzf over `items`. Returns Ok(None) when fzf is not on PATH so the caller
@@ -567,11 +694,12 @@ fn fzf_pick(items: &[&str]) -> Result<Option<String>, String> {
 
 /// Numbered fallback picker; reads a number from stdin.
 fn number_pick(items: &[&str]) -> Result<String, String> {
+    eprintln!("Available branches:");
     let w = items.len().to_string().len();
     for (i, b) in items.iter().enumerate() {
-        eprintln!("{:>w$}  {}", i + 1, b, w = w);
+        eprintln!("  {:>w$}  {}", i + 1, b, w = w);
     }
-    eprint!("Select a branch number (Enter to cancel): ");
+    eprint!("Select a branch [1-{}], or Enter to cancel: ", items.len());
     std::io::stderr().flush().ok();
 
     let mut line = String::new();
@@ -631,6 +759,12 @@ fn sanitize(branch: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
+}
+
+/// Canonical path for comparison; falls back to the input when it can't be
+/// resolved (e.g. it no longer exists), so equal paths still compare equal.
+fn canon(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn label(w: &Worktree) -> String {

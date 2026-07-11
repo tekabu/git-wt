@@ -34,13 +34,16 @@ shell function *cd's* using that path.
 |  | `git-wt` (binary) | `wt` (shell function) |
 |---|---|---|
 | `switch` / bare `N` | prints the path | **cd's** into it |
+| `add` | prints the new path | **cd's** into it (unless `--stay`) |
 | `remove` | prints main path | cd's back to main after removal |
 | everything else | identical | identical (pass-through) |
 | Use for | **scripting** / `$(...)` | **interactive** daily use |
 
 - **Interactive:** run `./install.sh --alias wt`, then use `wt`. `wt 1` drops
-  you in the worktree; `wt 1 remove` returns you to main.
-- **Scripts:** call `git-wt` directly. `dir=$(git-wt 1 path)`.
+  you in the worktree; `wt add feat/x` creates it and drops you in; `wt 1
+  remove` returns you to main.
+- **Scripts:** call `git-wt` directly. `dir=$(git-wt 1 path)`,
+  `dir=$(git-wt add feat/x)`.
 
 `--alias <name>` installs a shell function of that name into your rc
 (`~/.zshrc`, `~/.bashrc`, or `~/.profile`) inside a managed block, refreshed on
@@ -70,6 +73,7 @@ Aliases: `ls` = `list`, `rm` = `remove`, `cd` = `switch`, `show` = `path`.
 -p, --parentdir DIR    Parent dir (default: primary worktree's parent)
     --from REF          Base ref for a NEW branch
                         (default: the branch of the worktree you run from)
+    --stay              wrapper: create but do NOT cd into the new worktree
 ```
 
 `-y` skips the remove confirmation; `-f`/`--force` discards uncommitted changes.
@@ -86,6 +90,16 @@ SEARCH` fuzzy-filters that list; the **numbers stay the original indices**, so
 `git-wt <N> remove` always means the same tree regardless of any filter. No
 match is an error (exit 1).
 
+`--col` picks and orders columns — `1`=id, `2`=branch, `3`=dir (full path):
+
+```sh
+git-wt list --col 2,3        # branch + path, no id
+git-wt list --col 1,2        # id + branch, no path
+git-wt list --col 2          # branch only
+git-wt list --col 3,2,1      # reversed
+git-wt list --col 1,2 feat   # combine with a filter
+```
+
 ## Switch / path
 
 ```sh
@@ -100,13 +114,18 @@ text goes to stderr.
 ## Create
 
 ```sh
-git-wt add feature/login                 # -> ../myapp-feature-login
-git-wt add feature/login --name review   # -> ../myapp-review
-git-wt add feature/login --dirname scratch   # -> ../scratch
-git-wt add feature/login -p ~/work       # -> ~/work/myapp-feature-login
-git-wt add feature/login --from develop  # new branch off develop
-git-wt add                               # pick a branch interactively
+wt add feature/login                  # create -> and cd into ../myapp-feature-login
+wt add feature/login --stay           # create but stay put
+git-wt add feature/login --name review    # -> ../myapp-review
+git-wt add feature/login --dirname scratch  # -> ../scratch
+git-wt add feature/login -p ~/work    # -> ~/work/myapp-feature-login
+git-wt add feature/login --from develop   # new branch off develop
+git-wt add                            # pick a branch interactively
 ```
+
+Through the `wt` wrapper, `add` **cd's you into the new worktree** by default;
+pass `--stay` to create it without moving. The bare `git-wt` binary always just
+prints the new path (for `dir=$(git-wt add feat/x)`).
 
 Directory is a sibling of the repo root, named `<repo-folder>-<branch>`, with
 `/`, ` `, `:` and `\` collapsed to `-`. `--name` replaces the suffix only;
@@ -128,8 +147,11 @@ already checked out in another worktree.
 
 With no `<branch>`, `add` opens an interactive picker over your local branches:
 [`fzf`](https://github.com/junegunn/fzf) for a live search filter when
-installed, otherwise a numbered list read from stdin. Flags still apply, so
-`git-wt add --name review` picks a branch and gives the worktree a custom
+installed, otherwise a numbered list read from stdin. Branches **already checked
+out in a worktree** can't be added again, so they're dropped from the choices
+and listed separately under `Already checked out (not selectable)`. If every
+branch is checked out, the picker errors instead of offering nothing. Flags
+still apply, so `git-wt add --name review` picks a branch and gives it a custom
 suffix.
 
 ## Remove
@@ -141,9 +163,12 @@ git-wt 2 remove -f          # also discard uncommitted changes
 ```
 
 Removes the worktree directory and prunes git's admin data; the branch is left
-alone. Refuses to remove the main/bare worktree. On success prints the main
-worktree path (so the `wt` wrapper can cd you back — handy when you just removed
-the tree you were standing in).
+alone. Refuses to remove the main/bare worktree.
+
+On success it prints the main worktree path **only when you were standing inside
+the tree you just removed** (your cwd now dangles), so the `wt` wrapper cd's you
+back to main. Remove some *other* worktree and it prints nothing — the wrapper
+leaves you exactly where you are.
 
 ## Command reference (all combinations)
 
@@ -162,6 +187,8 @@ Every form the CLI accepts. Examples assume:
 | `git-wt ls` | Alias → same |
 | `git-wt list feat` | List fuzzy-filtered by `feat`; **indices stay original** |
 | `git-wt list zzz` (no match) | Error `no worktree matches 'zzz'`, exit 1 |
+| `git-wt list --col 2,3` | Show only branch + dir columns (1=id, 2=branch, 3=dir) |
+| `git-wt list --col 3,2,1 feat` | Reorder columns; combines with a filter |
 
 ### Target — `git-wt <N> [action]`
 
@@ -194,7 +221,11 @@ Leaf = the last path component; full path = `<parent>/<leaf>`.
 | `add feat/x --dirname sub/test` | `sub/test` | `~/code/sub/test` (path; ignores `-p`) |
 | `add feat/x --dirname /abs/test` | `/abs/test` | `/abs/test` (absolute; ignores `-p`) |
 | `add feat/x --from develop` | `myapp-feat-x` | new branch off `develop` |
+| `add feat/x --stay` | `myapp-feat-x` | create but wrapper does NOT cd in |
 | `add brandnew` (no such branch) | `myapp-brandnew` | prompts, then creates from current branch |
+
+Through the wrapper, `wt add …` cd's into the new worktree (unless `--stay`);
+the `git-wt` binary only prints the path.
 
 ### Create — picker (BRANCH omitted)
 

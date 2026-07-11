@@ -40,6 +40,8 @@ git branch feature/logout
 git branch feature/api
 git branch dirty
 git branch pathtest
+git branch staybr
+git branch insidebr
 
 # A bare origin with a branch that exists ONLY on the remote, so `add` can
 # exercise the tracking-branch path.
@@ -110,6 +112,13 @@ check "add existing local branch"    exit=0 out="$CODE/myapp-feature-login" -- a
 # worktree now exists at index 2
 check "list shows new worktree"      exit=0 out="feature/login" -- list
 check "list filter keeps index"      exit=0 out="2  feature/login" -- list logi
+check "list --col branch only"       exit=0 out="feature/login" -- list --col 2 logi
+check "list --col id+branch"         exit=0 out="2  feature/login" -- list --col 1,2 logi
+check "list --col reorder"           exit=0 out="feature/login  2" -- list --col 2,1 logi
+check "list --col bad number"        exit=1 err="no column 4" -- list --col 4
+check "list --col non-numeric"       exit=1 err="bad column 'x'" -- list --col x
+check "bare --col (no list word)"    exit=0 out="main" -- --col 2
+check "bare -c short flag"           exit=0 out="main" -- -c 1,2
 check "add --name suffix"            exit=0 out="$CODE/myapp-review" -- add feature/logout --name review
 check "add --dirname whole leaf"     exit=0 out="$CODE/scratch2" -- add feature/api --dirname scratch2
 check "add tracks remote-only"       exit=0 out="$CODE/myapp-remote-only" err="Tracking remote branch 'origin/remote-only'" -- add remote-only
@@ -120,6 +129,24 @@ check "add name+dirname conflict"    exit=1 err="--name and --dirname conflict" 
 check "add --name empty"             exit=1 err="--name cannot be empty" -- add x -n ""
 check "add --from needs ref"         exit=1 err="--from needs a ref" -- add x --from
 check "add new branch declined"      exit=0 err="Aborted." in=n -- add nope --dirname np1
+check "add --stay accepted"          exit=0 out="$CODE/stay1" -- add staybr --dirname stay1 --stay
+# Picker hides checked-out branches under a separate section and offers the rest.
+# Cancel the picker (empty stdin) so it prints the section but creates nothing.
+check "picker lists checked-out sep"  exit=1 err="Already checked out (not selectable):" -- add
+check "picker shows a checked-out br"  exit=1 err="feature/login" -- add
+
+# Self-contained: a repo where every branch is checked out -> picker errors.
+FULL="$ROOT/full/app"; mkdir -p "$FULL"
+( cd "$FULL"
+  git init -q; git config user.email t@t; git config user.name t
+  git commit -q --allow-empty -m i; git branch only
+  "$BIN" add only >/dev/null 2>&1 )          # main + only both checked out now
+allco="$(cd "$FULL" && printf '\n' | "$BIN" add 2>&1)"
+if printf '%s' "$allco" | grep -q "all are checked out"; then
+  printf '  \033[32mPASS\033[0m  %s\n' "picker errors when all checked out"; pass=$((pass+1))
+else
+  printf '  \033[31mFAIL\033[0m  %s\n' "picker errors when all checked out"; fail=$((fail+1))
+fi
 
 # --from actually based the new branch on the given ref, not current HEAD.
 if [ "$(git -C "$CODE/ff1" rev-parse HEAD)" = "$(git -C "$APP" rev-parse feature/login)" ]; then
@@ -146,14 +173,26 @@ check "plain unknown no suggest"     exit=1 err="unknown command 'lsit'" -- lsit
 
 # --- remove -----------------------------------------------------------------
 check "remove main refused"          exit=1 err="refusing to remove the main worktree" -- 1 remove -y
-check "remove worktree 2"            exit=0 out="$APP" -- 2 remove -y
+# Removing a tree you are NOT standing in prints nothing (wrapper stays put).
+check "remove other prints nothing"  exit=0 out="" -- 2 remove -y
+
+# Standing INSIDE the removed tree: it prints main so the wrapper cd's back.
+"$BIN" add insidebr --dirname insidewt >/dev/null 2>&1
+iidx="$("$BIN" list | awk '$2=="insidebr"{print $1}')"
+inside_out="$(cd "$CODE/insidewt" && "$BIN" "$iidx" remove -y </dev/null 2>/dev/null)"
+app_phys="$(cd "$APP" && pwd -P)"
+if [ "$inside_out" = "$app_phys" ]; then
+  printf '  \033[32mPASS\033[0m  %s\n' "remove-from-inside prints main"; pass=$((pass+1))
+else
+  printf '  \033[31mFAIL\033[0m  %s  (got '\''%s'\'')\n' "remove-from-inside prints main" "$inside_out"; fail=$((fail+1))
+fi
 
 # -f: a worktree with an untracked file is refused without -f, removed with it.
 "$BIN" add dirty --dirname dirtywt >/dev/null 2>&1
 touch "$CODE/dirtywt/junk.txt"
 didx="$("$BIN" list | awk '$2=="dirty"{print $1}')"
 check "remove dirty refused (no -f)" exit=1 err="modified or untracked files" -- "$didx" remove -y
-check "remove dirty with -f"         exit=0 out="$APP" -- "$didx" remove -y -f
+check "remove dirty with -f"         exit=0 -- "$didx" remove -y -f
 
 # --- meta -------------------------------------------------------------------
 check "version"                      exit=0 out="git-wt" -- version

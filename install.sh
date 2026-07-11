@@ -75,7 +75,7 @@ cat >> "$tmp" <<EOF
 # Managed by git-wt install.sh; edits here are overwritten on reinstall.
 $alias_name() {
   case "\${1:-}" in
-    -h|--help|-V|--version|version|help|list|ls|add)
+    ""|-h|--help|-V|--version|version|help|list|ls|add)
       git-wt "\$@"; return \$? ;;
   esac
   # <N> [action]: switch (default) & remove cd the shell; path/show print.
@@ -100,4 +100,16 @@ else
   echo "Added '$alias_name' to $rc"
 fi
 
-echo "Done. Reload your shell:  exec ${SHELL:-sh}"
+# The binary is already live (the function just calls it). Only the shell
+# function itself needs reloading, and a child process cannot touch its parent
+# shell — so define it in THIS shell with the copy-paste line below.
+cat <<EOF
+Done.
+
+The git-wt binary is active now. To load the '$alias_name' function into your
+current shell without opening a new one, run:
+
+    eval "\$(sed -n '/# >>> git-wt alias >>>/,/# <<< git-wt alias <<</p' '$rc')"
+
+New shells pick it up automatically. (Or reload everything: exec ${SHELL:-sh})
+EOF

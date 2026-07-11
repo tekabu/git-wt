@@ -32,7 +32,8 @@ ADD OPTIONS:
     -n, --name NAME       Suffix only -> leaf = <repo>-NAME
         --dirname DIR     Whole leaf, verbatim (sanitized); with '/' = a path
     -p, --parentdir DIR   Parent dir (default: primary worktree's parent)
-        --from REF        Base ref for a NEW branch (default: current HEAD)
+        --from REF        Base ref for a NEW branch
+                          (default: the branch of the worktree you run from)
 
 REMOVE OPTIONS:
     -y                    Skip the confirmation prompt
@@ -53,10 +54,11 @@ ADD:
     otherwise a numbered prompt.
 
 STDOUT:
-    Only 'switch'/'path' (bare <N>) and 'remove' print a path, alone, on
-    stdout, so a shell wrapper can cd into it. Status text goes to stderr.
+    Only 'switch'/'path' (bare <N>), 'add', and 'remove' print a path, alone,
+    on stdout, so a shell can cd into it or capture it. Status goes to stderr.
 
         cd \"$(git-wt 1 path)\"
+        dir=\"$(git-wt add feature/login)\"
 ";
 
 fn main() {
@@ -158,7 +160,9 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
             if rest.len() > 1 {
                 return Err("too many arguments\nTry 'git-wt --help'".into());
             }
-            // The binary always just prints the path; the `wt` wrapper cd's.
+            // The branch is status, so it goes to stderr; the path is the
+            // stdout contract (`cd "$(git-wt 1 path)"` stays clean).
+            eprintln!("{}", label(&trees[idx]));
             println!("{}", trees[idx].path.display());
             Ok(())
         }
@@ -426,7 +430,10 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
         }
     }
 
-    let from_ref = from.as_deref().unwrap_or("HEAD");
+    // Default base for a NEW branch is the ref checked out where the user is
+    // standing (the current worktree), not the primary's HEAD. `--from` wins.
+    let default_from = current_ref();
+    let from_ref = from.as_deref().unwrap_or(&default_from);
     let dir_s = dir.to_string_lossy().to_string();
     let mut argv: Vec<String> = vec!["worktree".into(), "add".into()];
 
@@ -455,8 +462,9 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     git_run(root, &refs)?;
 
-    // `add` is a pass-through in the wrapper (no cd), so the path is status.
-    eprintln!("{dir_s}");
+    // Print the new worktree path on stdout (alone) so scripts can capture it:
+    // `dir=$(git-wt add feat/x)`. Status/progress went to stderr.
+    println!("{dir_s}");
     Ok(())
 }
 
@@ -654,6 +662,29 @@ fn repo_root() -> Result<PathBuf, String> {
         common
     };
     Ok(root)
+}
+
+/// The ref checked out in the current directory's worktree: the branch name,
+/// or a short commit sha when detached. Falls back to "HEAD" if git can't say.
+fn current_ref() -> String {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(_) => return "HEAD".into(),
+    };
+    if let Ok(b) = git_stdout(&cwd, &["symbolic-ref", "--short", "-q", "HEAD"]) {
+        let b = b.trim();
+        if !b.is_empty() {
+            return b.to_string();
+        }
+    }
+    // Detached HEAD: use the short commit sha.
+    if let Ok(sha) = git_stdout(&cwd, &["rev-parse", "--short", "HEAD"]) {
+        let sha = sha.trim();
+        if !sha.is_empty() {
+            return sha.to_string();
+        }
+    }
+    "HEAD".into()
 }
 
 fn worktrees(root: &Path) -> Result<Vec<Worktree>, String> {

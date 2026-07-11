@@ -839,19 +839,35 @@ fn resolve_add_path(
 /// Branches already checked out in a worktree can't be added again, so they are
 /// dropped from the selectable list and shown separately, for reference.
 fn pick_branch(root: &Path) -> Result<String, String> {
-    let out = git_stdout(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
-    let branches: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    // Sort recently-committed branches to the top so the picker surfaces what
+    // you're likely reaching for. Fetch each branch's relative age in the same
+    // call (tab-delimited) so the numbered picker needs no per-branch git log.
+    let out = git_stdout(
+        root,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)%09%(committerdate:relative)",
+            "refs/heads",
+        ],
+    )?;
+    // Each line is "<branch>\t<age>"; a missing tab leaves the age empty.
+    let branches: Vec<(&str, &str)> = out
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split_once('\t').unwrap_or((l, "")))
+        .collect();
     if branches.is_empty() {
         return Err("no local branches to choose from".into());
     }
 
     let trees = worktrees(root)?;
-    let mut selectable: Vec<&str> = Vec::new();
+    let mut selectable: Vec<(&str, &str)> = Vec::new();
     let mut checked_out: Vec<(&str, &Path)> = Vec::new();
-    for b in &branches {
+    for (b, age) in &branches {
         match trees.iter().find(|w| w.branch.as_deref() == Some(*b)) {
             Some(w) => checked_out.push((*b, w.path.as_path())),
-            None => selectable.push(*b),
+            None => selectable.push((*b, *age)),
         }
     }
 
@@ -870,20 +886,59 @@ fn pick_branch(root: &Path) -> Result<String, String> {
     }
 
     if selectable.is_empty() {
-        return Err("no branches available to add (all are checked out)".into());
+        // Every local branch is checked out; rather than dead-end, offer to
+        // create a new branch by name (cmd_add then confirms the base ref).
+        return new_branch_prompt();
     }
 
-    if let Some(sel) = fzf_pick(&selectable)? {
+    let names: Vec<&str> = selectable.iter().map(|(b, _)| *b).collect();
+    if let Some(sel) = fzf_pick(root, &names)? {
         return Ok(sel);
     }
     number_pick(&selectable)
 }
 
+/// Empty-state fallback: no branch is available to check out, so read a new
+/// branch name to create. Empty input / EOF cancels.
+fn new_branch_prompt() -> Result<String, String> {
+    eprintln!("All local branches are already checked out.");
+    eprint!("Enter a new branch name to create (Enter to cancel): ");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    let n = std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("no branch selected".into());
+    }
+    let name = line.trim();
+    if name.is_empty() {
+        return Err("no branch selected".into());
+    }
+    Ok(name.to_string())
+}
+
 /// Run fzf over `items`. Returns Ok(None) when fzf is not on PATH so the caller
 /// can fall back; an empty/aborted selection is an error.
-fn fzf_pick(items: &[&str]) -> Result<Option<String>, String> {
+fn fzf_pick(root: &Path, items: &[&str]) -> Result<Option<String>, String> {
+    // Preview the highlighted branch's last commit. fzf shell-quotes {} before
+    // substitution, and root is quoted here, so both are safe in `sh -c`.
+    let preview = format!(
+        "git -C {} log -1 --format='%h  %s%n%an · %ar' {{}} --",
+        sh_quote(root)
+    );
     let mut child = match Command::new("fzf")
-        .args(["--prompt", "branch> ", "--height", "40%", "--reverse"])
+        .args([
+            "--prompt",
+            "branch> ",
+            "--height",
+            "40%",
+            "--reverse",
+            "--preview",
+            &preview,
+            "--preview-window",
+            "down,3,wrap",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -910,12 +965,17 @@ fn fzf_pick(items: &[&str]) -> Result<Option<String>, String> {
     Ok(Some(sel))
 }
 
-/// Numbered fallback picker; reads a number from stdin.
-fn number_pick(items: &[&str]) -> Result<String, String> {
-    eprintln!("Available branches:");
+/// Numbered fallback picker; reads a number from stdin. Each branch is shown
+/// with the relative age of its last commit (dimmed on a terminal) for context.
+/// `items` are `(branch, age)` pairs already gathered by `pick_branch`.
+fn number_pick(items: &[(&str, &str)]) -> Result<String, String> {
+    let color = std::io::stderr().is_terminal() && color_enabled(true);
+    eprintln!("Available branches (most recent first):");
     let w = items.len().to_string().len();
-    for (i, b) in items.iter().enumerate() {
-        eprintln!("  {:>w$}  {}", i + 1, b, w = w);
+    let bw = items.iter().map(|(b, _)| b.chars().count()).max().unwrap_or(0);
+    for (i, (b, age)) in items.iter().enumerate() {
+        let meta = paint(age, DIM, color && !age.is_empty());
+        eprintln!("  {:>w$}  {:<bw$}  {}", i + 1, b, meta, w = w, bw = bw);
     }
     eprint!("Select a branch [1-{}], or Enter to cancel: ", items.len());
     std::io::stderr().flush().ok();
@@ -932,7 +992,7 @@ fn number_pick(items: &[&str]) -> Result<String, String> {
     if n == 0 || n > items.len() {
         return Err(format!("no branch #{n}"));
     }
-    Ok(items[n - 1].to_string())
+    Ok(items[n - 1].0.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -977,6 +1037,12 @@ fn sanitize(branch: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
+}
+
+/// Single-quote a path for safe interpolation into an `sh -c` command line
+/// (used to build fzf's --preview). Embedded quotes are escaped `'\''`.
+fn sh_quote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
 }
 
 /// Canonical path for comparison; falls back to the input when it can't be
@@ -1235,6 +1301,12 @@ mod tests {
     fn parse_cols_accepts_status_and_last() {
         assert_eq!(parse_cols("1,4,5").unwrap(), vec![1, 4, 5]);
         assert!(parse_cols("6").is_err());
+    }
+
+    #[test]
+    fn sh_quote_wraps_and_escapes() {
+        assert_eq!(sh_quote(Path::new("/code/my app")), "'/code/my app'");
+        assert_eq!(sh_quote(Path::new("/a'b")), "'/a'\\''b'");
     }
 
     #[test]

@@ -1,0 +1,14 @@
+[package]
+name = "git-wt"
+version = "0.1.0"
+edition = "2021"
+description = "Create git worktrees in sibling directories named <repo>-<branch>"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

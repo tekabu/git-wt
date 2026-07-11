@@ -1,0 +1,6 @@
+# Never ship the host build dir into the image: it's macOS-arch and huge, and
+# the container rebuilds its own Linux target anyway.
+target
+dist
+.git
+.DS_Store

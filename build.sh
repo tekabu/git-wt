@@ -59,3 +59,23 @@ fi
 echo "Building release..."
 cargo build --release --manifest-path "$manifest"
 echo "Built git-wt $new at $here/target/release/git-wt"
+
+# Assemble the ONE installable file: the standalone installer template with the
+# shared alias helper injected, plus the gzipped binary appended as base64. A
+# recipient downloads just this file and runs it — no repo, no toolchain.
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m)"
+installer="git-wt-$new-$os-$arch.install.sh"
+mkdir -p "$here/dist"
+out="$here/dist/$installer"
+
+# Inject _alias.sh at the @ALIAS_FN@ marker in the template.
+awk -v fnfile="$here/_alias.sh" '
+  /@ALIAS_FN@/ { while ((getline l < fnfile) > 0) print l; next }
+  { print }
+' "$here/installer.tmpl.sh" > "$out"
+
+# Append the payload after the template's __GITWT_PAYLOAD__ marker line.
+gzip -c "$here/target/release/git-wt" | base64 >> "$out"
+chmod +x "$out"
+echo "Bundled dist/$installer (self-installing, one file)"

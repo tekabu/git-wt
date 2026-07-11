@@ -14,16 +14,34 @@ an explicit `add` verb for creation.
 
 ## Install
 
-Needs Rust (`cargo`).
+### From the one-file installer (no Rust needed)
+
+Download the single self-installing script for your platform —
+`git-wt-<version>-<os>-<arch>.install.sh` — and run it. Nothing else: no repo,
+no tarball, no toolchain. The binary is embedded inside the script.
 
 ```sh
-./install.sh                 # binary only, no profile changes
-./install.sh --alias wt      # binary + a `wt` shell function that cd's for you
+chmod +x git-wt-1.0.9-linux-x86_64.install.sh
+./git-wt-1.0.9-linux-x86_64.install.sh            # binary only
+./git-wt-1.0.9-linux-x86_64.install.sh --alias wt # + a `wt` shell function
 ```
 
-Runs `cargo install`, dropping the binary in `~/.cargo/bin`. Make sure
-`~/.cargo/bin` is on your `PATH`. If another `git-wt` earlier on `PATH` shadows
+Installs to `~/.local/bin` (override with `GITWT_PREFIX=/usr/local`). Make sure
+that `bin` dir is on your `PATH`. If another `git-wt` earlier on `PATH` shadows
 the installed one, the script warns and suggests removing or symlinking it.
+
+### From source
+
+Needs Rust (`cargo`). Builds and installs in one step with `cargo install`,
+dropping the binary in `~/.cargo/bin`:
+
+```sh
+./install.sh                 # build + install from source
+./install.sh --alias wt      # + a `wt` shell function that cd's for you
+```
+
+`install.sh` only ever installs from source. The shareable one-file installer
+above is produced by `build.sh` (see [Build](#build)).
 
 ### `git-wt` (binary) vs `wt` (wrapper)
 
@@ -286,8 +304,11 @@ Hard conflicts (`--name` + `--dirname`) stay errors — no safe default to confi
 
 ## Build
 
+`build.sh` does three things: set the version, compile, and bundle **one**
+shareable installable file.
+
 ```sh
-./build.sh          # release build at current version
+./build.sh          # build at current version
 ./build.sh 1.2.3    # set version to 1.2.3, then build
 ./build.sh patch    # bump x.y.Z, then build
 ./build.sh minor    # bump x.Y.0, then build
@@ -295,6 +316,22 @@ Hard conflicts (`--name` + `--dirname`) stay errors — no safe default to confi
 ```
 
 The chosen version is written to `Cargo.toml`, so it flows into `--version`.
-Release binary lands at `target/release/git-wt`.
+The release binary lands at `target/release/git-wt`, and the shareable file at:
 
-Typical release: `./build.sh patch && ./install.sh`.
+```
+dist/git-wt-<version>-<os>-<arch>.install.sh
+```
+
+That is the self-installing script from
+[Install → one-file installer](#from-the-one-file-installer-no-rust-needed):
+the binary is gzipped and embedded inside it, so a recipient downloads just that
+one file and runs it — no repo, no toolchain. Build it once per target platform
+you want to share to.
+
+### Build on Linux (Docker)
+
+`./docker-test.sh` builds and runs the unit + live tests in a throwaway Debian
+container. `./docker-test.sh --build-install` additionally verifies the one-file
+installer end-to-end on Linux. The Docker image's arch matches your host
+(Apple Silicon → `aarch64`); for an x86_64 Linux artifact, build with
+`docker build --platform linux/amd64 -t git-wt-test .` first.

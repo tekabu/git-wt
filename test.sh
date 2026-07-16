@@ -5,14 +5,40 @@
 # the target-first grammar, and prints a PASS/FAIL report. Exits non-zero if any
 # case fails. Cleans up the /tmp scratch dir on exit.
 #
-#   ./test.sh            # release build (cargo build --release)
-#   ./test.sh --debug    # debug build (faster compile)
+#   ./test.sh                  # release build (cargo build --release)
+#   ./test.sh --debug          # debug build (faster compile)
+#   ./test.sh --md             # also write docs/test-report.md
+#   ./test.sh --md out.md      # ...to out.md instead
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 profile="release"
-[ "${1:-}" = "--debug" ] && profile="debug"
+MD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --debug) profile="debug"; shift ;;
+    # --md takes an optional path: the next word is the file unless it's another
+    # flag or the end of the line, in which case the default stands.
+    --md)
+      shift
+      case "${1:-}" in
+        ""|-*) MD="$here/docs/test-report.md" ;;
+        *)     MD="$1"; shift ;;
+      esac ;;
+    *) echo "unknown option '$1'" >&2; exit 2 ;;
+  esac
+done
+
+# Resolve before the suite cd's into the scratch repo, so a relative --md path
+# means "relative to where the user ran this", not to /tmp.
+if [ -n "$MD" ]; then
+  case "$MD" in
+    /*) ;;
+    *)  MD="$PWD/$MD" ;;
+  esac
+  mkdir -p "$(dirname "$MD")" || exit 1
+fi
 
 echo "Building git-wt ($profile)..."
 if [ "$profile" = "release" ]; then
@@ -81,6 +107,28 @@ report() {
     [ -n "$why" ] && printf '        \033[31m%s\033[0m\n' "$why"
     fail=$((fail+1))
   fi
+  [ -n "$MD" ] && md_row "$st" "$tag" "$name" "$cmd" "$why"
+  return 0
+}
+
+# One table row per result. A literal '|' or a newline would break the table, so
+# both are neutralised; backticks in the cell would end the code span, so the
+# command and reason are fenced with a doubled delimiter.
+md_cell() {
+  local s="$1"
+  s="${s//|/\\|}"
+  s="${s//$'\n'/ }"
+  printf '%s' "$s"
+}
+
+md_row() {
+  local st="$1" tag="$2" name="$3" cmd="$4" why="${5:-}"
+  local mark='✅'
+  [ "$st" = FAIL ] && mark='❌'
+  [ "$tag" = "-" ] && tag=""
+  printf '| %s | %s | %s | `` %s `` | %s |\n' \
+    "$mark" "$tag" "$(md_cell "$name")" "$(md_cell "$cmd")" \
+    "$([ -n "$why" ] && printf '`` %s ``' "$(md_cell "$why")")" >> "$MD"
 }
 
 # Render an invocation for the report: 'git-wt' plus each argument, with any
@@ -158,6 +206,20 @@ check() {
 echo
 echo "Running live tests in $APP"
 echo "----------------------------------------------------------------------"
+
+# The report is rewritten from scratch on every run: it describes this run, and
+# a half-stale file would be worse than none.
+if [ -n "$MD" ]; then
+  {
+    printf '# git-wt test report\n\n'
+    printf -- '- Version: `%s`\n' "$("$BIN" version 2>/dev/null | head -n1)"
+    printf -- '- Build: `%s`\n' "$profile"
+    printf -- '- Date: `%s`\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf '## Results\n\n'
+    printf '| | Tag | Test | Command | Failure |\n'
+    printf '|---|---|---|---|---|\n'
+  } > "$MD"
+fi
 
 # --- list / default ---------------------------------------------------------
 check "no-args lists main"            exit=0 out="myapp" --
@@ -672,4 +734,15 @@ check "--help"                       exit=0 out="USAGE" -- --help
 
 echo "----------------------------------------------------------------------"
 echo "Result: $pass passed, $fail failed"
+
+if [ -n "$MD" ]; then
+  {
+    printf '\n## Summary\n\n'
+    printf -- '- Passed: **%s**\n' "$pass"
+    printf -- '- Failed: **%s**\n' "$fail"
+    printf -- '- Total: **%s**\n' "$((pass+fail))"
+  } >> "$MD"
+  echo "Report: $MD"
+fi
+
 [ "$fail" = 0 ]

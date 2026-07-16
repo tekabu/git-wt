@@ -287,7 +287,7 @@ directory against itself is never what you meant.
 
 ```sh
 git-wt 1 merge 2            # worktree 2's branch -> worktree 1's branch
-git-wt 1,2 merge            # the same thing, list-style like meld
+git-wt 1,2 merge            # the same thing, list-style like diff and meld
 git-wt 1 merge feat/x       # a branch name works too
 git-wt 1 merge 2 dry-run    # would it conflict? nothing is touched
 git-wt 1 merge 2 theirs     # let 2 win every collision
@@ -302,8 +302,9 @@ worktree wins over a branch of the same name.
 
 ### Two ways to name the targets
 
-`git-wt 1,2 merge` is the list form, spelled like `meld`'s. Both forms read
-**dest-first**, so these are identical:
+`git-wt 1,2 merge` is the list form, the same shape `diff` and `meld` use — every
+multi-worktree action names its targets one way. Both forms read **dest-first**,
+so these are identical:
 
 ```sh
 git-wt 1 merge 2     # spelled out
@@ -312,12 +313,14 @@ git-wt 1,2 merge     # list-style
 
 Options work the same either way — `git-wt 1,2 merge theirs dry-run`.
 
-Two differences from `meld`, both because a merge is directional:
+Two differences from `diff`/`meld`, both because a merge is directional rather
+than symmetric:
 
 - The list takes **exactly two** worktrees. `meld` diffs 2–3; a merge has one
   destination and one source, so `git-wt 1,2,3 merge` is an error.
-- Both sides are worktree **numbers**. To merge a branch that has no worktree,
-  use the spelled-out form: `git-wt 1 merge feat/x`.
+- The spelled-out form still works, unlike `diff`'s (which is list-only). A
+  merge source can be any branch, and a list can only name worktrees — so
+  `git-wt 1 merge feat/x` has no list equivalent and has to stay.
 
 The list already names the source, so it can't be combined with
 `continue`/`abort` — those take a single target (`git-wt 1 merge continue`), and
@@ -560,7 +563,7 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt 99` | `no worktree #99; there are N (see 'git-wt list')` |
 | `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, diff, merge, meld)` |
 | `git-wt 1 switch path` | `too many arguments` |
-| `git-wt 1 -n x` | `'-n' is an option, not an action; options follow the action, e.g. 'git-wt 1 remove -f' or 'git-wt 1 diff 2 --stat'` |
+| `git-wt 1 -n x` | `'-n' is an option, not an action; options follow the action, e.g. 'git-wt 1 remove -f' or 'git-wt 1,2 diff --stat'` |
 | `git-wt 1 remove` on main/bare | `refusing to remove the main worktree` |
 | `git-wt foo` (branch-like: has `/` or `-`) | `unknown command 'foo'; did you mean 'add foo'?` |
 | `git-wt lsit` (not branch-like) | `unknown command 'lsit'` |

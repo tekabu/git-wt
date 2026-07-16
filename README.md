@@ -256,14 +256,62 @@ N's own newer commits.
 | `--name-status` | File names with `A`/`M`/`D` |
 | `--stat` | File names with a churn summary |
 | `-- PATH...` | Limit to those paths |
+| `live` | Compare the files on disk, not the commits (see below) |
+| `hunks` | Each file's changed line numbers |
 
 That is the whole flag set on purpose. Anything else git diff can do, get from
 git diff — the error for an unknown flag prints the exact `git diff <A>..<B>`
 command to run instead.
 
 Because the comparison is committed state, uncommitted work is invisible to it.
-When either side is dirty, git-wt says so on stderr and points you at `meld`,
-which does compare working trees.
+When either side is dirty, git-wt says so on stderr and points you at `live`.
+
+## Diff live — `git-wt <N> diff <M> live`
+
+`live` compares the **literal bytes on disk** instead of the commits:
+
+```sh
+git-wt 1 diff 2 live        # what actually differs between the directories
+git-wt 1 diff 2 live hunks  # + the changed line numbers
+```
+
+This is the answer to the case no ref diff can reach: two worktrees on the same
+commit, one of them dirty. `git diff <a>..<b>` there is *provably* empty — both
+refs resolve to the same tree — while the directories differ by hundreds of
+lines. One git process has one working tree, so no single `git diff` can ever
+show both worktrees' uncommitted work.
+
+```
+diff main ↔ merge   live — literal contents, .gitignore honored
+
+M README.md     +90  −10
+M src/main.rs   +345 −38
+M test.sh       +73  −4
+
+3 files changed, 508 insertions(+), 52 deletions(-)
+```
+
+`.gitignore` is honored — the candidate paths come from `git ls-files --cached
+--others --exclude-standard` on both sides, so `target/` never enters. Paths are
+byte-compared first, and only the survivors cost a `git diff --no-index`.
+
+`hunks` adds each file's changed line numbers, on the `+` side (worktree M),
+which is the side you'd jump to:
+
+```
+M README.md     +90 −10
+      119  modified 1
+      290  added 2
+```
+
+`live` takes no range: `..`/`...` compare commits, which is the opposite
+question, so combining them is an error rather than a silently ignored word.
+`--name-only`, `--name-status`, `--stat` and `-- PATH...` all still apply, and
+`hunks` works without `live` — line numbers are just as useful against commits.
+
+Two blind spots, both shared with plain git: ignored-but-differing files stay
+invisible, and `live` compares exactly two worktrees (`git diff --no-index`
+takes two paths, and there is no three-path form). For three, use `meld`.
 
 ## Meld
 
@@ -494,6 +542,10 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 diff ...` | `git diff <branch 1>...<branch 2>` — only 2's own commits |
 | `git-wt 1,2 diff --name-only` | File names only (also `--name-status`, `--stat`) |
 | `git-wt 1,2 diff -- src/` | Limit to `src/`; combines with the flags above |
+| `git-wt 1,2 diff live` | Compare the files on disk, `.gitignore` honored |
+| `git-wt 1,2 diff live hunks` | Same, plus each file's changed line numbers |
+| `git-wt 1,2 diff hunks` | Line numbers on the committed diff |
+| `git-wt 1,2 diff live ..` | Error — a range compares commits, `live` compares disk |
 | `git-wt 1,1 diff` | Error `worktree #1 against itself is always empty` |
 | `git-wt 1 diff` | Error — `diff` takes a worktree list |
 | `git-wt 1,2 diff -w` | Error — unknown flag, with the `git diff` command to run instead |

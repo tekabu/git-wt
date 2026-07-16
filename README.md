@@ -44,6 +44,7 @@ Replace branch switching with separate folders next door.
 | Start a new task on its own branch | `wt add feature/login` | A new folder appears next door, already on that branch |
 | Jump back to another task | `wt 1` | Your terminal moves to that task’s folder |
 | Peek at a branch without disturbing your current work | `git-wt add bugfix/123 --stay` | The folder is created; you stay where you are |
+| Fold one task's work into another | `wt 1 merge 2` | Task 2's branch is merged into task 1's, without leaving your shell |
 | Clean up a finished task | `wt 1 remove` | The extra folder disappears; the branch stays in Git |
 
 No more stashing, no more “wait, which branch was I on?”, no more half-finished
@@ -114,6 +115,8 @@ git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
 git-wt <N> remove [-y] [-f]  Remove worktree N
 git-wt <N> diff <M> [flags]  Diff worktree N against worktree M
+git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
+git-wt <N> merge --continue|--abort
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
 git-wt version
@@ -279,6 +282,62 @@ Requires `meld` on PATH; without it you get an error and an install hint
 a silent no-op. Listing the same worktree twice is refused — comparing a
 directory against itself is never what you meant.
 
+## Merge
+
+```sh
+git-wt 1 merge 2            # worktree 2's branch -> worktree 1's branch
+git-wt 1 merge feat/x       # a branch name works too
+```
+
+The merge runs **inside worktree N**, so N's branch is the one that moves — the
+source is only read. `git-wt 1 merge 2` reads as "worktree 1, merge 2 into you",
+and you never have to `cd` anywhere to do it.
+
+The source can be a worktree number or any branch/ref. A number that names a
+worktree wins over a branch of the same name.
+
+```
+-m, --message MSG      Merge commit message
+    --no-ff            Always create a merge commit
+    --ff-only          Refuse anything but a fast-forward
+    --squash           Stage the merge without committing
+-f, --force            Merge even when worktree N has uncommitted changes
+```
+
+Merges never open an editor: without `-m`, git's default message is taken as-is.
+A destination with uncommitted changes to **tracked** files is refused without
+`-f`, since a merge into uncommitted work can leave your own edits tangled in
+conflict markers. Untracked files don't count — git refuses on its own rather
+than clobber one — so a tree that is merely untracked-dirty merges fine.
+
+A **detached** worktree is a valid destination: the merge lands on the detached
+HEAD, exactly as `git merge` run there would. Only a bare worktree is refused.
+
+### Conflicts
+
+A conflict exits 1 and names the files:
+
+```
+$ git-wt 1 merge 2
+error: merge conflict in /Users/me/code/myapp
+  src/auth.rs
+hint: resolve them there, 'git add' each, then 'git-wt 1 merge --continue'
+hint: or undo the merge with 'git-wt 1 merge --abort'
+```
+
+Fix the files in worktree N, `git add` them, then:
+
+```sh
+git-wt 1 merge --continue   # conclude it (bare 'continue' also works)
+git-wt 1 merge --abort      # or undo the whole merge
+```
+
+Both also accept the bare words `continue` / `abort`. They take no source and no
+merge options — those were settled when the merge started. `--continue` with
+unresolved files re-prints the conflict list rather than failing obscurely.
+
+Merge prints nothing on stdout; all status goes to stderr.
+
 ## Command reference (all combinations)
 
 Every form the CLI accepts. Examples assume:
@@ -311,6 +370,13 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 remove -f` | Remove, discard dirty (still prompts) |
 | `git-wt 1 remove -y -f` | Remove, no prompt, discard dirty |
 | `git-wt 1 rm` | Alias → remove |
+| `git-wt 1 merge 2` | Merge worktree 2's branch into worktree 1's |
+| `git-wt 1 merge feat/x` | Merge branch `feat/x` into worktree 1's branch |
+| `git-wt 1 merge 2 --no-ff -m "sync"` | Merge commit with a message |
+| `git-wt 1 merge 2 --squash` | Stage the merge, don't commit |
+| `git-wt 1 merge 2 -f` | Merge even though worktree 1 is dirty |
+| `git-wt 1 merge --continue` | Conclude a conflicted merge (alias: `continue`) |
+| `git-wt 1 merge --abort` | Undo a conflicted merge (alias: `abort`) |
 
 ### Diff — `git-wt <N> diff <M> [flags]`
 
@@ -388,7 +454,7 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt` outside a repo | `not inside a git repository` |
 | `git-wt 0` | `no worktree #0` |
 | `git-wt 99` | `no worktree #99; there are N (see 'git-wt list')` |
-| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove)` |
+| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, merge)` |
 | `git-wt 1 switch path` | `too many arguments` |
 | `git-wt 1 -n x` | `switch/path/remove take no --name` |
 | `git-wt 1 remove` on main/bare | `refusing to remove the main worktree` |
@@ -396,6 +462,14 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt lsit` (not branch-like) | `unknown command 'lsit'` |
 | `git-wt show 1` (legacy) | `unknown command 'show'; use 'git-wt 1 path'` |
 | `git-wt remove 1` (legacy) | `unknown command 'remove'; use 'git-wt 1 remove'` |
+| `git-wt merge 2` (target missing) | `unknown command 'merge'; use 'git-wt 1 merge 2'` |
+| `git-wt 1 merge` | `merge needs a source: 'git-wt <N> merge <M\|BRANCH>', or --continue/--abort` |
+| `git-wt 1 merge zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
+| `git-wt 1 merge 1` | `'main' is already checked out in worktree 1` |
+| `git-wt 1 merge 2` (worktree 1 dirty) | `worktree 1 has uncommitted changes` + `-f` hint |
+| `git-wt 1 merge 2` (merge in progress) | `a merge is already in progress` + continue/abort hint |
+| `git-wt 1 merge --continue` (none started) | `no merge in progress in <path>` |
+| `git-wt 1 merge --continue 2` | `--continue takes no argument (got '2')` |
 | `add feat/x -n a --dirname b` | `--name and --dirname conflict` |
 | `add feat/x -n ""` | `--name cannot be empty` |
 | `add feat/x --dirname ""` | `--dirname cannot be empty` |

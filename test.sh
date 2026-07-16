@@ -23,6 +23,18 @@ else
   BIN="$here/target/debug/git-wt"
 fi
 
+# The branch picker prefers fzf, which reads /dev/tty directly and so ignores
+# the empty stdin this suite feeds it — on a machine that has fzf installed the
+# run blocks forever on the first picker test. Drop every PATH entry providing
+# fzf so the numbered fallback, which is what these tests assert on, is what
+# runs. (CI images have no fzf, which is why this only bites locally.)
+nofzf=""
+IFS=':' read -ra _parts <<< "$PATH"
+for _p in "${_parts[@]}"; do
+  [ -x "$_p/fzf" ] || nofzf="$nofzf${nofzf:+:}$_p"
+done
+export PATH="$nofzf"
+
 # --- scratch repo under /tmp ------------------------------------------------
 ROOT="$(mktemp -d "/tmp/git-wt-test.XXXXXX")"
 CODE="$ROOT/code"
@@ -274,6 +286,97 @@ touch "$CODE/dirtywt/junk.txt"
 didx="$("$BIN" list | awk '$2=="dirty"{print $1}')"
 check "remove dirty refused (no -f)" exit=1 err="modified or untracked files" -- "$didx" remove -y
 check "remove dirty with -f"         exit=0 -- "$didx" remove -y -f
+
+# --- merge ------------------------------------------------------------------
+# Self-contained repo: merges move branches, so keep them off the shared fixture.
+#   main    base.txt, shared.txt="0"
+#   feat-a  adds a.txt          (clean merge into main)
+#   cb1/cb2/cb3 shared.txt A vs B vs C  (each conflicts with the others)
+MRG="$ROOT/mrg/app"; mkdir -p "$MRG"
+( cd "$MRG"
+  git init -q; git config user.email t@t; git config user.name t
+  echo base > base.txt; echo 0 > shared.txt
+  git add .; git commit -q -m init
+  git branch feat-a; git branch cb1; git branch cb2; git branch cb3; git branch ffbr; git branch dirtybr
+  git checkout -q feat-a; echo a > a.txt; git add a.txt; git commit -q -m a
+  git checkout -q cb1; echo A > shared.txt; git commit -q -am A
+  git checkout -q cb2; echo B > shared.txt; git commit -q -am B
+  git checkout -q cb3; echo C > shared.txt; git commit -q -am C
+  git checkout -q main 2>/dev/null || git checkout -q master
+  "$BIN" add feat-a  --dirname w-feat  >/dev/null 2>&1
+  "$BIN" add cb1     --dirname w-cb1   >/dev/null 2>&1
+  "$BIN" add cb2     --dirname w-cb2   >/dev/null 2>&1
+  "$BIN" add dirtybr --dirname w-dirty >/dev/null 2>&1 )
+
+cd "$MRG" || exit 1
+midx() { "$BIN" list | awk -v b="$1" '$2==b{print $1}'; }
+A="$(midx feat-a)"; C1="$(midx cb1)"; C2="$(midx cb2)"; D="$(midx dirtybr)"
+
+# Errors before any state changes.
+check "merge needs a source"         exit=1 err="merge needs a source" -- 1 merge
+check "merge unknown source"         exit=1 err="no worktree or branch 'zzz'" -- 1 merge zzz
+check "merge self refused"           exit=1 err="already checked out in worktree 1" -- 1 merge 1
+check "merge too many args"          exit=1 err="too many arguments" -- 1 merge "$A" "$C1"
+check "merge unknown option"         exit=1 err="unknown option '--rebase'" -- 1 merge "$A" --rebase
+check "merge --continue takes no arg" exit=1 err="--continue takes no argument" -- 1 merge --continue 2
+check "merge continue w/o merge"     exit=1 err="no merge in progress" -- 1 merge --continue
+check "merge abort w/o merge"        exit=1 err="no merge in progress" -- 1 merge abort
+check "legacy merge hint"            exit=1 err="use 'git-wt 1 merge 2'" -- merge 2
+
+# Dirty destination takes -f; untracked files alone do not count as dirty.
+touch "$ROOT/mrg/w-dirty/untracked.txt"
+check "merge with untracked only ok"  exit=0 err="Merged feat-a into dirtybr" -- "$D" merge "$A"
+git -C "$ROOT/mrg/w-dirty" merge -q --abort 2>/dev/null; git -C "$ROOT/mrg/w-dirty" reset -q --hard HEAD~1
+# Tracked edits AND untracked files together: still refused (porcelain reports
+# both, and the untracked lines must not mask the tracked ones).
+echo edit >> "$ROOT/mrg/w-dirty/base.txt"
+check "merge into dirty+untracked refused" exit=1 err="uncommitted changes" -- "$D" merge "$A"
+rm -f "$ROOT/mrg/w-dirty/untracked.txt"
+check "merge into dirty refused"     exit=1 err="uncommitted changes" -- "$D" merge "$A"
+check "merge into dirty with -f"     exit=0 err="Merged feat-a into dirtybr" -- "$D" merge "$A" -f
+
+# Clean merge by worktree number: worktree A's branch moves into worktree 1.
+check "merge by number"              exit=0 err="Merged feat-a into" -- 1 merge "$A"
+if [ -f "$MRG/a.txt" ]; then
+  printf '  \033[32mPASS\033[0m  %s\n' "merge by number moved the files"; pass=$((pass+1))
+else
+  printf '  \033[31mFAIL\033[0m  %s\n' "merge by number moved the files"; fail=$((fail+1))
+fi
+check "merge prints no stdout"       exit=0 out="" -- "$C1" merge "$A"
+
+# A branch name works where a number does, and --ff-only refuses a real merge.
+check "merge by branch name"         exit=0 err="Merged feat-a into cb2" -- "$C2" merge feat-a
+check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" -- "$C2" merge cb1 --ff-only
+
+# Conflict -> continue.  cb1 and cb2 both rewrote shared.txt.
+check "merge conflict reports files" exit=1 err="shared.txt" -- "$C1" merge cb2
+check "merge conflict hints continue" exit=1 err="merge --continue" -- "$C1" merge --continue
+check "second merge while stuck"     exit=1 err="already in progress" -- "$C1" merge feat-a
+check "continue with unresolved"     exit=1 err="merge conflict in" -- "$C1" merge --continue
+echo resolved > "$ROOT/mrg/w-cb1/shared.txt"
+git -C "$ROOT/mrg/w-cb1" add shared.txt
+check "continue after resolve"       exit=0 err="Completed merge" -- "$C1" merge continue
+
+# Conflict -> abort restores the pre-merge state. cb1 has swallowed cb2 by now,
+# so cb3 is the branch that still genuinely conflicts with cb2.
+"$BIN" "$C2" merge cb3 >/dev/null 2>&1
+check "abort a conflicted merge"     exit=0 err="Aborted merge" -- "$C2" merge --abort
+if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+  printf '  \033[31mFAIL\033[0m  %s\n' "abort clears MERGE_HEAD"; fail=$((fail+1))
+else
+  printf '  \033[32mPASS\033[0m  %s\n' "abort clears MERGE_HEAD"; pass=$((pass+1))
+fi
+
+# --squash stages the merge without committing it.
+FF="$(cd "$MRG" && "$BIN" add ffbr --dirname w-ff >/dev/null 2>&1; midx ffbr)"
+check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" -- "$FF" merge feat-a --squash
+if [ -n "$(git -C "$ROOT/mrg/w-ff" diff --cached --name-only)" ]; then
+  printf '  \033[32mPASS\033[0m  %s\n' "--squash leaves changes staged"; pass=$((pass+1))
+else
+  printf '  \033[31mFAIL\033[0m  %s\n' "--squash leaves changes staged"; fail=$((fail+1))
+fi
+
+cd "$APP" || exit 1
 
 # --- meta -------------------------------------------------------------------
 check "version"                      exit=0 out="git-wt" -- version

@@ -66,6 +66,45 @@ git fetch -q origin
 pass=0
 fail=0
 
+# report PASS|FAIL <tag> <name> <cmd> [why] -- the single place that prints a
+# result line, so the bespoke cases below line up with check()'s.
+# <tag> groups by intent: HAPPY expects success, UNHAPPY expects a rejection.
+report() {
+  local st="$1" tag="$2" name="$3" cmd="$4" why="${5:-}"
+  local tcol='\033[2m'                      # HAPPY: dim, it's the quiet default
+  [ "$tag" = UNHAPPY ] && tcol='\033[33m'   # UNHAPPY: yellow, a deliberate error
+  if [ "$st" = PASS ]; then
+    printf "  \033[32mPASS\033[0m  ${tcol}%-7s\033[0m %-34s \033[2m%s\033[0m\n" "$tag" "$name" "$cmd"
+    pass=$((pass+1))
+  else
+    printf "  \033[31mFAIL\033[0m  ${tcol}%-7s\033[0m %-34s \033[2m%s\033[0m\n" "$tag" "$name" "$cmd"
+    [ -n "$why" ] && printf '        \033[31m%s\033[0m\n' "$why"
+    fail=$((fail+1))
+  fi
+}
+
+# Render an invocation for the report: 'git-wt' plus each argument, with any
+# long one (a scratch path, mostly) cut to its first 21 chars so the command
+# column stays readable. Empty and space-bearing args are quoted, so the report
+# shows the argument boundaries the shell actually passed.
+ARG_MAX=24
+fmt_cmd() {
+  local out="" a shown
+  for a in "$@"; do
+    if [ "${#a}" -gt "$ARG_MAX" ]; then
+      shown="${a:0:21}..."
+    else
+      shown="$a"
+    fi
+    case "$a" in
+      "")   shown="''" ;;
+      *" "*) shown="'$shown'" ;;
+    esac
+    out="$out $shown"
+  done
+  printf 'git-wt%s' "$out"
+}
+
 # check NAME -- run the binary, then assert on exit code, stdout, stderr.
 #   exit=<n>  out=<substr>  err=<substr>  in=<stdin>   (each optional)
 # Trailing args after the option block are passed to git-wt. Without in=, stdin
@@ -99,12 +138,20 @@ check() {
     ok=0; why="$why; stderr lacks '$err_want' (got '$err')"
   fi
 
+  # The tag is derived, never passed: a test that declares exit=0 is a happy
+  # path, anything else is a rejection we want to keep proving. No exit= at all
+  # means the case only asserts on output, so it claims neither.
+  local tag="-"
+  case "$exit_want" in
+    "") tag="-" ;;
+    0)  tag="HAPPY" ;;
+    *)  tag="UNHAPPY" ;;
+  esac
+
   if [ "$ok" = 1 ]; then
-    printf '  \033[32mPASS\033[0m  %s\n' "$name"
-    pass=$((pass+1))
+    report PASS "$tag" "$name" "$(fmt_cmd "$@")"
   else
-    printf '  \033[31mFAIL\033[0m  %s  (%s)\n' "$name" "${why# ; }"
-    fail=$((fail+1))
+    report FAIL "$tag" "$name" "$(fmt_cmd "$@")" "${why#; }"
   fi
 }
 
@@ -155,16 +202,19 @@ FULL="$ROOT/full/app"; mkdir -p "$FULL"
   "$BIN" add only >/dev/null 2>&1 )          # main + only both checked out now
 allco="$(cd "$FULL" && printf '\n' | "$BIN" add 2>&1)"
 if printf '%s' "$allco" | grep -q "All local branches are already checked out"; then
-  printf '  \033[32mPASS\033[0m  %s\n' "picker errors when all checked out"; pass=$((pass+1))
+  report PASS UNHAPPY "picker errors when all checked out" "$(fmt_cmd add)  # in a fully-checked-out repo"
 else
-  printf '  \033[31mFAIL\033[0m  %s\n' "picker errors when all checked out"; fail=$((fail+1))
+  report FAIL UNHAPPY "picker errors when all checked out" "$(fmt_cmd add)" "got '$allco'"
 fi
 
 # --from actually based the new branch on the given ref, not current HEAD.
-if [ "$(git -C "$CODE/ff1" rev-parse HEAD)" = "$(git -C "$APP" rev-parse feature/login)" ]; then
-  printf '  \033[32mPASS\033[0m  %s\n' "add --from base commit matches ref"; pass=$((pass+1))
+ffhead="$(git -C "$CODE/ff1" rev-parse HEAD)"
+ffwant="$(git -C "$APP" rev-parse feature/login)"
+if [ "$ffhead" = "$ffwant" ]; then
+  report PASS HAPPY "add --from base commit matches ref" "git rev-parse HEAD  # in ff1"
 else
-  printf '  \033[31mFAIL\033[0m  %s\n' "add --from base commit matches ref"; fail=$((fail+1))
+  report FAIL HAPPY "add --from base commit matches ref" "git rev-parse HEAD  # in ff1" \
+    "HEAD $ffhead != feature/login $ffwant"
 fi
 
 # --- target: switch / path --------------------------------------------------
@@ -197,17 +247,27 @@ check "diff --name-only both sides"  exit=0 out="onlylogin.txt" -- 1 diff "$didx
 check "diff .. keeps main-only file" exit=0 out="onlymain.txt" -- 1 diff "$didx" .. --name-only
 # '...' is "since the fork", so main's own later commit drops out.
 dots3="$("$BIN" 1 diff "$didx" ... --name-only 2>/dev/null)"
+dcmd="$(fmt_cmd 1 diff "$didx" ... --name-only)"
 case "$dots3" in
   *onlymain.txt*)
-    printf '  \033[31mFAIL\033[0m  %s  (got '\''%s'\'')\n' "diff ... hides main-only file" "$dots3"; fail=$((fail+1)) ;;
+    report FAIL HAPPY "diff ... hides main-only file" "$dcmd" "main-only file still listed: '$dots3'" ;;
   *onlylogin.txt*)
-    printf '  \033[32mPASS\033[0m  %s\n' "diff ... hides main-only file"; pass=$((pass+1)) ;;
+    report PASS HAPPY "diff ... hides main-only file" "$dcmd" ;;
   *)
-    printf '  \033[31mFAIL\033[0m  %s  (got '\''%s'\'')\n' "diff ... hides main-only file" "$dots3"; fail=$((fail+1)) ;;
+    report FAIL HAPPY "diff ... hides main-only file" "$dcmd" "wanted login's file, got '$dots3'" ;;
 esac
 check "diff --stat"                  exit=0 out="1 +" -- 1 diff "$didx" --stat
 check "diff --name-status"           exit=0 out="A" -- 1 diff "$didx" --name-status
-check "diff -- pathspec limits"      exit=0 out="onlylogin.txt" -- 1 diff "$didx" --name-only -- onlylogin.txt
+# Exact output, not a substring: the unfiltered diff also *contains*
+# 'onlylogin.txt', so a substring assertion here would pass even if the
+# pathspec were dropped on the floor. "Limits" means the other files are gone.
+pspec="$("$BIN" 1 diff "$didx" --name-only -- onlylogin.txt 2>/dev/null)"
+pcmd="$(fmt_cmd 1 diff "$didx" --name-only -- onlylogin.txt)"
+if [ "$pspec" = "onlylogin.txt" ]; then
+  report PASS HAPPY "diff -- pathspec limits" "$pcmd"
+else
+  report FAIL HAPPY "diff -- pathspec limits" "$pcmd" "wanted exactly 'onlylogin.txt', got '$pspec'"
+fi
 check "diff needs second worktree"   exit=1 err="diff needs a second worktree" -- 1 diff
 check "diff non-numeric target"      exit=1 err="'x' is not a worktree number" -- 1 diff x
 check "diff bad index errors"        exit=1 err="no worktree #99" -- 1 diff 99
@@ -257,11 +317,12 @@ GITONLY="$ROOT/gitonly"
 mkdir -p "$GITONLY"
 ln -sf "$(command -v git)" "$GITONLY/git"
 meld_err="$(PATH="$GITONLY" "$BIN" 1,2 meld 2>&1 >/dev/null; )"
+mcmd="$(fmt_cmd 1,2 meld)  # PATH without meld"
 case "$meld_err" in
   *"meld is not installed"*)
-    printf '  \033[32mPASS\033[0m  %s\n' "meld missing gives install hint"; pass=$((pass+1)) ;;
+    report PASS UNHAPPY "meld missing gives install hint" "$mcmd" ;;
   *)
-    printf '  \033[31mFAIL\033[0m  %s  (got '\''%s'\'')\n' "meld missing gives install hint" "$meld_err"; fail=$((fail+1)) ;;
+    report FAIL UNHAPPY "meld missing gives install hint" "$mcmd" "got '$meld_err'" ;;
 esac
 
 # --- remove -----------------------------------------------------------------
@@ -275,9 +336,10 @@ iidx="$("$BIN" list | awk '$2=="insidebr"{print $1}')"
 inside_out="$(cd "$CODE/insidewt" && "$BIN" "$iidx" remove -y </dev/null 2>/dev/null)"
 app_phys="$(cd "$APP" && pwd -P)"
 if [ "$inside_out" = "$app_phys" ]; then
-  printf '  \033[32mPASS\033[0m  %s\n' "remove-from-inside prints main"; pass=$((pass+1))
+  report PASS HAPPY "remove-from-inside prints main" "$(fmt_cmd "$iidx" remove -y)  # cwd inside it"
 else
-  printf '  \033[31mFAIL\033[0m  %s  (got '\''%s'\'')\n' "remove-from-inside prints main" "$inside_out"; fail=$((fail+1))
+  report FAIL HAPPY "remove-from-inside prints main" "$(fmt_cmd "$iidx" remove -y)" \
+    "wanted main '$app_phys', got '$inside_out'"
 fi
 
 # -f: a worktree with an untracked file is refused without -f, removed with it.
@@ -338,9 +400,10 @@ check "merge into dirty with -f"     exit=0 err="Merged feat-a into dirtybr" -- 
 # Clean merge by worktree number: worktree A's branch moves into worktree 1.
 check "merge by number"              exit=0 err="Merged feat-a into" -- 1 merge "$A"
 if [ -f "$MRG/a.txt" ]; then
-  printf '  \033[32mPASS\033[0m  %s\n' "merge by number moved the files"; pass=$((pass+1))
+  report PASS HAPPY "merge by number moved the files" "test -f a.txt  # in worktree 1"
 else
-  printf '  \033[31mFAIL\033[0m  %s\n' "merge by number moved the files"; fail=$((fail+1))
+  report FAIL HAPPY "merge by number moved the files" "test -f a.txt  # in worktree 1" \
+    "a.txt absent from $MRG after merge"
 fi
 check "merge prints no stdout"       exit=0 out="" -- "$C1" merge "$A"
 
@@ -362,18 +425,20 @@ check "continue after resolve"       exit=0 err="Completed merge" -- "$C1" merge
 "$BIN" "$C2" merge cb3 >/dev/null 2>&1
 check "abort a conflicted merge"     exit=0 err="Aborted merge" -- "$C2" merge --abort
 if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
-  printf '  \033[31mFAIL\033[0m  %s\n' "abort clears MERGE_HEAD"; fail=$((fail+1))
+  report FAIL HAPPY "abort clears MERGE_HEAD" "git rev-parse MERGE_HEAD  # in w-cb2" \
+    "MERGE_HEAD still present after --abort"
 else
-  printf '  \033[32mPASS\033[0m  %s\n' "abort clears MERGE_HEAD"; pass=$((pass+1))
+  report PASS HAPPY "abort clears MERGE_HEAD" "git rev-parse MERGE_HEAD  # in w-cb2"
 fi
 
 # --squash stages the merge without committing it.
 FF="$(cd "$MRG" && "$BIN" add ffbr --dirname w-ff >/dev/null 2>&1; midx ffbr)"
 check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" -- "$FF" merge feat-a --squash
 if [ -n "$(git -C "$ROOT/mrg/w-ff" diff --cached --name-only)" ]; then
-  printf '  \033[32mPASS\033[0m  %s\n' "--squash leaves changes staged"; pass=$((pass+1))
+  report PASS HAPPY "--squash leaves changes staged" "git diff --cached  # in w-ff"
 else
-  printf '  \033[31mFAIL\033[0m  %s\n' "--squash leaves changes staged"; fail=$((fail+1))
+  report FAIL HAPPY "--squash leaves changes staged" "git diff --cached  # in w-ff" \
+    "nothing staged after --squash"
 fi
 
 cd "$APP" || exit 1

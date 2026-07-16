@@ -224,7 +224,9 @@ check "N show alias"                 exit=0 out="$APP" -- 1 show
 check "N switch too many args"       exit=1 err="too many arguments" -- 1 switch path
 check "index 0 errors"               exit=1 err="no worktree #0" -- 0
 check "index over range errors"      exit=1 err="there are" -- 99
-check "unknown action errors"        exit=1 err="unknown action 'bogus'" -- 1 bogus
+# Pin the whole action list, not just the prefix: the README documents it, and
+# a substring match let it drift silently when diff/meld were added.
+check "unknown action errors"        exit=1 err="unknown action 'bogus' (switch, path, remove, diff, merge, meld)" -- 1 bogus
 check "flag on target errors"        exit=1 err="'-n' is an option, not an action" -- 1 -n x
 # The message must not claim an action rejects flags that it actually takes.
 check "flag on target hints actions" exit=1 err="options follow the action" -- 1 --stat

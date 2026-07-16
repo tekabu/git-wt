@@ -558,9 +558,9 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt` outside a repo | `not inside a git repository` |
 | `git-wt 0` | `no worktree #0` |
 | `git-wt 99` | `no worktree #99; there are N (see 'git-wt list')` |
-| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, merge)` |
+| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, diff, merge, meld)` |
 | `git-wt 1 switch path` | `too many arguments` |
-| `git-wt 1 -n x` | `switch/path/remove take no --name` |
+| `git-wt 1 -n x` | `'-n' is an option, not an action; options follow the action, e.g. 'git-wt 1 remove -f' or 'git-wt 1 diff 2 --stat'` |
 | `git-wt 1 remove` on main/bare | `refusing to remove the main worktree` |
 | `git-wt foo` (branch-like: has `/` or `-`) | `unknown command 'foo'; did you mean 'add foo'?` |
 | `git-wt lsit` (not branch-like) | `unknown command 'lsit'` |

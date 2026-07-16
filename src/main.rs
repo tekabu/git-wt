@@ -659,7 +659,7 @@ fn cmd_remove(
         Some(b) => format!("branch {b} kept"),
         None => "detached".into(),
     };
-    let on = std::io::stderr().is_terminal() && color_enabled(true);
+    let on = color_enabled(std::io::stderr().is_terminal());
     eprintln!("{} {leaf}  ({branch_note})", paint("Removed", GREEN, on));
 
     // Only when the shell was inside the removed tree does its cwd now dangle,
@@ -703,7 +703,7 @@ fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
     }
 
     let paths: Vec<&Path> = idxs.iter().map(|&i| trees[i].path.as_path()).collect();
-    let on = std::io::stderr().is_terminal() && color_enabled(true);
+    let on = color_enabled(std::io::stderr().is_terminal());
     let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
     eprintln!("{} {}", paint("meld", GREEN, on), names.join("  ↔  "));
 
@@ -895,7 +895,7 @@ fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
         format!("branch {branch} from {from_ref}")
     };
     let leaf = leaf_of(&dir);
-    let on = std::io::stderr().is_terminal() && color_enabled(true);
+    let on = color_enabled(std::io::stderr().is_terminal());
     eprintln!("{} {leaf}  ({summary})", paint("Created", GREEN, on));
 
     // Print the new worktree path on stdout (alone) so scripts can capture it:
@@ -1113,7 +1113,7 @@ fn fzf_pick(root: &Path, items: &[&str]) -> Result<Option<String>, String> {
 /// with the relative age of its last commit (dimmed on a terminal) for context.
 /// `items` are `(branch, age)` pairs already gathered by `pick_branch`.
 fn number_pick(items: &[(&str, &str)]) -> Result<String, String> {
-    let color = std::io::stderr().is_terminal() && color_enabled(true);
+    let color = color_enabled(std::io::stderr().is_terminal());
     eprintln!("Available branches (most recent first):");
     let w = items.len().to_string().len();
     let bw = items.iter().map(|(b, _)| b.chars().count()).max().unwrap_or(0);

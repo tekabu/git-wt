@@ -44,7 +44,7 @@ Replace branch switching with separate folders next door.
 | Start a new task on its own branch | `wt add feature/login` | A new folder appears next door, already on that branch |
 | Jump back to another task | `wt 1` | Your terminal moves to that task’s folder |
 | Peek at a branch without disturbing your current work | `git-wt add bugfix/123 --stay` | The folder is created; you stay where you are |
-| Fold one task's work into another | `wt 1 merge 2` | Task 2's branch is merged into task 1's, without leaving your shell |
+| Fold one task's work into another | `wt 1,2 merge` | Task 2's branch is merged into task 1's, without leaving your shell |
 | Clean up a finished task | `wt 1 remove` | The extra folder disappears; the branch stays in Git |
 
 No more stashing, no more “wait, which branch was I on?”, no more half-finished
@@ -114,11 +114,12 @@ git-wt <N>                   == git-wt <N> switch
 git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
 git-wt <N> remove [-y] [-f]  Remove worktree N
-git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
-git-wt <N>,<M> merge         Same thing: merge M into N
+git-wt <N>,<M> merge         Merge M into N
+git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
 git-wt <N> merge continue|abort
-git-wt <N> merged            Is worktree N's branch already in the current branch?
-git-wt <N>,<M> merged        Is worktree M's branch already in worktree N's branch?
+git-wt <N>,<M> merged        Is M's branch already in N's branch?
+git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
+git-wt <N> merged            Is N's branch already in the current branch?
 git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
@@ -270,13 +271,13 @@ command to run instead.
 Because the comparison is committed state, uncommitted work is invisible to it.
 When either side is dirty, git-wt says so on stderr and points you at `live`.
 
-## Diff live — `git-wt <N> diff <M> live`
+## Diff live — `git-wt <N>,<M> diff live`
 
 `live` compares the **literal bytes on disk** instead of the commits:
 
 ```sh
-git-wt 1 diff 2 live        # what actually differs between the directories
-git-wt 1 diff 2 live hunks  # + the changed line numbers
+git-wt 1,2 diff live        # what actually differs between the directories
+git-wt 1,2 diff live hunks  # + the changed line numbers
 ```
 
 This is the answer to the case no ref diff can reach: two worktrees on the same
@@ -338,29 +339,29 @@ directory against itself is never what you meant.
 ## Merge
 
 ```sh
-git-wt 1 merge 2            # worktree 2's branch -> worktree 1's branch
-git-wt 1,2 merge            # the same thing, list-style like diff and meld
+git-wt 1,2 merge            # worktree 2's branch -> worktree 1's branch
 git-wt 1 merge feat/x       # a branch name works too
-git-wt 1 merge 2 dry-run    # would it conflict? nothing is touched
-git-wt 1 merge 2 theirs     # let 2 win every collision
+git-wt 1,2 merge dry-run    # would it conflict? nothing is touched
+git-wt 1,2 merge theirs     # let 2 win every collision
 ```
 
 The merge runs **inside worktree N**, so N's branch is the one that moves — the
-source is only read. `git-wt 1 merge 2` reads as "worktree 1, merge 2 into you",
+source is only read. `git-wt 1,2 merge` reads as "merge 2 into worktree 1",
 and you never have to `cd` anywhere to do it.
 
-The source can be a worktree number or any branch/ref. A number that names a
-worktree wins over a branch of the same name.
+The source can be a worktree number (via the list) or any branch/ref. A number
+that names a worktree wins over a branch of the same name; to merge a branch
+actually named `2`, spell it `heads/2`.
 
 ### Two ways to name the targets
 
 `git-wt 1,2 merge` is the list form, the same shape `diff` and `meld` use — every
-multi-worktree action names its targets one way. Both forms read **dest-first**,
-so these are identical:
+multi-worktree action names its targets one way. The single-target form is still
+used for branch sources and for `continue`/`abort`:
 
 ```sh
-git-wt 1 merge 2     # spelled out
-git-wt 1,2 merge     # list-style
+git-wt 1,2 merge     # list-style (preferred for worktree sources)
+git-wt 1 merge feat/x # branch source; no list equivalent
 ```
 
 Options work the same either way — `git-wt 1,2 merge theirs dry-run`.
@@ -370,9 +371,9 @@ than symmetric:
 
 - The list takes **exactly two** worktrees. `meld` diffs 2–3; a merge has one
   destination and one source, so `git-wt 1,2,3 merge` is an error.
-- The spelled-out form still works, unlike `diff`'s (which is list-only). A
-  merge source can be any branch, and a list can only name worktrees — so
-  `git-wt 1 merge feat/x` has no list equivalent and has to stay.
+- A worktree source must use the list form, like `diff`. A branch source still
+  uses the single-target form (`git-wt 1 merge feat/x`) because a list can only
+  name worktrees.
 
 The list already names the source, so it can't be combined with
 `continue`/`abort` — those take a single target (`git-wt 1 merge continue`), and
@@ -413,8 +414,8 @@ They are deliberately not `-s ours`, which would drop the source's changes
 wholesale and still record a merge that claims to have taken them.
 
 ```sh
-git-wt 1 merge 2 theirs   # collisions resolve to 2's side
-git-wt 1 merge 2 ours     # collisions resolve to 1's side
+git-wt 1,2 merge theirs   # collisions resolve to 2's side
+git-wt 1,2 merge ours     # collisions resolve to 1's side
 ```
 
 A side is chosen while the merge is **computed**, so it cannot be bolted onto a
@@ -422,7 +423,7 @@ merge that has already stopped — git offers no way to do that. Ask for one
 anyway and `git-wt` explains, then offers the only route that honors it:
 
 ```
-$ git-wt 1 merge 2 theirs
+$ git-wt 1,2 merge theirs
 A merge is already in progress in /Users/me/code/myapp, and 'theirs' only applies when a merge starts.
 Abort it and re-merge '2' with 'theirs'? Any conflict resolution already done there is discarded. [y/N]
 ```
@@ -442,13 +443,13 @@ nothing to clean up. It uses `git merge-tree --write-tree` (**git 2.38+**),
 which resolves the merge in memory.
 
 ```sh
-git-wt 1 merge 2 dry-run
+git-wt 1,2 merge dry-run
 ```
 
 It exits 0 when clean and 1 when it would conflict, so it drives a script:
 
 ```sh
-if git-wt 1 merge 2 dry-run; then git-wt 1 merge 2; fi
+if git-wt 1,2 merge dry-run; then git-wt 1,2 merge; fi
 ```
 
 `dry-run` takes none of the flags that need a real merge to run — `-m`,
@@ -472,12 +473,12 @@ HEAD, exactly as `git merge` run there would. Only a bare worktree is refused.
 A conflict exits 1 and names the files:
 
 ```
-$ git-wt 1 merge 2
+$ git-wt 1,2 merge
 error: merge conflict in /Users/me/code/myapp
   src/auth.rs
 hint: resolve them there, 'git add' each, then 'git-wt 1 merge continue'
 hint: or undo the merge with 'git-wt 1 merge abort'
-hint: or redo it letting one side win: 'git-wt 1 merge abort', then 'git-wt 1 merge <M|BRANCH> theirs'
+hint: or redo it letting one side win: 'git-wt 1 merge abort', then 'git-wt 1,2 merge theirs'
 ```
 
 Fix the files in worktree N, `git add` them, then:
@@ -501,8 +502,8 @@ Ask whether one branch is already contained in another. This is different from
 
 ```sh
 git-wt 1 merged              # is worktree 1's branch already in the current branch?
-git-wt 1 merged 2            # is worktree 2's branch already in worktree 1's branch?
-git-wt 1,2 merged            # same thing, list-style: is 2 already in 1?
+git-wt 1,2 merged            # is worktree 2's branch already in worktree 1's branch?
+git-wt 1 merged feat/x       # is branch feat/x already in worktree 1's branch?
 ```
 
 It uses `git merge-base --is-ancestor`, so it exits `0` when already merged and
@@ -523,13 +524,16 @@ Ahead    feat/x is NOT in main (ahead 3)
 The ahead count comes from `git rev-list --count main..feat/x`. Both
 single-target and list forms read dest-first, exactly like `merge`.
 
+Naming a pair of worktrees uses the list form, as `merge` and `diff` do, so
+`git-wt 1 merged 2` is rejected in favour of `git-wt 1,2 merged`. The
+single-target form stays for a branch source, which a list of numbers cannot
+name.
+
 Detached worktrees are named by their short commit SHA in `merged` and `diff`
 output instead of a branch name; `merge` and `meld` still show `(detached)`.
-The answer is still correct, just less readable.
-
-A branchless worktree is a valid `merged` source in either spelling: `merge`
-rejects one because it needs a branch name for the merge commit, but `merged`
-only asks about containment, so it answers by SHA.
+The answer is still correct, just less readable. A detached worktree has no
+branch to name, so the list form is the way to ask about one:
+`git-wt 1,2 merged` answers by SHA.
 
 ## Command reference (all combinations)
 
@@ -563,20 +567,20 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 remove -f` | Remove, discard dirty (still prompts) |
 | `git-wt 1 remove -y -f` | Remove, no prompt, discard dirty |
 | `git-wt 1 rm` | Alias → remove |
-| `git-wt 1 merge 2` | Merge worktree 2's branch into worktree 1's |
-| `git-wt 1,2 merge` | The same, list-style (exactly two, dest first) |
+| `git-wt 1,2 merge` | Merge worktree 2's branch into worktree 1's |
 | `git-wt 1 merge feat/x` | Merge branch `feat/x` into worktree 1's branch |
-| `git-wt 1 merge 2 --no-ff -m "sync"` | Merge commit with a message |
-| `git-wt 1 merge 2 --squash` | Stage the merge, don't commit |
-| `git-wt 1 merge 2 -f` | Merge even though worktree 1 is dirty |
-| `git-wt 1 merge 2 theirs` | Merge, letting 2 win every collision (`-X theirs`) |
-| `git-wt 1 merge 2 ours` | Merge, letting 1 win every collision (`-X ours`) |
-| `git-wt 1 merge 2 dry-run` | Report whether it would merge; change nothing |
+| `git-wt 1,2 merge --no-ff -m "sync"` | Merge commit with a message |
+| `git-wt 1,2 merge --squash` | Stage the merge, don't commit |
+| `git-wt 1,2 merge -f` | Merge even though worktree 1 is dirty |
+| `git-wt 1,2 merge theirs` | Merge, letting 2 win every collision (`-X theirs`) |
+| `git-wt 1,2 merge ours` | Merge, letting 1 win every collision (`-X ours`) |
+| `git-wt 1,2 merge dry-run` | Report whether it would merge; change nothing |
 | `git-wt 1 merge continue` | Conclude a conflicted merge (`--continue`, `-c`) |
 | `git-wt 1 merge abort` | Undo a conflicted merge (`--abort`, `-a`) |
+| `git-wt 1 merge 2` | `merge takes a worktree list: 'git-wt 1,2 merge' (or use 'heads/2' for a branch of the same name)` |
 | `git-wt 1 merged` | Is worktree 1's branch already in the current branch? |
-| `git-wt 1 merged 2` | Is worktree 2's branch already in worktree 1's branch? |
-| `git-wt 1,2 merged` | Same thing, list-style: is 2 already in 1? |
+| `git-wt 1 merged feat/x` | Is branch `feat/x` already in worktree 1's branch? |
+| `git-wt 1,2 merged` | Is worktree 2's branch already in worktree 1's? |
 
 ### Diff — `git-wt <N>,<M> diff [flags]`
 
@@ -666,26 +670,27 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt lsit` (not branch-like) | `unknown command 'lsit'` |
 | `git-wt show 1` (legacy) | `unknown command 'show'; use 'git-wt 1 path'` |
 | `git-wt remove 1` (legacy) | `unknown command 'remove'; use 'git-wt 1 remove'` |
-| `git-wt merge 2` (target missing) | `unknown command 'merge'; use 'git-wt 1 merge 2' or 'git-wt 1,2 merge'` |
+| `git-wt merge 2` (target missing) | `unknown command 'merge'; use 'git-wt 1,2 merge'` |
 | `git-wt 1,2,3 merge` | `merge takes exactly two worktrees, not 3` |
 | `git-wt 1,2 merge continue` | `'continue' takes no source, so a worktree list has nothing to name` |
 | `git-wt 1,x merge` | `bad worktree list '1,x'; want numbers, e.g. '1,2'` |
 | `git-wt 1,2` (no action) | `a worktree list needs an action, e.g. 'git-wt 1,2 meld'` |
-| `git-wt 1 merge` | `merge needs a source: 'git-wt <N> merge <M\|BRANCH>', or continue/abort` |
+| `git-wt 1 merge` | `merge needs a source: 'git-wt <N>,<M> merge' (or 'git-wt <N> merge <BRANCH>', or continue/abort)` |
 | `git-wt 1 merge zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
-| `git-wt 1 merge 1` | `'main' is already checked out in worktree 1` |
-| `git-wt 1 merge 2` (worktree 1 dirty) | `worktree 1 has uncommitted changes` + `-f` hint |
-| `git-wt 1 merge 2` (merge in progress) | `a merge is already in progress` + continue/abort hint |
-| `git-wt 1 merge 2 theirs` (merge in progress) | Explains, then prompts to abort and redo `[y/N]` |
+| `git-wt 1,1 merge` | `'main' is already checked out in worktree 1` |
+| `git-wt 1,2 merge` (worktree 1 dirty) | `worktree 1 has uncommitted changes` + `-f` hint |
+| `git-wt 1,2 merge` (merge in progress) | `a merge is already in progress` + continue/abort hint |
+| `git-wt 1,2 merge theirs` (merge in progress) | Explains, then prompts to abort and redo `[y/N]` |
 | `git-wt 1 merge continue` (none started) | `no merge in progress in <path>` |
 | `git-wt 1 merge continue 2` | `continue takes no argument (got '2')` |
-| `git-wt 1 merge 2 ours theirs` | `ours and theirs conflict` |
+| `git-wt 1,2 merge ours theirs` | `ours and theirs conflict` |
 | `git-wt 1 merge theirs continue` | `continue takes no merge options` + why, and the abort/redo route |
-| `git-wt 1 merge 2 dry-run --no-ff` | `dry-run takes no merge options` |
-| `git-wt 1 merge 2 dry-run` (git < 2.38) | `dry-run needs git 2.38 or newer (git merge-tree --write-tree)` |
+| `git-wt 1,2 merge dry-run --no-ff` | `dry-run takes no merge options` |
+| `git-wt 1,2 merge dry-run` (git < 2.38) | `dry-run needs git 2.38 or newer (git merge-tree --write-tree)` |
 | `git-wt merged` (bare word) | `unknown command 'merged'; use 'git-wt 1 merged' or 'git-wt 1,2 merged'` |
+| `git-wt 1 merged 2` | `merged takes a worktree list: 'git-wt 1,2 merged' (or use 'heads/2' for a branch of the same name)` |
 | `git-wt 1,2,3 merged` | `merged takes exactly two worktrees, not 3` |
-| `git-wt 1 merged 2 extra` | `too many arguments` |
+| `git-wt 1 merged feat/x extra` | `too many arguments` |
 | `git-wt 1 merged zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
 | `git-wt 1 merged 1` | `'main' is already checked out in worktree 1` |
 | `git-wt 1,1 merged` | `worktree #1 listed twice` |

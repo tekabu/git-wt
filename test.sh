@@ -477,49 +477,56 @@ A="$(midx feat-a)"; C1="$(midx cb1)"; C2="$(midx cb2)"; D="$(midx dirtybr)"
 FF2="$(midx stuckbr)"; M3="$(midx cb3)"; LM="$(midx lmbr)"
 
 # Errors before any state changes.
+# Worktree-number sources use the list form; branch sources and resume words
+# keep the single-target form.
 check "merge needs a source"         exit=1 err="merge needs a source" -- 1 merge
+check "merge unknown command"        exit=1 err="use 'git-wt 1,2 merge'" -- merge 2
+check "merge old form errors"        exit=1 err="merge takes a worktree list: 'git-wt 1,2 merge' (or use 'heads/2' for a branch of the same name)" -- 1 merge 2
 check "merge unknown source"         exit=1 err="no worktree or branch 'zzz'" -- 1 merge zzz
-check "merge self refused"           exit=1 err="already checked out in worktree 1" -- 1 merge 1
-check "merge too many args"          exit=1 err="too many arguments" -- 1 merge "$A" "$C1"
-check "merge unknown option"         exit=1 err="unknown option '--rebase'" -- 1 merge "$A" --rebase
+check "merge self refused"           exit=1 err="already checked out in worktree 1" -- "1,1" merge
+check "merge too many args"          exit=1 err="too many arguments" -- "1,$A" merge "$C1"
+check "merge unknown option"         exit=1 err="unknown option '--rebase'" -- "1,$A" merge --rebase
+check "merge ours+theirs conflict"   exit=1 err="ours and theirs conflict" -- "1,$A" merge ours theirs
+check "merge dry-run + --no-ff"      exit=1 err="dry-run takes no merge options (got --no-ff)" -- "1,$A" merge dry-run --no-ff
+# The resume words keep the single-target form, so their parse errors are
+# reachable only there.
 check "merge continue takes no arg"  exit=1 err="continue takes no argument" -- 1 merge --continue 2
-check "merge ours+theirs conflict"   exit=1 err="ours and theirs conflict" -- 1 merge "$A" ours theirs
 check "merge continue with a side"   exit=1 err="applied when a merge starts" -- 1 merge theirs continue
-check "merge dry-run + --no-ff"      exit=1 err="dry-run takes no merge options (got --no-ff)" -- 1 merge "$A" dry-run --no-ff
 check "merge continue+abort"         exit=1 err="continue and abort conflict" -- 1 merge continue abort
 check "rejection names the flag"     exit=1 err="(got -m, --squash)" -- 1 merge abort -m x --squash
 check "merge continue w/o merge"     exit=1 err="no merge in progress" -- 1 merge --continue
 check "merge abort w/o merge"        exit=1 err="no merge in progress" -- 1 merge abort
-check "legacy merge hint"            exit=1 err="use 'git-wt 1 merge 2'" -- merge 2
 
 # Dirty destination takes -f; untracked files alone do not count as dirty.
 touch "$ROOT/mrg/w-dirty/untracked.txt"
-check "merge with untracked only ok"  exit=0 err="Merged feat-a into dirtybr" -- "$D" merge "$A"
+check "merge with untracked only ok"  exit=0 err="Merged feat-a into dirtybr" -- "$D,$A" merge
 git -C "$ROOT/mrg/w-dirty" merge -q --abort 2>/dev/null; git -C "$ROOT/mrg/w-dirty" reset -q --hard HEAD~1
-# Tracked edits AND untracked files together: still refused (porcelain reports
-# both, and the untracked lines must not mask the tracked ones).
+# Tracked edits must still be refused even when untracked files are also
+# present; the porcelain reports both, and the untracked lines must not mask
+# the tracked ones. Re-create the untracked file so the combined case is real.
+touch "$ROOT/mrg/w-dirty/untracked.txt"
 echo edit >> "$ROOT/mrg/w-dirty/base.txt"
-check "merge into dirty+untracked refused" exit=1 err="uncommitted changes" -- "$D" merge "$A"
+check "merge into dirty+untracked refused" exit=1 err="uncommitted changes" -- "$D,$A" merge
 rm -f "$ROOT/mrg/w-dirty/untracked.txt"
-check "merge into dirty refused"     exit=1 err="uncommitted changes" -- "$D" merge "$A"
-check "merge into dirty with -f"     exit=0 err="Merged feat-a into dirtybr" -- "$D" merge "$A" -f
+check "merge into dirty refused"     exit=1 err="uncommitted changes" -- "$D,$A" merge
+check "merge into dirty with -f"     exit=0 err="Merged feat-a into dirtybr" -- "$D,$A" merge -f
 
 # Clean merge by worktree number: worktree A's branch moves into worktree 1.
-check "merge by number"              exit=0 err="Merged feat-a into" -- 1 merge "$A"
+check "merge by number"              exit=0 err="Merged feat-a into" -- "1,$A" merge
 if [ -f "$MRG/a.txt" ]; then
   report PASS HAPPY "merge by number moved the files" "test -f a.txt  # in worktree 1"
 else
   report FAIL HAPPY "merge by number moved the files" "test -f a.txt  # in worktree 1" \
     "a.txt absent from $MRG after merge"
 fi
-check "merge prints no stdout"       exit=0 out="" -- "$C1" merge "$A"
+check "merge prints no stdout"       exit=0 out="" -- "$C1,$A" merge
 
 # A branch name works where a number does, and --ff-only refuses a real merge.
 check "merge by branch name"         exit=0 err="Merged feat-a into cb2" -- "$C2" merge feat-a
-check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" -- "$C2" merge cb1 --ff-only
+check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" -- "$C2,$C1" merge --ff-only
 
 # Conflict -> continue.  cb1 and cb2 both rewrote shared.txt.
-check "merge conflict reports files" exit=1 err="shared.txt" -- "$C1" merge cb2
+check "merge conflict reports files" exit=1 err="shared.txt" -- "$C1,$C2" merge
 check "merge conflict hints continue" exit=1 err="merge continue" -- "$C1" merge --continue
 check "second merge while stuck"     exit=1 err="already in progress" -- "$C1" merge feat-a
 check "continue with unresolved"     exit=1 err="merge conflict in" -- "$C1" merge --continue
@@ -529,7 +536,7 @@ check "continue after resolve"       exit=0 err="Completed merge" -- "$C1" merge
 
 # Conflict -> abort restores the pre-merge state. cb1 has swallowed cb2 by now,
 # so cb3 is the branch that still genuinely conflicts with cb2.
-"$BIN" "$C2" merge cb3 >/dev/null 2>&1
+"$BIN" "$C2,$M3" merge >/dev/null 2>&1
 check "abort a conflicted merge"     exit=0 err="Aborted merge" -- "$C2" merge --abort
 if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report FAIL HAPPY "abort clears MERGE_HEAD" "git rev-parse MERGE_HEAD  # in w-cb2" \
@@ -539,13 +546,13 @@ else
 fi
 
 # dry-run: answers the question, writes nothing. cb3 still collides with cb2.
-check "dry-run clean merge"          exit=0 err="merges into" -- "$C2" merge feat-a dry-run
-check "dry-run reports a conflict"   exit=1 err="does NOT merge" -- "$C2" merge cb3 dry-run
-check "dry-run names the file"       exit=1 err="shared.txt" -- "$C2" merge cb3 dry-run
-check "dry-run says it touched none" exit=1 err="nothing was changed" -- "$C2" merge cb3 dry-run
+check "dry-run clean merge"          exit=0 err="merges into" -- "$C2,$A" merge dry-run
+check "dry-run reports a conflict"   exit=1 err="does NOT merge" -- "$C2,$M3" merge dry-run
+check "dry-run names the file"       exit=1 err="shared.txt" -- "$C2,$M3" merge dry-run
+check "dry-run says it touched none" exit=1 err="nothing was changed" -- "$C2,$M3" merge dry-run
 # The short form drives the same path end to end, not just the parser.
-check "dry-run -d short form"        exit=1 err="does NOT merge" -- "$C2" merge cb3 -d
-check "theirs -t short form"         exit=0 err="merges into" -- "$C2" merge feat-a -t -d
+check "dry-run -d short form"        exit=1 err="does NOT merge" -- "$C2,$M3" merge -d
+check "theirs -t short form"         exit=0 err="merges into" -- "$C2,$A" merge -t -d
 # Proof it wrote nothing: a dry run that predicted a conflict left no merge
 # behind, so a real merge can still start cleanly afterwards.
 if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
@@ -562,27 +569,29 @@ fi
 # Assumes the harness is standing on 'main' (worktree 1), so a self-check reads
 # "Merged main is already in main".
 check "merged current in itself"     exit=0 err="Merged main is already in main" -- 1 merged
-check "merged cb3 not in main"       exit=1 err="Ahead cb3 is NOT in main (ahead 1)" -- 1 merged "$M3"
-check "merged stuckbr is in cb2"     exit=0 err="Merged stuckbr is already in cb2" -- "$C2" merged "$FF2"
+check "merged branch not in main"    exit=1 err="Ahead cb3 is NOT in main (ahead 1)" -- 1 merged cb3
+check "merged branch is in cb2"      exit=0 err="Merged stuckbr is already in cb2" -- "$C2" merged stuckbr
 check "merged list form dest-first"  exit=1 err="Ahead cb3 is NOT in main (ahead 1)" -- "1,$M3" merged
 check "merged list form reversed"    exit=0 err="Merged stuckbr is already in cb2" -- "$C2,$FF2" merged
-check "merged too many args"         exit=1 err="too many arguments" -- 1 merged "$M3" extra
+check "merged too many args"         exit=1 err="too many arguments" -- 1 merged cb3 extra
 check "merged unknown source"        exit=1 err="no worktree or branch 'zzz'" -- 1 merged zzz
 check "merged self single form"      exit=1 err="already checked out in worktree 1" -- 1 merged 1
+# A worktree-number source takes the list form, as merge and diff do. A source
+# equal to the destination is left to the self-check above, which says more.
+check "merged number wants a list"   exit=1 err="merged takes a worktree list: 'git-wt 1,$M3 merged'" -- 1 merged "$M3"
 check "merged list too many"         exit=1 err="merged takes exactly two worktrees" -- "1,$M3,$C2" merged
 check "merged list form extra arg"   exit=1 err="merged takes no arguments" -- "1,$M3" merged extra
 check "merged list form dup"         exit=1 err="worktree #1 listed twice" -- "1,1" merged
 check "merged legacy hint"           exit=1 err="use 'git-wt 1 merged' or 'git-wt 1,2 merged'" -- merged 2
 
-# A branchless worktree is a legitimate 'merged' source: unlike merge, which
-# needs a branch name for the merge commit, 'merged' only asks containment, so
-# it answers by sha. Both spellings must give the same answer.
+# A detached worktree has no branch to name, so the list form is the only way to
+# ask about one: 'merged' only tests containment, so it answers by sha.
 # Torn down right after: 'git worktree list' orders by path, so leaving this one
 # in would renumber the worktrees the hardcoded indices below depend on.
 git worktree add --detach "$ROOT/mrg/w-det" main >/dev/null 2>&1
 DET="$(midx '(detached)')"
-check "merged detached single form"  exit=0 err="is already in main" -- 1 merged "$DET"
 check "merged detached list form"    exit=0 err="is already in main" -- "1,$DET" merged
+check "merged detached wants a list" exit=1 err="merged takes a worktree list" -- 1 merged "$DET"
 git worktree remove --force "$ROOT/mrg/w-det" >/dev/null 2>&1
 
 # Column 6 in list: shows merged/ahead relative to the current branch (main).
@@ -590,7 +599,7 @@ check "list --col 6"                 exit=0 out="ahead 1" -- list --col 1,2,6
 
 # ours/theirs settle the collision that stopped the plain merge above.
 # cb3 (shared.txt=C) vs w-cb2 (shared.txt=B): theirs takes C, ours keeps B.
-check "merge theirs resolves"        exit=0 err="theirs won conflicts" -- "$C2" merge cb3 theirs
+check "merge theirs resolves"        exit=0 err="theirs won conflicts" -- "$C2,$M3" merge theirs
 if [ "$(cat "$ROOT/mrg/w-cb2/shared.txt")" = "C" ]; then
   report PASS HAPPY "theirs took the source's side" "cat shared.txt  # in w-cb2"
 else
@@ -610,8 +619,8 @@ fi
 
 # 'theirs' on a merge that already stopped: it can't join one, so git-wt offers
 # to abort and redo. Declining must leave the stopped merge exactly as it was.
-"$BIN" "$FF2" merge cb3 >/dev/null 2>&1   # conflict in w-ff2
-check "stuck+theirs declined"        exit=0 err="Aborted." in=n -- "$FF2" merge cb3 theirs
+"$BIN" "$FF2,$M3" merge >/dev/null 2>&1   # conflict in w-ff2
+check "stuck+theirs declined"        exit=0 err="Aborted." in=n -- "$FF2,$M3" merge theirs
 if git -C "$ROOT/mrg/w-ff2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report PASS UNHAPPY "declining keeps the stopped merge" "git rev-parse MERGE_HEAD  # in w-ff2"
 else
@@ -619,7 +628,7 @@ else
     "MERGE_HEAD gone — the merge was aborted despite answering n"
 fi
 # Accepting redoes it from clean, and the source wins.
-check "stuck+theirs accepted"        exit=0 err="theirs won conflicts" in=y -- "$FF2" merge cb3 theirs
+check "stuck+theirs accepted"        exit=0 err="theirs won conflicts" in=y -- "$FF2,$M3" merge theirs
 if [ "$(cat "$ROOT/mrg/w-ff2/shared.txt")" = "C" ]; then
   report PASS HAPPY "redo let theirs win" "cat shared.txt  # in w-ff2"
 else
@@ -627,7 +636,7 @@ else
     "shared.txt is '$(cat "$ROOT/mrg/w-ff2/shared.txt")', want C"
 fi
 
-# List form: '1,2 merge' == '1 merge 2'. Same dest-first reading as meld's list.
+# List form sanity checks for the new grammar.
 check "list form dry-run clean"      exit=0 err="merges into" -- "1,$A" merge dry-run
 check "list form takes options"      exit=1 err="does NOT merge" -- "$C1,$M3" merge dry-run
 check "list form rejects 3"          exit=1 err="exactly two worktrees" -- "1,$A,$C1" merge
@@ -647,7 +656,7 @@ fi
 
 # --squash stages the merge without committing it.
 FF="$(cd "$MRG" && "$BIN" add ffbr --dirname w-ff >/dev/null 2>&1; midx ffbr)"
-check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" -- "$FF" merge feat-a --squash
+check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" -- "$FF,$A" merge --squash
 if [ -n "$(git -C "$ROOT/mrg/w-ff" diff --cached --name-only)" ]; then
   report PASS HAPPY "--squash leaves changes staged" "git diff --cached  # in w-ff"
 else

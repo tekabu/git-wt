@@ -26,6 +26,8 @@ USAGE:
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f]  Remove worktree N
+    git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
+    git-wt <N> merge --continue|--abort
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
     git-wt version
     git-wt --help
@@ -43,6 +45,27 @@ ADD OPTIONS:
 REMOVE OPTIONS:
     -y                    Skip the confirmation prompt
     -f, --force           Discard uncommitted/untracked changes
+
+MERGE OPTIONS:
+    -m, --message MSG     Merge commit message
+        --no-ff           Always create a merge commit
+        --ff-only         Refuse anything but a fast-forward
+        --squash          Stage the merge without committing
+    -f, --force           Merge even when worktree N has uncommitted changes
+        --continue        Conclude a conflicted merge (alias: continue)
+        --abort           Undo a conflicted merge (alias: abort)
+
+MERGE:
+    The merge runs inside worktree N, so N's branch is the one that moves:
+
+        git-wt 1 merge 2          # worktree 2's branch -> worktree 1's branch
+        git-wt 1 merge feat/x     # a branch name works too
+
+    A number that names a worktree wins over a branch of the same name.
+    On conflict, git-wt exits nonzero and lists the conflicted files; fix
+    them in worktree N, then run 'git-wt N merge --continue' (or --abort).
+    Merge commits never open an editor: without -m, git's default message is
+    taken as-is.
 
 ADD:
     The worktree directory is a sibling of the repo root, named
@@ -153,6 +176,7 @@ fn unknown_command_msg(tok: &str) -> String {
     match tok {
         "show" => "unknown command 'show'; use 'git-wt 1 path'".into(),
         "remove" | "rm" => format!("unknown command '{tok}'; use 'git-wt 1 remove'"),
+        "merge" => "unknown command 'merge'; use 'git-wt 1 merge 2'".into(),
         _ if branch_like(tok) => format!("unknown command '{tok}'; did you mean 'add {tok}'?"),
         _ => format!("unknown command '{tok}'"),
     }
@@ -197,11 +221,17 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
             }
             cmd_remove(root, &trees, idx, yes, force)
         }
+        "merge" => {
+            let args = parse_merge_args(&rest[1..])?;
+            cmd_merge(root, &trees, idx, &args)
+        }
         "-n" | "--name" => Err("switch/path/remove take no --name".into()),
         other if other.starts_with('-') => {
             Err(format!("switch/path/remove take no {other}"))
         }
-        other => Err(format!("unknown action '{other}' (switch, path, remove)")),
+        other => Err(format!(
+            "unknown action '{other}' (switch, path, remove, merge)"
+        )),
     }
 }
 
@@ -614,6 +644,261 @@ fn cmd_remove(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Merge: git-wt <N> merge <M|BRANCH> | --continue | --abort
+// ---------------------------------------------------------------------------
+
+/// What a `merge` invocation asks for. `--continue`/`--abort` resume or undo a
+/// merge that is already in progress, so they carry no source and no options.
+#[derive(Debug, PartialEq, Eq)]
+enum MergeOp {
+    Start(String),
+    Continue,
+    Abort,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MergeArgs {
+    op: MergeOp,
+    message: Option<String>,
+    no_ff: bool,
+    ff_only: bool,
+    squash: bool,
+    force: bool,
+}
+
+/// Parse the words after `git-wt <N> merge`. `continue`/`abort` are accepted
+/// bare as well as with dashes, since both spellings read naturally here.
+fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
+    let mut source: Option<String> = None;
+    let mut op: Option<MergeOp> = None;
+    let mut message = None;
+    let (mut no_ff, mut ff_only, mut squash, mut force) = (false, false, false, false);
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--continue" | "continue" => set_merge_op(&mut op, MergeOp::Continue)?,
+            "--abort" | "abort" => set_merge_op(&mut op, MergeOp::Abort)?,
+            "-m" | "--message" => {
+                message = Some(it.next().ok_or("--message needs a message")?.clone());
+            }
+            s if s.starts_with("--message=") => {
+                message = Some(s["--message=".len()..].to_string())
+            }
+            "--no-ff" => no_ff = true,
+            "--ff-only" => ff_only = true,
+            "--squash" => squash = true,
+            "-f" | "--force" => force = true,
+            s if s.starts_with('-') && s != "-" => {
+                return Err(format!("unknown option '{s}' for merge\nTry 'git-wt --help'"));
+            }
+            s => {
+                if source.is_some() {
+                    return Err("too many arguments\nTry 'git-wt --help'".into());
+                }
+                source = Some(s.to_string());
+            }
+        }
+    }
+
+    if no_ff && ff_only {
+        return Err("--no-ff and --ff-only conflict".into());
+    }
+    if squash && no_ff {
+        return Err("--squash and --no-ff conflict".into());
+    }
+
+    // A resume takes no source and no merge options: those were settled when
+    // the merge started, so silently accepting them would be a lie.
+    if let Some(op) = op {
+        let word = if op == MergeOp::Continue { "--continue" } else { "--abort" };
+        if let Some(s) = source {
+            return Err(format!("{word} takes no argument (got '{s}')"));
+        }
+        if message.is_some() || no_ff || ff_only || squash || force {
+            return Err(format!("{word} takes no merge options"));
+        }
+        return Ok(MergeArgs { op, message: None, no_ff: false, ff_only: false, squash: false, force: false });
+    }
+
+    let source = source.ok_or(
+        "merge needs a source: 'git-wt <N> merge <M|BRANCH>', or --continue/--abort",
+    )?;
+    Ok(MergeArgs { op: MergeOp::Start(source), message, no_ff, ff_only, squash, force })
+}
+
+/// Record `--continue`/`--abort`, rejecting a second one.
+fn set_merge_op(slot: &mut Option<MergeOp>, op: MergeOp) -> Result<(), String> {
+    if slot.is_some() {
+        return Err("--continue and --abort conflict".into());
+    }
+    *slot = Some(op);
+    Ok(())
+}
+
+fn cmd_merge(
+    root: &Path,
+    trees: &[Worktree],
+    idx: usize,
+    args: &MergeArgs,
+) -> Result<(), String> {
+    let dest = &trees[idx];
+    if dest.bare {
+        return Err("cannot merge into a bare worktree".into());
+    }
+    let dir = dest.path.as_path();
+    let in_progress = git_quiet(dir, &["rev-parse", "--verify", "-q", "MERGE_HEAD"]);
+    let color = std::io::stderr().is_terminal() && color_enabled(true);
+
+    match &args.op {
+        MergeOp::Abort => {
+            if !in_progress {
+                return Err(format!("no merge in progress in {}", dir.display()));
+            }
+            git_run(dir, &["merge", "--abort"])?;
+            eprintln!("{} merge in {}", paint("Aborted", GREEN, color), leaf_of(dir));
+            return Ok(());
+        }
+        MergeOp::Continue => {
+            if !in_progress {
+                return Err(format!("no merge in progress in {}", dir.display()));
+            }
+            // Unresolved paths make `git merge --continue` fail with a terse
+            // message; naming the files is what the user actually needs.
+            let stuck = conflicted_files(dir);
+            if !stuck.is_empty() {
+                return Err(conflict_msg(dir, &stuck, idx));
+            }
+            git_run_no_editor(dir, &["merge", "--continue"])?;
+            eprintln!("{} merge in {}", paint("Completed", GREEN, color), leaf_of(dir));
+            return Ok(());
+        }
+        MergeOp::Start(_) => {}
+    }
+
+    if in_progress {
+        return Err(format!(
+            "a merge is already in progress in {}\n\
+             hint: 'git-wt {n} merge --continue' or 'git-wt {n} merge --abort'",
+            dir.display(),
+            n = idx + 1
+        ));
+    }
+
+    let MergeOp::Start(source) = &args.op else { unreachable!() };
+    let src_branch = resolve_merge_source(root, trees, source)?;
+
+    if dest.branch.as_deref() == Some(src_branch.as_str()) {
+        return Err(format!("'{src_branch}' is already checked out in worktree {}", idx + 1));
+    }
+
+    // A merge into uncommitted work can end with the user's own edits tangled in
+    // conflict markers, so it takes an explicit --force. A status git can't read
+    // is not a green light, so the error propagates rather than merging blind.
+    if !args.force {
+        let porcelain = git_stdout(dir, &["status", "--porcelain"])?;
+        if has_tracked_changes(&porcelain) {
+            return Err(format!(
+                "worktree {} has uncommitted changes\nhint: commit or stash them, or re-run with -f",
+                idx + 1
+            ));
+        }
+    }
+
+    let mut argv: Vec<String> = vec!["merge".into()];
+    if args.no_ff {
+        argv.push("--no-ff".into());
+    }
+    if args.ff_only {
+        argv.push("--ff-only".into());
+    }
+    if args.squash {
+        argv.push("--squash".into());
+    }
+    if let Some(m) = &args.message {
+        argv.extend(["-m".into(), m.clone()]);
+    }
+    argv.push(src_branch.clone());
+
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    if let Err(e) = git_run_no_editor(dir, &refs) {
+        let stuck = conflicted_files(dir);
+        if stuck.is_empty() {
+            return Err(e);
+        }
+        return Err(conflict_msg(dir, &stuck, idx));
+    }
+
+    let into = label(dest);
+    let what = if args.squash { "Squashed" } else { "Merged" };
+    eprintln!(
+        "{} {src_branch} into {into}  ({})",
+        paint(what, GREEN, color),
+        leaf_of(dir)
+    );
+    if args.squash {
+        eprintln!("hint: the merge is staged but not committed");
+    }
+    Ok(())
+}
+
+/// Resolve a merge source word to a branch name. A number that names a
+/// worktree wins over a same-named branch: numbers are this tool's grammar.
+fn resolve_merge_source(
+    root: &Path,
+    trees: &[Worktree],
+    source: &str,
+) -> Result<String, String> {
+    if let Ok(n) = source.parse::<usize>() {
+        if n >= 1 && n <= trees.len() {
+            let w = &trees[n - 1];
+            return w.branch.clone().ok_or_else(|| {
+                format!("worktree {n} is {} — no branch to merge", label(w))
+            });
+        }
+    }
+    if git_quiet(root, &["rev-parse", "--verify", "-q", &format!("{source}^{{commit}}")]) {
+        return Ok(source.to_string());
+    }
+    Err(format!(
+        "no worktree or branch '{source}' (see 'git-wt list')"
+    ))
+}
+
+/// Whether `git status --porcelain` reports changes to *tracked* files, staged
+/// or not. Untracked files don't count: a merge that would overwrite one makes
+/// git refuse on its own, so they are no reason to demand `-f`. Deliberately
+/// not `classify_status`, which collapses a tree holding both kinds to
+/// `Untracked` and would wave those tracked edits through.
+fn has_tracked_changes(porcelain: &str) -> bool {
+    porcelain
+        .lines()
+        .any(|l| !l.trim().is_empty() && !l.starts_with("??"))
+}
+
+/// Paths with unresolved conflicts in a worktree, one per line.
+fn conflicted_files(dir: &Path) -> Vec<String> {
+    git_stdout(dir, &["diff", "--name-only", "--diff-filter=U"])
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// The message shown when a merge stops on conflicts: where it stopped, what
+/// is conflicted, and the two ways out.
+fn conflict_msg(dir: &Path, files: &[String], idx: usize) -> String {
+    let mut m = format!("merge conflict in {}\n", dir.display());
+    for f in files {
+        m.push_str(&format!("  {f}\n"));
+    }
+    let n = idx + 1;
+    m.push_str(&format!(
+        "hint: resolve them there, 'git add' each, then 'git-wt {n} merge --continue'\n\
+         hint: or undo the merge with 'git-wt {n} merge --abort'"
+    ));
+    m
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,6 +1475,28 @@ fn git_run(dir: &Path, args: &[&str]) -> Result<(), String> {
     }
 }
 
+/// Run git with the editor disabled. We capture git's output, so a spawned
+/// editor would have no terminal and hang; instead git's default commit message
+/// is taken as-is (`-m` is how a user overrides it).
+fn git_run_no_editor(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let out = git_cmd(dir, args)
+        .env("GIT_EDITOR", "true")
+        .env("GIT_MERGE_AUTOEDIT", "no")
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        eprintln!("{line}");
+    }
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = git_cmd(dir, args)
         .output()
@@ -1346,6 +1653,60 @@ mod tests {
         // Color: branch cell tinted green (padding inside the escape).
         let tinted = render_row(&row, &cols, &widths, Status::Clean, true);
         assert_eq!(tinted, "1  \x1b[32mmain\x1b[0m");
+    }
+
+    fn merge_args(args: &[&str]) -> Result<MergeArgs, String> {
+        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_merge_args(&v)
+    }
+
+    #[test]
+    fn tracked_changes_ignore_untracked_only() {
+        assert!(!has_tracked_changes(""));
+        assert!(!has_tracked_changes("?? new.txt"));
+        assert!(!has_tracked_changes("?? a\n?? b"));
+        assert!(has_tracked_changes(" M src/main.rs"));
+        assert!(has_tracked_changes("A  staged.rs"));
+        // The case classify_status collapses to Untracked: tracked edits are
+        // still present, so a merge here needs -f.
+        assert!(has_tracked_changes("?? new.txt\n M src/main.rs"));
+        assert!(has_tracked_changes(" M src/main.rs\n?? new.txt"));
+        assert_eq!(classify_status(" M a\n?? b"), Status::Untracked); // why not classify_status
+    }
+
+    #[test]
+    fn merge_parses_source_and_options() {
+        let a = merge_args(&["2"]).unwrap();
+        assert_eq!(a.op, MergeOp::Start("2".into()));
+        assert!(!a.no_ff && !a.squash && !a.force && a.message.is_none());
+
+        let a = merge_args(&["feat/x", "--no-ff", "-m", "sync", "-f"]).unwrap();
+        assert_eq!(a.op, MergeOp::Start("feat/x".into()));
+        assert!(a.no_ff && a.force);
+        assert_eq!(a.message.as_deref(), Some("sync"));
+
+        assert_eq!(merge_args(&["2", "--message=hi"]).unwrap().message.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn merge_accepts_bare_and_dashed_resume_words() {
+        assert_eq!(merge_args(&["continue"]).unwrap().op, MergeOp::Continue);
+        assert_eq!(merge_args(&["--continue"]).unwrap().op, MergeOp::Continue);
+        assert_eq!(merge_args(&["abort"]).unwrap().op, MergeOp::Abort);
+        assert_eq!(merge_args(&["--abort"]).unwrap().op, MergeOp::Abort);
+    }
+
+    #[test]
+    fn merge_rejects_bad_combinations() {
+        assert!(merge_args(&[]).is_err()); // no source
+        assert!(merge_args(&["--continue", "2"]).is_err()); // resume takes no source
+        assert!(merge_args(&["--continue", "--no-ff"]).is_err()); // nor options
+        assert!(merge_args(&["--continue", "--abort"]).is_err());
+        assert!(merge_args(&["2", "--no-ff", "--ff-only"]).is_err());
+        assert!(merge_args(&["2", "--squash", "--no-ff"]).is_err());
+        assert!(merge_args(&["2", "3"]).is_err()); // too many
+        assert!(merge_args(&["2", "--rebase"]).is_err()); // unknown option
+        assert!(merge_args(&["-m"]).is_err()); // -m needs a value
     }
 
     #[test]

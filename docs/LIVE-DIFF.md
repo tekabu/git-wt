@@ -3,15 +3,12 @@
 Status: **implemented** (`src/main.rs`, `cmd_diff` and the `live_diff` engine
 below it).
 
-This document was written against a proposed `git-wt <N>,<M> diff` grammar from
-an `align-diff` branch. That branch turned out to be identical to `main`, so
-`live` was built on the shipped grammar instead: **`git-wt <N> diff <M> live`**.
-Nothing else in the design changed — the rules, output, and hunk parsing below
-are what shipped. Examples spelled `1,2 diff` here read `1 diff 2` in the tool.
+The grammar is **`git-wt <N>,<M> diff [live] [hunks]`**; the old
+`git-wt <N> diff <M>` form errors with a pointer to the list form.
 
 ## The problem
 
-`git-wt <N> diff <M>` compares the two worktrees' **committed state** — it runs
+`git-wt <N>,<M> diff` compares the two worktrees' **committed state** — it runs
 `git diff <branch N>..<branch M>`. Once you hand `git diff` two refs, the working
 tree drops out of the comparison entirely. Uncommitted work is invisible.
 
@@ -101,10 +98,10 @@ positionals, so this matches. Pathspecs are only legal after `--`, so `live`
 cannot collide with a filename.
 
 ```sh
-git-wt 1 diff 2                    # committed state (unchanged default)
-git-wt 1 diff 2 live               # literal files on disk
-git-wt 1 diff 2 live hunks         # + line numbers
-git-wt 1 diff 2 --live --hunks     # dashes optional, same thing
+git-wt 1,2 diff                    # committed state (unchanged default)
+git-wt 1,2 diff live               # literal files on disk
+git-wt 1,2 diff live hunks         # + line numbers
+git-wt 1,2 diff --live --hunks     # dashes optional, same thing
 ```
 
 Rules:

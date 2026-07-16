@@ -113,6 +113,7 @@ git-wt <N>                   == git-wt <N> switch
 git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
 git-wt <N> remove [-y] [-f]  Remove worktree N
+git-wt <N> diff <M> [flags]  Diff worktree N against worktree M
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
 git-wt version
@@ -226,6 +227,40 @@ the tree you just removed** (your cwd now dangles), so the `wt` wrapper cd's you
 back to main. Remove some *other* worktree and it prints nothing — the wrapper
 leaves you exactly where you are.
 
+## Diff
+
+Diff two worktrees in the terminal, through git's own pager:
+
+```sh
+git-wt 1 diff 2             # git diff <branch 1>..<branch 2>
+git-wt 1 diff 2 ...         # git diff <branch 1>...<branch 2>
+git-wt 1 diff 2 --name-only
+git-wt 1 diff 2 --stat -- src/
+```
+
+It compares the two worktrees' **branches**, not their directories — a directory
+diff would drag in `target/`, `node_modules` and everything else `.gitignore`
+exists to hide. Detached worktrees diff by HEAD sha.
+
+`..` (the default) is everything that differs between the two. `...` is only what
+worktree M added since it forked from worktree N — the review view, which hides
+N's own newer commits.
+
+| Flag | Shows |
+|---|---|
+| `--name-only` | File names |
+| `--name-status` | File names with `A`/`M`/`D` |
+| `--stat` | File names with a churn summary |
+| `-- PATH...` | Limit to those paths |
+
+That is the whole flag set on purpose. Anything else git diff can do, get from
+git diff — the error for an unknown flag prints the exact `git diff <A>..<B>`
+command to run instead.
+
+Because the comparison is committed state, uncommitted work is invisible to it.
+When either side is dirty, git-wt says so on stderr and points you at `meld`,
+which does compare working trees.
+
 ## Meld
 
 Compare worktrees side by side in [meld](https://meldmerge.org/):
@@ -276,6 +311,20 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 remove -f` | Remove, discard dirty (still prompts) |
 | `git-wt 1 remove -y -f` | Remove, no prompt, discard dirty |
 | `git-wt 1 rm` | Alias → remove |
+
+### Diff — `git-wt <N> diff <M> [flags]`
+
+| Command | Effect |
+|---|---|
+| `git-wt 1 diff 2` | `git diff <branch 1>..<branch 2>` — everything that differs |
+| `git-wt 1 diff 2 ..` | Same, spelled out |
+| `git-wt 1 diff 2 ...` | `git diff <branch 1>...<branch 2>` — only 2's own commits |
+| `git-wt 1 diff 2 --name-only` | File names only (also `--name-status`, `--stat`) |
+| `git-wt 1 diff 2 -- src/` | Limit to `src/`; combines with the flags above |
+| `git-wt 1 diff 1` | Error `worktree #1 against itself is always empty` |
+| `git-wt 1 diff` | Error `diff needs a second worktree` |
+| `git-wt 1 diff 2 -w` | Error — unknown flag, with the `git diff` command to run instead |
+| `git-wt 1,2 diff` | Error — `diff` spells its second target out |
 
 ### Multi-target — `git-wt <N>,<N>[,<N>] meld`
 

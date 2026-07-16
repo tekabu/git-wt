@@ -20,15 +20,12 @@ git-wt 2 run -- make        # passes "make" as the command
 - The `wt` wrapper should execute the command inside the worktree and stay in the current shell afterwards.
 - The binary prints an error: a child process cannot run interactively for the parent shell.
 
-### 2. `git-wt <N> diff [REF]` — diff a worktree without switching to it
+### 2. ~~`git-wt <N> diff [REF]` — diff a worktree without switching to it~~ — SHIPPED
 
-```sh
-git-wt 2 diff        # diff vs its own HEAD/upstream
-git-wt 2 diff main   # diff vs main
-git-wt 2 diff --stat # passthrough to git diff
-```
-
-Useful when reviewing many worktrees from the primary checkout.
+Shipped as `git-wt <N> diff <M>`: the second side is a worktree number, not a
+ref, which keeps the whole grammar target-first. `..`/`...` pick the range;
+`--name-only`, `--name-status`, `--stat` and `-- PATH...` are the only flags —
+git diff itself remains the escape hatch for the rest.
 
 ### 3. `git-wt <N> fetch` / `git-wt <N> pull` — remote operations in a worktree
 
@@ -229,7 +226,7 @@ GIT_WT_NO_PROMPT=1 git-wt 2 remove -y
 
 | Phase | Features |
 |---|---|
-| First ship | `run`, `diff`, `fetch`, `pull`, `open`, shell completions |
+| First ship | `run`, ~~`diff`~~ (shipped), `fetch`, `pull`, `open`, shell completions |
 | Next | `rename`, `prune`, `list --porcelain` / `--json` |
 | Later | `sync`, `switch -`, config file, worktree notes |
 | Maybe | `--copy-from`, `--remote`, `doctor` |

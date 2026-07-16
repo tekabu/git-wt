@@ -163,13 +163,53 @@ check "N switch too many args"       exit=1 err="too many arguments" -- 1 switch
 check "index 0 errors"               exit=1 err="no worktree #0" -- 0
 check "index over range errors"      exit=1 err="there are" -- 99
 check "unknown action errors"        exit=1 err="unknown action 'bogus'" -- 1 bogus
-check "flag on target errors"        exit=1 err="switch/path/remove take no --name" -- 1 -n x
+check "flag on target errors"        exit=1 err="'-n' is an option, not an action" -- 1 -n x
+# The message must not claim an action rejects flags that it actually takes.
+check "flag on target hints actions" exit=1 err="options follow the action" -- 1 --stat
 
 # --- legacy / unknown -------------------------------------------------------
 check "legacy show hint"             exit=1 err="use 'git-wt 1 path'" -- show 1
 check "legacy remove hint"           exit=1 err="use 'git-wt 1 remove'" -- remove 1
 check "branch-like suggests add"     exit=1 err="did you mean 'add feat/x'" -- feat/x
 check "plain unknown no suggest"     exit=1 err="unknown command 'lsit'" -- lsit
+
+# --- diff -------------------------------------------------------------------
+# Give the two sides real, divergent commits: main-only 'onlymain.txt' vs
+# login-only 'onlylogin.txt'. That split is what tells '..' from '...'.
+didx="$("$BIN" list | awk '$2=="feature/login"{print $1}')"
+( cd "$APP" && echo m > onlymain.txt && git add -A && git commit -qm mainside )
+( cd "$CODE/myapp-feature-login" && echo l > onlylogin.txt && git add -A && git commit -qm loginside )
+
+# '..' is both directions: main's file shows as a deletion, login's as an add.
+check "diff --name-only both sides"  exit=0 out="onlylogin.txt" -- 1 diff "$didx" --name-only
+check "diff .. keeps main-only file" exit=0 out="onlymain.txt" -- 1 diff "$didx" .. --name-only
+# '...' is "since the fork", so main's own later commit drops out.
+dots3="$("$BIN" 1 diff "$didx" ... --name-only 2>/dev/null)"
+case "$dots3" in
+  *onlymain.txt*)
+    printf '  \033[31mFAIL\033[0m  %s  (got '\''%s'\'')\n' "diff ... hides main-only file" "$dots3"; fail=$((fail+1)) ;;
+  *onlylogin.txt*)
+    printf '  \033[32mPASS\033[0m  %s\n' "diff ... hides main-only file"; pass=$((pass+1)) ;;
+  *)
+    printf '  \033[31mFAIL\033[0m  %s  (got '\''%s'\'')\n' "diff ... hides main-only file" "$dots3"; fail=$((fail+1)) ;;
+esac
+check "diff --stat"                  exit=0 out="1 +" -- 1 diff "$didx" --stat
+check "diff --name-status"           exit=0 out="A" -- 1 diff "$didx" --name-status
+check "diff -- pathspec limits"      exit=0 out="onlylogin.txt" -- 1 diff "$didx" --name-only -- onlylogin.txt
+check "diff needs second worktree"   exit=1 err="diff needs a second worktree" -- 1 diff
+check "diff non-numeric target"      exit=1 err="'x' is not a worktree number" -- 1 diff x
+check "diff bad index errors"        exit=1 err="no worktree #99" -- 1 diff 99
+check "diff against itself errors"   exit=1 err="against itself" -- 1 diff 1
+check "diff rejects other git flags" exit=1 err="unexpected argument '-w' for diff" -- 1 diff "$didx" -w
+# The hint must name the real branches, not echo the offending flag back as a
+# ref: 'git diff -w..feat -w' is what a shadowed loop variable looks like.
+check "diff flag error hints git"    exit=1 err="run git itself: git diff main..feature/login -w" -- 1 diff "$didx" -w
+check "diff list form errors"        exit=1 err="diff spells its second target out" -- "1,$didx" diff
+
+# Uncommitted work is invisible to a ref diff, so it must be called out.
+echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"
+check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- 1 diff "$didx" --name-only
+rm -f "$CODE/myapp-feature-login/uncommitted.txt"
 
 # --- meld -------------------------------------------------------------------
 # A stub 'meld' on PATH echoes its argv, so we can assert on the paths AND the

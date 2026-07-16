@@ -26,6 +26,7 @@ USAGE:
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f]  Remove worktree N
+    git-wt <N> diff <M> [flags]  Diff worktree N against worktree M
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
     git-wt version
@@ -44,6 +45,27 @@ ADD OPTIONS:
 REMOVE OPTIONS:
     -y                    Skip the confirmation prompt
     -f, --force           Discard uncommitted/untracked changes
+
+DIFF OPTIONS:
+    ..                    Range: everything that differs (default)
+    ...                   Range: only what M added since it forked from N
+        --name-only       File names only
+        --name-status     File names with A/M/D
+        --stat            File names with a churn summary
+    -- PATH...            Limit to these paths
+
+DIFF:
+    Diffs the two worktrees' committed state (their branches), through git's
+    own pager, so uncommitted work does not show up -- 'meld' is the tool for
+    that, and diff warns when either side is dirty.
+
+        git-wt 1 diff 2              -> git diff <branch 1>..<branch 2>
+        git-wt 1 diff 2 ...          -> git diff <branch 1>...<branch 2>
+        git-wt 1 diff 2 --stat
+        git-wt 1 diff 2 -- src/
+
+    Any other git flag is an error, not a passthrough: run git yourself,
+    'git diff <A>..<B> <flag>'. The error prints that command for you.
 
 MELD:
     Opens meld on the worktree directories, in the order you list them, and
@@ -211,14 +233,17 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
             }
             cmd_remove(root, &trees, idx, yes, force)
         }
+        "diff" => cmd_diff(root, &trees, idx, &rest[1..]),
         // A single target can't be melded, but say so in meld's own terms.
         "meld" => cmd_meld(&trees, &[idx]),
-        "-n" | "--name" => Err("switch/path/remove take no --name".into()),
-        other if other.starts_with('-') => {
-            Err(format!("switch/path/remove take no {other}"))
-        }
+        // An option in the action slot is never right, whatever the option is:
+        // each action carries its own, after its own verb.
+        other if other.starts_with('-') => Err(format!(
+            "'{other}' is an option, not an action; options follow the action, \
+             e.g. 'git-wt {n} remove -f' or 'git-wt {n} diff 2 --stat'"
+        )),
         other => Err(format!(
-            "unknown action '{other}' (switch, path, remove, meld)"
+            "unknown action '{other}' (switch, path, remove, diff, meld)"
         )),
     }
 }
@@ -254,6 +279,8 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
             }
             cmd_meld(&trees, &idxs)
         }
+        // `1,2 diff` is a plausible typo for the real grammar; name it.
+        Some("diff") => Err("diff spells its second target out: 'git-wt 1 diff 2'".into()),
         // A list only makes sense for actions that take more than one worktree.
         Some(other) => Err(format!(
             "'{other}' takes a single worktree; only 'meld' takes a list"
@@ -674,7 +701,105 @@ fn cmd_remove(
 }
 
 // ---------------------------------------------------------------------------
-// Diff: git-wt <N>,<N>[,<N>] meld
+// Diff: git-wt <N> diff <M> [..|...] [flags] [-- PATH...]
+// ---------------------------------------------------------------------------
+
+/// The committed state a worktree points at. A branch name reads better in
+/// diff headers than a sha, so prefer it; detached/bare have only the sha.
+fn ref_of(w: &Worktree) -> Result<String, String> {
+    if let Some(b) = &w.branch {
+        return Ok(b.clone());
+    }
+    let sha = git_stdout(&w.path, &["rev-parse", "HEAD"])
+        .map_err(|e| format!("worktree {} has no HEAD: {e}", w.path.display()))?;
+    Ok(sha.trim().to_string())
+}
+
+/// Diff worktree `idx` against worktree M, as `git diff <ref1><dots><ref2>`.
+///
+/// Refs, not directories: a directory diff would drag in build output and
+/// everything else .gitignore exists to hide. That also means uncommitted work
+/// is invisible here, so warn when either side is dirty and point at meld.
+fn cmd_diff(root: &Path, trees: &[Worktree], idx: usize, rest: &[String]) -> Result<(), String> {
+    let target = rest
+        .first()
+        .ok_or("diff needs a second worktree, e.g. 'git-wt 1 diff 2'")?;
+    let n: usize = target
+        .parse()
+        .map_err(|_| format!("'{target}' is not a worktree number; try 'git-wt 1 diff 2'"))?;
+    let other = check_index(n, trees.len())?;
+    if other == idx {
+        return Err(format!("worktree #{n} against itself is always empty"));
+    }
+
+    let a = ref_of(&trees[idx])?;
+    let b = ref_of(&trees[other])?;
+
+    // `..`/`...` are git's own range spelling, so they stay the vocabulary here
+    // rather than becoming a flag with a new name to learn.
+    let mut dots = "..";
+    let mut argv: Vec<String> = Vec::new();
+    let mut it = rest[1..].iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            ".." => dots = "..",
+            "..." => dots = "...",
+            // Everything past `--` is a pathspec; git validates it, not us.
+            "--" => {
+                argv.push(arg.clone());
+                argv.extend(it.cloned());
+                break;
+            }
+            "--name-only" | "--name-status" | "--stat" => argv.push(arg.clone()),
+            unknown => {
+                return Err(format!(
+                    "unexpected argument '{unknown}' for diff\n\
+                     diff takes .., ..., --name-only, --name-status, --stat, -- PATH...\n\
+                     hint: for any other git flag, run git itself: \
+                     git diff {a}{dots}{b} {unknown}"
+                ));
+            }
+        }
+    }
+
+    let on = color_enabled(std::io::stderr().is_terminal());
+    for &i in &[idx, other] {
+        if is_dirty(&trees[i].path) {
+            eprintln!(
+                "{} #{} {} has uncommitted changes; this diff is committed state only \
+                 (try 'git-wt {},{} meld')",
+                paint("warning:", YELLOW, on),
+                i + 1,
+                label(&trees[i]),
+                idx + 1,
+                other + 1
+            );
+        }
+    }
+
+    // Inherit stdio so git's own pager and color logic apply, exactly as a
+    // hand-typed `git diff` would.
+    let status = git_cmd(root, &[])
+        .arg("diff")
+        .arg(format!("{a}{dots}{b}"))
+        .args(&argv)
+        .status()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if !status.success() {
+        return Err("git diff exited with an error".into());
+    }
+    Ok(())
+}
+
+/// Does the worktree have uncommitted tracked changes or untracked files?
+/// Unknown (bare, or git failed) counts as not dirty: no warning beats a wrong
+/// one. Porcelain stays interpreted in exactly one place, `classify_status`.
+fn is_dirty(dir: &Path) -> bool {
+    matches!(worktree_status(dir), Status::Dirty | Status::Untracked)
+}
+
+// ---------------------------------------------------------------------------
+// Meld: git-wt <N>,<N>[,<N>] meld
 // ---------------------------------------------------------------------------
 
 /// Open meld on 2-3 worktree directories, in the order given, and wait for it.

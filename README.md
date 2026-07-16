@@ -396,9 +396,12 @@ It exits 0 when clean and 1 when it would conflict, so it drives a script:
 if git-wt 1 merge 2 dry-run; then git-wt 1 merge 2; fi
 ```
 
-`dry-run` takes no commit-shaping flags (`-m`, `--no-ff`, `--squash`, `-f`) —
-there is no commit for them to shape. A side is allowed, since it changes the
-answer.
+`dry-run` takes none of the flags that need a real merge to run — `-m`,
+`--no-ff`, `--squash`, `--ff-only`, `-f`. Some shape the resulting commit and
+there is no commit; `--ff-only` and `-f` gate whether the merge may run at all,
+and nothing runs. (In particular `merge-tree` resolves in memory and never
+fast-forwards, so `--ff-only` could not be honored even in principle.) A side is
+allowed, since it changes the answer.
 
 Merges never open an editor: without `-m`, git's default message is taken as-is.
 A destination with uncommitted changes to **tracked** files is refused without

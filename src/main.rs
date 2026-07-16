@@ -356,7 +356,7 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
             }
             // Hand the source to the single-target parser as the positional it
             // already understands, so both spellings share one code path.
-            let mut argv = vec![(idxs[1] + 1).to_string()];
+            let mut argv = vec![ns[1].to_string()];
             argv.extend_from_slice(&rest[1..]);
             let args = parse_merge_args(&argv)?;
             cmd_merge(root, &trees, idxs[0], &args)
@@ -370,6 +370,11 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
 }
 
 /// The resume word a token spells, in any of its accepted forms, or None.
+///
+/// Only `continue`/`abort` qualify: they act on a merge that already exists, so
+/// they name no source and a worktree list has nothing to hand them. The other
+/// keywords — `ours`, `theirs`, `dry-run` — all describe a merge that is about
+/// to start, so they combine with a list perfectly well.
 fn resume_word(tok: &str) -> Option<&'static str> {
     match tok {
         "continue" | "--continue" | "-c" => Some("continue"),
@@ -912,7 +917,7 @@ fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
                 w = sd.word()
             ));
         }
-        let mut bad = shaping_flags(message.as_ref(), no_ff, ff_only, squash, force);
+        let mut bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
         if dry_run {
             bad.push("dry-run");
         }
@@ -934,7 +939,7 @@ fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
     // A dry run computes the merge in memory and writes nothing, so the flags
     // that shape a real merge commit have nothing to act on.
     if dry_run {
-        let bad = shaping_flags(message.as_ref(), no_ff, ff_only, squash, force);
+        let bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
         if !bad.is_empty() {
             return Err(format!("dry-run takes no merge options (got {})", bad.join(", ")));
         }
@@ -973,10 +978,15 @@ fn set_merge_op(slot: &mut Option<MergeOp>, op: MergeOp) -> Result<(), String> {
     }
 }
 
-/// The merge-shaping flags that are set, named as the user would type them.
-/// Shared so `continue`/`abort`/`dry-run` can all name what they are rejecting
-/// instead of just saying "no merge options".
-fn shaping_flags(
+/// The flags that only mean something when a real merge runs, as the user would
+/// type them. Some shape the resulting commit (`-m`, `--no-ff`, `--squash`),
+/// others gate whether it may run at all (`--ff-only`, `-f`) — either way they
+/// need a merge that is about to start, which is exactly what `continue`/
+/// `abort` (one already stopped) and `dry-run` (none at all) do not have.
+///
+/// Shared so all three can name what they are rejecting rather than just
+/// saying "no merge options".
+fn start_only_flags(
     message: Option<&String>,
     no_ff: bool,
     ff_only: bool,
@@ -2293,10 +2303,15 @@ mod tests {
     }
 
     #[test]
-    fn merge_dry_run_rejects_commit_shaping_flags() {
+    fn merge_dry_run_rejects_start_only_flags() {
         assert!(merge_args(&["2", "dry-run", "--no-ff"]).is_err());
         assert!(merge_args(&["2", "dry-run", "-m", "x"]).is_err());
         assert!(merge_args(&["2", "dry-run", "-f"]).is_err());
+        // --ff-only gates the merge rather than shaping its commit, but a dry
+        // run has no merge to gate: merge-tree resolves in memory and never
+        // fast-forwards anything, so honoring it is impossible.
+        let e = merge_args(&["2", "dry-run", "--ff-only"]).unwrap_err();
+        assert!(e.contains("got --ff-only"), "{e}");
         // A side is fine: it changes what the dry run would report.
         assert!(merge_args(&["2", "dry-run", "theirs"]).is_ok());
     }

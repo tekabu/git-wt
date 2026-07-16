@@ -174,7 +174,7 @@ check "list filter keeps index"      exit=0 out="2  feature/login" -- list logi
 check "list --col branch only"       exit=0 out="feature/login" -- list --col 2 logi
 check "list --col id+branch"         exit=0 out="2  feature/login" -- list --col 1,2 logi
 check "list --col reorder"           exit=0 out="feature/login  2" -- list --col 2,1 logi
-check "list --col bad number"        exit=1 err="no column 6" -- list --col 6
+check "list --col bad number"        exit=1 err="no column 7" -- list --col 7
 check "list --col non-numeric"       exit=1 err="bad column 'x'" -- list --col x
 check "bare --col (no list word)"    exit=0 out="main" -- --col 2
 check "bare -c short flag"           exit=0 out="main" -- -c 1,2
@@ -226,7 +226,7 @@ check "index 0 errors"               exit=1 err="no worktree #0" -- 0
 check "index over range errors"      exit=1 err="there are" -- 99
 # Pin the whole action list, not just the prefix: the README documents it, and
 # a substring match let it drift silently when diff/meld were added.
-check "unknown action errors"        exit=1 err="unknown action 'bogus' (switch, path, remove, diff, merge, meld)" -- 1 bogus
+check "unknown action errors"        exit=1 err="unknown action 'bogus' (switch, path, remove, diff, merge, meld, merged)" -- 1 bogus
 check "flag on target errors"        exit=1 err="'-n' is an option, not an action" -- 1 -n x
 # The message must not claim an action rejects flags that it actually takes.
 check "flag on target hints actions" exit=1 err="options follow the action" -- 1 --stat
@@ -554,6 +554,39 @@ if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
 else
   report PASS HAPPY "dry-run leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2"
 fi
+
+# --- merged -----------------------------------------------------------------
+# Read-only ancestor check; state is unchanged. Uses the same fixture as merge.
+# cb3 has one commit (C) that is not in main, so it is a stable "ahead" case.
+# stuckbr was branched from cb2, so it is cleanly contained in cb2.
+# Assumes the harness is standing on 'main' (worktree 1), so a self-check reads
+# "Merged main is already in main".
+check "merged current in itself"     exit=0 err="Merged main is already in main" -- 1 merged
+check "merged cb3 not in main"       exit=1 err="Ahead cb3 is NOT in main (ahead 1)" -- 1 merged "$M3"
+check "merged stuckbr is in cb2"     exit=0 err="Merged stuckbr is already in cb2" -- "$C2" merged "$FF2"
+check "merged list form dest-first"  exit=1 err="Ahead cb3 is NOT in main (ahead 1)" -- "1,$M3" merged
+check "merged list form reversed"    exit=0 err="Merged stuckbr is already in cb2" -- "$C2,$FF2" merged
+check "merged too many args"         exit=1 err="too many arguments" -- 1 merged "$M3" extra
+check "merged unknown source"        exit=1 err="no worktree or branch 'zzz'" -- 1 merged zzz
+check "merged self single form"      exit=1 err="already checked out in worktree 1" -- 1 merged 1
+check "merged list too many"         exit=1 err="merged takes exactly two worktrees" -- "1,$M3,$C2" merged
+check "merged list form extra arg"   exit=1 err="merged takes no arguments" -- "1,$M3" merged extra
+check "merged list form dup"         exit=1 err="worktree #1 listed twice" -- "1,1" merged
+check "merged legacy hint"           exit=1 err="use 'git-wt 1 merged' or 'git-wt 1,2 merged'" -- merged 2
+
+# A branchless worktree is a legitimate 'merged' source: unlike merge, which
+# needs a branch name for the merge commit, 'merged' only asks containment, so
+# it answers by sha. Both spellings must give the same answer.
+# Torn down right after: 'git worktree list' orders by path, so leaving this one
+# in would renumber the worktrees the hardcoded indices below depend on.
+git worktree add --detach "$ROOT/mrg/w-det" main >/dev/null 2>&1
+DET="$(midx '(detached)')"
+check "merged detached single form"  exit=0 err="is already in main" -- 1 merged "$DET"
+check "merged detached list form"    exit=0 err="is already in main" -- "1,$DET" merged
+git worktree remove --force "$ROOT/mrg/w-det" >/dev/null 2>&1
+
+# Column 6 in list: shows merged/ahead relative to the current branch (main).
+check "list --col 6"                 exit=0 out="ahead 1" -- list --col 1,2,6
 
 # ours/theirs settle the collision that stopped the plain merge above.
 # cb3 (shared.txt=C) vs w-cb2 (shared.txt=B): theirs takes C, ours keeps B.

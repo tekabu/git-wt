@@ -117,6 +117,9 @@ git-wt <N> remove [-y] [-f]  Remove worktree N
 git-wt <N>,<M> merge         Merge M into N
 git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
 git-wt <N> merge continue|abort
+git-wt <N>,<M> merged        Is M's branch already in N's branch?
+git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
+git-wt <N> merged            Is N's branch already in the current branch?
 git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
@@ -151,13 +154,15 @@ SEARCH` fuzzy-filters that list; the **numbers stay the original indices**, so
 `git-wt <N> remove` always means the same tree regardless of any filter. No
 match is an error (exit 1).
 
-`--col` picks and orders columns — `1`=id, `2`=branch, `3`=dir (full path):
+`--col` picks and orders columns — `1`=id, `2`=branch, `3`=dir (full path),
+`6`=merged (relative to the branch you are standing in):
 
 ```sh
 git-wt list --col 2,3        # branch + path, no id
 git-wt list --col 1,2        # id + branch, no path
 git-wt list --col 2          # branch only
 git-wt list --col 3,2,1      # reversed
+git-wt list --col 1,2,6      # id + branch + merged status
 git-wt list --col 1,2 feat   # combine with a filter
 ```
 
@@ -489,6 +494,47 @@ unresolved files re-prints the conflict list rather than failing obscurely.
 
 Merge prints nothing on stdout; all status goes to stderr.
 
+## Merged
+
+Ask whether one branch is already contained in another. This is different from
+`merge dry-run`: `dry-run` asks "would it merge cleanly?", while `merged` asks
+"is it already in?".
+
+```sh
+git-wt 1 merged              # is worktree 1's branch already in the current branch?
+git-wt 1,2 merged            # is worktree 2's branch already in worktree 1's branch?
+git-wt 1 merged feat/x       # is branch feat/x already in worktree 1's branch?
+```
+
+It uses `git merge-base --is-ancestor`, so it exits `0` when already merged and
+`1` when not — the same contract as `merge dry-run`. That makes it useful for
+safe cleanup:
+
+```sh
+if git-wt 1 merged; then git-wt 1 remove -y; fi
+```
+
+Output mirrors the dry-run style:
+
+```
+Merged   feat/x is already in main
+Ahead    feat/x is NOT in main (ahead 3)
+```
+
+The ahead count comes from `git rev-list --count main..feat/x`. Both
+single-target and list forms read dest-first, exactly like `merge`.
+
+Naming a pair of worktrees uses the list form, as `merge` and `diff` do, so
+`git-wt 1 merged 2` is rejected in favour of `git-wt 1,2 merged`. The
+single-target form stays for a branch source, which a list of numbers cannot
+name.
+
+Detached worktrees are named by their short commit SHA in `merged` and `diff`
+output instead of a branch name; `merge` and `meld` still show `(detached)`.
+The answer is still correct, just less readable. A detached worktree has no
+branch to name, so the list form is the way to ask about one:
+`git-wt 1,2 merged` answers by SHA.
+
 ## Command reference (all combinations)
 
 Every form the CLI accepts. Examples assume:
@@ -532,6 +578,9 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 merge continue` | Conclude a conflicted merge (`--continue`, `-c`) |
 | `git-wt 1 merge abort` | Undo a conflicted merge (`--abort`, `-a`) |
 | `git-wt 1 merge 2` | `merge takes a worktree list: 'git-wt 1,2 merge' (or use 'heads/2' for a branch of the same name)` |
+| `git-wt 1 merged` | Is worktree 1's branch already in the current branch? |
+| `git-wt 1 merged feat/x` | Is branch `feat/x` already in worktree 1's branch? |
+| `git-wt 1,2 merged` | Is worktree 2's branch already in worktree 1's? |
 
 ### Diff — `git-wt <N>,<M> diff [flags]`
 
@@ -560,7 +609,7 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 meld` | Error `meld needs 2 or 3 worktrees` |
 | `git-wt 1,2,3,4 meld` | Error `meld takes at most 3 worktrees, got 4` |
 | `git-wt 1,1 meld` | Error `worktree #1 listed twice` |
-| `git-wt 1,2 remove` | Error — only `diff` and `meld` take a list |
+| `git-wt 1,2 remove` | Error — only `diff`, `meld`, `merge` and `merged` take a list |
 
 Through the wrapper: `wt 1` / `wt 1 switch` / `wt 1 cd` cd into it; `wt 1 remove`
 cd's back to main; `wt 1 path` / `wt 1 show` only print.
@@ -613,7 +662,7 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt` outside a repo | `not inside a git repository` |
 | `git-wt 0` | `no worktree #0` |
 | `git-wt 99` | `no worktree #99; there are N (see 'git-wt list')` |
-| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, diff, merge, meld)` |
+| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, diff, merge, meld, merged)` |
 | `git-wt 1 switch path` | `too many arguments` |
 | `git-wt 1 -n x` | `'-n' is an option, not an action; options follow the action, e.g. 'git-wt 1 remove -f' or 'git-wt 1,2 diff --stat'` |
 | `git-wt 1 remove` on main/bare | `refusing to remove the main worktree` |
@@ -638,6 +687,16 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt 1 merge theirs continue` | `continue takes no merge options` + why, and the abort/redo route |
 | `git-wt 1,2 merge dry-run --no-ff` | `dry-run takes no merge options` |
 | `git-wt 1,2 merge dry-run` (git < 2.38) | `dry-run needs git 2.38 or newer (git merge-tree --write-tree)` |
+| `git-wt merged` (bare word) | `unknown command 'merged'; use 'git-wt 1 merged' or 'git-wt 1,2 merged'` |
+| `git-wt 1 merged 2` | `merged takes a worktree list: 'git-wt 1,2 merged' (or use 'heads/2' for a branch of the same name)` |
+| `git-wt 1,2,3 merged` | `merged takes exactly two worktrees, not 3` |
+| `git-wt 1 merged feat/x extra` | `too many arguments` |
+| `git-wt 1 merged zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
+| `git-wt 1 merged 1` | `'main' is already checked out in worktree 1` |
+| `git-wt 1,1 merged` | `worktree #1 listed twice` |
+| `git-wt 1,2 merged` (2 not in 1) | `error: Ahead <branch> is NOT in <branch> (ahead N)`, exit 1 |
+| `git-wt list --col 6` | Adds a `merged`/`ahead N`/`ahead` column relative to current branch |
+| `git-wt list --col 7` | `no column 7 (use 1=id, 2=branch, 3=dir, 4=status, 5=last, 6=merged)` |
 | `add feat/x -n a --dirname b` | `--name and --dirname conflict` |
 | `add feat/x -n ""` | `--name cannot be empty` |
 | `add feat/x --dirname ""` | `--dirname cannot be empty` |

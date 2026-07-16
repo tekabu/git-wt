@@ -20,8 +20,8 @@ USAGE:
     git-wt list [SEARCH] [--col ...] [--long|--short]
                                  List, optional fuzzy filter; --col picks/orders
                                  columns (1=id, 2=branch, 3=dir, 4=status,
-                                 5=last-commit). --long shows all; --short is a
-                                 one-line id+branch+status summary.
+                                 5=last-commit, 6=merged). --long shows id/branch/dir/
+                                 status/last; --short is a one-line id+branch+status summary.
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
@@ -29,6 +29,9 @@ USAGE:
     git-wt <N>,<M> merge         Merge M into N
     git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
     git-wt <N> merge continue|abort
+    git-wt <N>,<M> merged        Is M's branch already in N's branch?
+    git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
+    git-wt <N> merged            Is N's branch already in the current branch?
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
@@ -251,6 +254,7 @@ fn unknown_command_msg(tok: &str) -> String {
         "show" => "unknown command 'show'; use 'git-wt 1 path'".into(),
         "remove" | "rm" => format!("unknown command '{tok}'; use 'git-wt 1 remove'"),
         "merge" => "unknown command 'merge'; use 'git-wt 1,2 merge'".into(),
+        "merged" => "unknown command 'merged'; use 'git-wt 1 merged' or 'git-wt 1,2 merged'".into(),
         _ if branch_like(tok) => format!("unknown command '{tok}'; did you mean 'add {tok}'?"),
         _ => format!("unknown command '{tok}'"),
     }
@@ -318,6 +322,46 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
             }
             cmd_merge(root, &trees, idx, &args)
         }
+        "merged" => {
+            let args = &rest[1..];
+            if args.len() > 1 {
+                return Err("too many arguments\nTry 'git-wt --help'".into());
+            }
+            // A worktree-number source uses the list form, as merge and diff do;
+            // the single form stays for a branch source, which a list of numbers
+            // cannot name. A source equal to the destination falls through to the
+            // self-check below for its clearer "already checked out" error.
+            if let Some(src) = args.first() {
+                if let Ok(m) = src.parse::<usize>() {
+                    if m != n && (1..=trees.len()).contains(&m) {
+                        return Err(format!(
+                            "merged takes a worktree list: 'git-wt {n},{m} merged' \
+                             (or use 'heads/{m}' for a branch of the same name)"
+                        ));
+                    }
+                }
+            }
+            let has_explicit_source = !args.is_empty();
+            let src = if has_explicit_source {
+                // "git-wt N merged BRANCH" reads dest-first, like merge.
+                resolve_merge_source(root, &trees, &args[0])?
+            } else {
+                // "git-wt N merged" asks whether N's branch is already in the
+                // branch we are standing in now.
+                ref_of(&trees[idx])?
+            };
+            let dest = if has_explicit_source {
+                ref_of(&trees[idx])?
+            } else {
+                current_ref()
+            };
+            // Reject the explicit self-check (1 merged 1) the same way merge
+            // does; the bare form (1 merged) intentionally asks about itself.
+            if has_explicit_source && src == dest {
+                return Err(format!("'{src}' is already checked out in worktree {}", idx + 1));
+            }
+            cmd_merged(root, &src, &dest)
+        }
         // A single target can't be melded, but say so in meld's own terms.
         "meld" => cmd_meld(&trees, &[idx]),
         // An option in the action slot is never right, whatever the option is:
@@ -327,7 +371,7 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
              e.g. 'git-wt {n} remove -f' or 'git-wt {n},2 diff --stat'"
         )),
         other => Err(format!(
-            "unknown action '{other}' (switch, path, remove, diff, merge, meld)"
+            "unknown action '{other}' (switch, path, remove, diff, merge, meld, merged)"
         )),
     }
 }
@@ -391,9 +435,28 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
             let args = parse_merge_args(&argv)?;
             cmd_merge(root, &trees, idxs[0], &args)
         }
+        // `1,2 merged` == "is 2 already in 1?" — same dest-first reading as merge.
+        Some("merged") => {
+            if idxs.len() != 2 {
+                return Err(format!(
+                    "merged takes exactly two worktrees, not {}: 'git-wt <N>,<M> merged' \
+                     asks whether M is already in N",
+                    idxs.len()
+                ));
+            }
+            if rest.len() > 1 {
+                return Err("merged takes no arguments\nTry 'git-wt --help'".into());
+            }
+            if idxs[0] == idxs[1] {
+                return Err(format!("worktree #{} listed twice", idxs[0] + 1));
+            }
+            let dest = ref_of(&trees[idxs[0]])?;
+            let src = ref_of(&trees[idxs[1]])?;
+            cmd_merged(root, &src, &dest)
+        }
         // A list only makes sense for actions that take more than one worktree.
         Some(other) => Err(format!(
-            "'{other}' takes a single worktree; only 'diff', 'meld' and 'merge' take a list"
+            "'{other}' takes a single worktree; only 'diff', 'meld', 'merge' and 'merged' take a list"
         )),
         None => Err("a worktree list needs an action, e.g. 'git-wt 1,2 diff'".into()),
     }
@@ -513,13 +576,18 @@ fn cmd_list(
     // Branch color needs status too, so fetch it whenever we color or show it.
     let need_status = color || cols.contains(&4);
     let need_last = cols.contains(&5);
+    let need_merged = cols.contains(&6);
     let header = !explicit && stdout_tty && mode != ListMode::Short;
 
     // Right-align the index to the widest possible so filtered output lines up.
     let numw = trees.len().to_string().len();
 
+    // The branch we are standing in; column 6 asks whether each row's branch is
+    // already contained in it.
+    let here = if need_merged { current_ref() } else { String::new() };
+
     // Per-row metadata, fetched once (read-only git calls).
-    let meta: Vec<(Status, String)> = rows
+    let meta: Vec<(Status, String, String)> = rows
         .iter()
         .map(|(_, w)| {
             let st = if need_status && !w.bare {
@@ -528,7 +596,12 @@ fn cmd_list(
                 Status::Unknown
             };
             let last = if need_last { last_commit(&w.path) } else { String::new() };
-            (st, last)
+            let merged = if need_merged {
+                merged_text(root, w, &here)
+            } else {
+                String::new()
+            };
+            (st, last, merged)
         })
         .collect();
 
@@ -537,14 +610,15 @@ fn cmd_list(
     let cells: Vec<Vec<String>> = rows
         .iter()
         .zip(&meta)
-        .map(|((i, w), (st, last))| {
+        .map(|((i, w), (st, last, merged))| {
             cols.iter()
                 .map(|c| match c {
                     1 => format!("{:>numw$}", i + 1, numw = numw),
                     2 => label(w),
                     3 => w.path.display().to_string(),
                     4 => status_text(*st).to_string(),
-                    _ => last.clone(),
+                    5 => last.clone(),
+                    _ => merged.clone(),
                 })
                 .collect()
         })
@@ -565,7 +639,7 @@ fn cmd_list(
         println!("{}", paint(&line, DIM, color));
     }
 
-    for (row, (st, _)) in cells.iter().zip(&meta) {
+    for (row, (st, _, _)) in cells.iter().zip(&meta) {
         let line = render_row(row, &cols, &widths, *st, color);
         println!("{line}");
     }
@@ -579,7 +653,8 @@ fn col_header(c: usize) -> &'static str {
         2 => "branch",
         3 => "path",
         4 => "status",
-        _ => "last",
+        5 => "last",
+        _ => "merged",
     }
 }
 
@@ -617,8 +692,8 @@ fn render_row(
 }
 
 /// Parse `--col` value like "1,2,4" into column ids.
-/// 1=id, 2=branch, 3=dir, 4=status, 5=last-commit.
-const COL_HELP: &str = "1=id, 2=branch, 3=dir, 4=status, 5=last";
+/// 1=id, 2=branch, 3=dir, 4=status, 5=last-commit, 6=merged.
+const COL_HELP: &str = "1=id, 2=branch, 3=dir, 4=status, 5=last, 6=merged";
 
 fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
     let mut v = Vec::new();
@@ -630,7 +705,7 @@ fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
         let n: usize = p
             .parse()
             .map_err(|_| format!("bad column '{p}' (use {COL_HELP})"))?;
-        if n < 1 || n > 5 {
+        if n < 1 || n > 6 {
             return Err(format!("no column {n} (use {COL_HELP})"));
         }
         v.push(n);
@@ -732,6 +807,27 @@ fn last_commit(path: &Path) -> String {
     git_stdout(path, &["log", "-1", "--format=%ar"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// Short text for the "merged" column: whether `w`'s branch is already in the
+/// branch we are standing in (`here`). `-` for bare worktrees or failures.
+fn merged_text(root: &Path, w: &Worktree, here: &str) -> String {
+    let Some(src) = w.branch.as_deref() else {
+        return "-".into();
+    };
+    match git_cmd(root, &["merge-base", "--is-ancestor", src, here])
+        .output()
+    {
+        Ok(out) => match out.status.code() {
+            Some(0) => "merged".into(),
+            Some(1) => match ahead_count(root, src, here) {
+                Ok(n) => format!("ahead {n}"),
+                Err(_) => "ahead".into(),
+            },
+            _ => "-".into(),
+        },
+        Err(_) => "-".into(),
+    }
 }
 
 /// Case-insensitive subsequence match over "<label> <path>".
@@ -1250,6 +1346,52 @@ fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> Result<(), S
     }
 }
 
+// ---------------------------------------------------------------------------
+// Merged: git-wt <N> merged [<M|BRANCH>] | git-wt <N>,<M> merged
+// ---------------------------------------------------------------------------
+
+/// Report whether `src` is already an ancestor of `dest`.
+///
+/// `git merge-base --is-ancestor` exits 0 when src is contained in dest, 1 when
+/// it is not, and anything else is a real error. This is the same exit-code
+/// contract `merge_dry_run` already uses, so `if git-wt 1 merged; then ...` works.
+fn cmd_merged(dir: &Path, src: &str, dest: &str) -> Result<(), String> {
+    let out = git_cmd(dir, &["merge-base", "--is-ancestor", src, dest])
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+
+    let color = std::io::stderr().is_terminal() && color_enabled(true);
+
+    match out.status.code() {
+        Some(0) => {
+            eprintln!(
+                "{} {src} is already in {dest}",
+                paint("Merged", GREEN, color)
+            );
+            Ok(())
+        }
+        Some(1) => {
+            let count_msg = match ahead_count(dir, src, dest) {
+                Ok(n) => format!("ahead {n}"),
+                Err(_) => "ahead".to_string(),
+            };
+            Err(format!("Ahead {src} is NOT in {dest} ({count_msg})"))
+        }
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            Err(err.trim().to_string())
+        }
+    }
+}
+
+/// Number of commits in `src` that are not in `dest` (`dest..src`).
+fn ahead_count(dir: &Path, src: &str, dest: &str) -> Result<usize, String> {
+    let s = git_stdout(dir, &["rev-list", "--count", &format!("{dest}..{src}")])?;
+    s.trim()
+        .parse()
+        .map_err(|e| format!("could not parse ahead count: {e}"))
+}
+
 /// Resolve a merge source word to a branch name. A number that names a
 /// worktree wins over a same-named branch: numbers are this tool's grammar.
 fn resolve_merge_source(
@@ -1313,12 +1455,12 @@ fn conflict_msg(dir: &Path, files: &[String], idx: usize) -> String {
 // ---------------------------------------------------------------------------
 
 /// The committed state a worktree points at. A branch name reads better in
-/// diff headers than a sha, so prefer it; detached/bare have only the sha.
+/// diff headers than a sha, so prefer it; detached/bare use the short sha.
 fn ref_of(w: &Worktree) -> Result<String, String> {
     if let Some(b) = &w.branch {
         return Ok(b.clone());
     }
-    let sha = git_stdout(&w.path, &["rev-parse", "HEAD"])
+    let sha = git_stdout(&w.path, &["rev-parse", "--short", "HEAD"])
         .map_err(|e| format!("worktree {} has no HEAD: {e}", w.path.display()))?;
     Ok(sha.trim().to_string())
 }
@@ -2709,9 +2851,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_cols_accepts_status_and_last() {
+    fn parse_cols_accepts_status_last_and_merged() {
         assert_eq!(parse_cols("1,4,5").unwrap(), vec![1, 4, 5]);
-        assert!(parse_cols("6").is_err());
+        assert_eq!(parse_cols("1,2,6").unwrap(), vec![1, 2, 6]);
+        assert!(parse_cols("7").is_err());
     }
 
     #[test]
@@ -2892,6 +3035,10 @@ mod tests {
             unknown_command_msg("feat/x"),
             "unknown command 'feat/x'; did you mean 'add feat/x'?"
         );
+        assert_eq!(
+            unknown_command_msg("merged"),
+            "unknown command 'merged'; use 'git-wt 1 merged' or 'git-wt 1,2 merged'"
+        );
         assert_eq!(unknown_command_msg("lsit"), "unknown command 'lsit'");
     }
 
@@ -2987,5 +3134,53 @@ diff --git a/gone.txt b/gone.txt
         );
         assert_eq!(summary(&[f(1, 1)]), "1 file changed, 1 insertion(+), 1 deletion(-)");
         assert_eq!(summary(&[f(0, 2)]), "1 file changed, 2 deletions(-)");
+    }
+
+    /// `cmd_merged` exit contract: Ok when src is already in dest, Err when not.
+    #[test]
+    fn merged_reports_ancestor_and_non_ancestor() {
+        let tmp = std::env::temp_dir().join(format!(
+            "git-wt-merged-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let mut c = std::process::Command::new("git");
+            c.current_dir(dir).args(args);
+            let out = c.output().unwrap();
+            assert!(out.status.success(), "git {:?} failed: {:?}", args, out);
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp,
+            &[
+                "init",
+                "--quiet",
+                "--initial-branch=main",
+            ],
+        );
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        std::fs::write(tmp.join("x.txt"), "init").unwrap();
+        git(&tmp, &["add", "x.txt"]);
+        git(&tmp, &["commit", "--quiet", "-m", "init"]);
+        git(&tmp, &["branch", "feat"]);
+        git(&tmp, &["checkout", "--quiet", "feat"]);
+        std::fs::write(tmp.join("y.txt"), "a").unwrap();
+        git(&tmp, &["add", "y.txt"]);
+        git(&tmp, &["commit", "--quiet", "-m", "add"]);
+
+        // main is an ancestor of feat.
+        assert!(cmd_merged(&tmp, "main", "feat").is_ok());
+        // feat is not an ancestor of main: 1 commit ahead.
+        let err = cmd_merged(&tmp, "feat", "main").unwrap_err();
+        assert!(err.contains("Ahead feat is NOT in main"), "{err}");
+        assert!(err.contains("ahead 1"), "{err}");
+        // A non-existent ref propagates git's error.
+        let err = cmd_merged(&tmp, "no-such-ref", "main").unwrap_err();
+        assert!(err.contains("no-such-ref") || err.contains("Not a valid object"), "{err}");
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

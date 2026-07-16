@@ -356,26 +356,34 @@ check "remove dirty with -f"         exit=0 -- "$didx" remove -y -f
 # Self-contained repo: merges move branches, so keep them off the shared fixture.
 #   main    base.txt, shared.txt="0"
 #   feat-a  adds a.txt          (clean merge into main)
-#   cb1/cb2/cb3 shared.txt A vs B vs C  (each conflicts with the others)
+#   cb1/cb2/cb3/cb4 shared.txt A vs B vs C vs D  (each conflicts with the others)
+#   stuckbr  a second copy of B, kept aside so a merge can be left stopped
 MRG="$ROOT/mrg/app"; mkdir -p "$MRG"
 ( cd "$MRG"
   git init -q; git config user.email t@t; git config user.name t
   echo base > base.txt; echo 0 > shared.txt
   git add .; git commit -q -m init
-  git branch feat-a; git branch cb1; git branch cb2; git branch cb3; git branch ffbr; git branch dirtybr
+  git branch feat-a; git branch cb1; git branch cb2; git branch cb3; git branch cb4
+  git branch ffbr; git branch dirtybr
   git checkout -q feat-a; echo a > a.txt; git add a.txt; git commit -q -m a
   git checkout -q cb1; echo A > shared.txt; git commit -q -am A
   git checkout -q cb2; echo B > shared.txt; git commit -q -am B
   git checkout -q cb3; echo C > shared.txt; git commit -q -am C
+  git checkout -q cb4; echo D > shared.txt; git commit -q -am D
+  # stuckbr forks from cb2 *before* any test merges into it, so it still
+  # genuinely collides with cb3 late in the run.
+  git branch stuckbr cb2
   git checkout -q main 2>/dev/null || git checkout -q master
   "$BIN" add feat-a  --dirname w-feat  >/dev/null 2>&1
   "$BIN" add cb1     --dirname w-cb1   >/dev/null 2>&1
   "$BIN" add cb2     --dirname w-cb2   >/dev/null 2>&1
+  "$BIN" add stuckbr --dirname w-ff2   >/dev/null 2>&1
   "$BIN" add dirtybr --dirname w-dirty >/dev/null 2>&1 )
 
 cd "$MRG" || exit 1
 midx() { "$BIN" list | awk -v b="$1" '$2==b{print $1}'; }
 A="$(midx feat-a)"; C1="$(midx cb1)"; C2="$(midx cb2)"; D="$(midx dirtybr)"
+FF2="$(midx stuckbr)"
 
 # Errors before any state changes.
 check "merge needs a source"         exit=1 err="merge needs a source" -- 1 merge
@@ -383,7 +391,12 @@ check "merge unknown source"         exit=1 err="no worktree or branch 'zzz'" --
 check "merge self refused"           exit=1 err="already checked out in worktree 1" -- 1 merge 1
 check "merge too many args"          exit=1 err="too many arguments" -- 1 merge "$A" "$C1"
 check "merge unknown option"         exit=1 err="unknown option '--rebase'" -- 1 merge "$A" --rebase
-check "merge --continue takes no arg" exit=1 err="--continue takes no argument" -- 1 merge --continue 2
+check "merge continue takes no arg"  exit=1 err="continue takes no argument" -- 1 merge --continue 2
+check "merge ours+theirs conflict"   exit=1 err="ours and theirs conflict" -- 1 merge "$A" ours theirs
+check "merge continue with a side"   exit=1 err="applied when a merge starts" -- 1 merge theirs continue
+check "merge dry-run + --no-ff"      exit=1 err="dry-run takes no merge options (got --no-ff)" -- 1 merge "$A" dry-run --no-ff
+check "merge continue+abort"         exit=1 err="continue and abort conflict" -- 1 merge continue abort
+check "rejection names the flag"     exit=1 err="(got -m, --squash)" -- 1 merge abort -m x --squash
 check "merge continue w/o merge"     exit=1 err="no merge in progress" -- 1 merge --continue
 check "merge abort w/o merge"        exit=1 err="no merge in progress" -- 1 merge abort
 check "legacy merge hint"            exit=1 err="use 'git-wt 1 merge 2'" -- merge 2
@@ -416,7 +429,7 @@ check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" -
 
 # Conflict -> continue.  cb1 and cb2 both rewrote shared.txt.
 check "merge conflict reports files" exit=1 err="shared.txt" -- "$C1" merge cb2
-check "merge conflict hints continue" exit=1 err="merge --continue" -- "$C1" merge --continue
+check "merge conflict hints continue" exit=1 err="merge continue" -- "$C1" merge --continue
 check "second merge while stuck"     exit=1 err="already in progress" -- "$C1" merge feat-a
 check "continue with unresolved"     exit=1 err="merge conflict in" -- "$C1" merge --continue
 echo resolved > "$ROOT/mrg/w-cb1/shared.txt"
@@ -432,6 +445,62 @@ if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
     "MERGE_HEAD still present after --abort"
 else
   report PASS HAPPY "abort clears MERGE_HEAD" "git rev-parse MERGE_HEAD  # in w-cb2"
+fi
+
+# dry-run: answers the question, writes nothing. cb3 still collides with cb2.
+check "dry-run clean merge"          exit=0 err="merges into" -- "$C2" merge feat-a dry-run
+check "dry-run reports a conflict"   exit=1 err="does NOT merge" -- "$C2" merge cb3 dry-run
+check "dry-run names the file"       exit=1 err="shared.txt" -- "$C2" merge cb3 dry-run
+check "dry-run says it touched none" exit=1 err="nothing was changed" -- "$C2" merge cb3 dry-run
+# The short form drives the same path end to end, not just the parser.
+check "dry-run -d short form"        exit=1 err="does NOT merge" -- "$C2" merge cb3 -d
+check "theirs -t short form"         exit=0 err="merges into" -- "$C2" merge feat-a -t -d
+# Proof it wrote nothing: a dry run that predicted a conflict left no merge
+# behind, so a real merge can still start cleanly afterwards.
+if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+  report FAIL HAPPY "dry-run leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2" \
+    "MERGE_HEAD exists after a dry run"
+else
+  report PASS HAPPY "dry-run leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2"
+fi
+
+# ours/theirs settle the collision that stopped the plain merge above.
+# cb3 (shared.txt=C) vs w-cb2 (shared.txt=B): theirs takes C, ours keeps B.
+check "merge theirs resolves"        exit=0 err="theirs won conflicts" -- "$C2" merge cb3 theirs
+if [ "$(cat "$ROOT/mrg/w-cb2/shared.txt")" = "C" ]; then
+  report PASS HAPPY "theirs took the source's side" "cat shared.txt  # in w-cb2"
+else
+  report FAIL HAPPY "theirs took the source's side" "cat shared.txt  # in w-cb2" \
+    "shared.txt is '$(cat "$ROOT/mrg/w-cb2/shared.txt")', want C"
+fi
+
+# cb4 (shared.txt=D) collides with whatever w-cb1 settled on earlier.
+before="$(cat "$ROOT/mrg/w-cb1/shared.txt")"
+check "merge ours keeps our side"    exit=0 err="ours won conflicts" -- "$C1" merge cb4 ours
+if [ "$(cat "$ROOT/mrg/w-cb1/shared.txt")" = "$before" ]; then
+  report PASS HAPPY "ours kept worktree N's side" "cat shared.txt  # in w-cb1"
+else
+  report FAIL HAPPY "ours kept worktree N's side" "cat shared.txt  # in w-cb1" \
+    "shared.txt changed to '$(cat "$ROOT/mrg/w-cb1/shared.txt")', want '$before'"
+fi
+
+# 'theirs' on a merge that already stopped: it can't join one, so git-wt offers
+# to abort and redo. Declining must leave the stopped merge exactly as it was.
+"$BIN" "$FF2" merge cb3 >/dev/null 2>&1   # conflict in w-ff2
+check "stuck+theirs declined"        exit=0 err="Aborted." in=n -- "$FF2" merge cb3 theirs
+if git -C "$ROOT/mrg/w-ff2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+  report PASS UNHAPPY "declining keeps the stopped merge" "git rev-parse MERGE_HEAD  # in w-ff2"
+else
+  report FAIL UNHAPPY "declining keeps the stopped merge" "git rev-parse MERGE_HEAD  # in w-ff2" \
+    "MERGE_HEAD gone — the merge was aborted despite answering n"
+fi
+# Accepting redoes it from clean, and the source wins.
+check "stuck+theirs accepted"        exit=0 err="theirs won conflicts" in=y -- "$FF2" merge cb3 theirs
+if [ "$(cat "$ROOT/mrg/w-ff2/shared.txt")" = "C" ]; then
+  report PASS HAPPY "redo let theirs win" "cat shared.txt  # in w-ff2"
+else
+  report FAIL HAPPY "redo let theirs win" "cat shared.txt  # in w-ff2" \
+    "shared.txt is '$(cat "$ROOT/mrg/w-ff2/shared.txt")', want C"
 fi
 
 # --squash stages the merge without committing it.

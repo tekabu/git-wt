@@ -115,7 +115,7 @@ git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
 git-wt <N> remove [-y] [-f]  Remove worktree N
 git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
-git-wt <N> merge --continue|--abort
+git-wt <N> merge continue|abort
 git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
@@ -287,6 +287,8 @@ directory against itself is never what you meant.
 ```sh
 git-wt 1 merge 2            # worktree 2's branch -> worktree 1's branch
 git-wt 1 merge feat/x       # a branch name works too
+git-wt 1 merge 2 dry-run    # would it conflict? nothing is touched
+git-wt 1 merge 2 theirs     # let 2 win every collision
 ```
 
 The merge runs **inside worktree N**, so N's branch is the one that moves — the
@@ -296,6 +298,25 @@ and you never have to `cd` anywhere to do it.
 The source can be a worktree number or any branch/ref. A number that names a
 worktree wins over a branch of the same name.
 
+### Words and options
+
+The five verb-ish words take an **optional `--`**, plus a short form — `abort`,
+`--abort` and `-a` are the same thing:
+
+| Word | Short | Does |
+|---|---|---|
+| `continue` | `-c` | Conclude a conflicted merge |
+| `abort` | `-a` | Undo a conflicted merge |
+| `ours` | `-o` | On a conflicting hunk, keep worktree N's side |
+| `theirs` | `-t` | On a conflicting hunk, take the source's side |
+| `dry-run` | `-d` | Report whether it would merge; change nothing |
+
+These words win over a branch of the same name, so to merge a branch actually
+called `theirs`, spell it `heads/theirs`.
+
+The flags that mirror git's own spelling keep their dashes, so muscle memory
+carries over:
+
 ```
 -m, --message MSG      Merge commit message
     --no-ff            Always create a merge commit
@@ -303,6 +324,56 @@ worktree wins over a branch of the same name.
     --squash           Stage the merge without committing
 -f, --force            Merge even when worktree N has uncommitted changes
 ```
+
+### `ours` / `theirs`
+
+These are git's `-X` **strategy options**, so they settle only the hunks that
+actually collide — every non-conflicting change from both sides still merges.
+They are deliberately not `-s ours`, which would drop the source's changes
+wholesale and still record a merge that claims to have taken them.
+
+```sh
+git-wt 1 merge 2 theirs   # collisions resolve to 2's side
+git-wt 1 merge 2 ours     # collisions resolve to 1's side
+```
+
+A side is chosen while the merge is **computed**, so it cannot be bolted onto a
+merge that has already stopped — git offers no way to do that. Ask for one
+anyway and `git-wt` explains, then offers the only route that honors it:
+
+```
+$ git-wt 1 merge 2 theirs
+A merge is already in progress in /Users/me/code/myapp, and 'theirs' only applies when a merge starts.
+Abort it and re-merge '2' with 'theirs'? Any conflict resolution already done there is discarded. [y/N]
+```
+
+Answering `n` leaves the stopped merge exactly as it was. The prompt exists
+because the redo discards resolution work — and if the merge was started with
+`-f` over a dirty tree, the abort unwinds that uncommitted work too.
+
+The tempting shortcut while stuck, `git checkout --theirs -- <file>`, is a
+**different and lossier** operation: it takes the source's *whole file*,
+throwing away your own non-conflicting edits to it. Abort-and-redo keeps them.
+
+### `dry-run`
+
+Answers "would this merge?" without touching anything — no index, no checkout,
+nothing to clean up. It uses `git merge-tree --write-tree` (**git 2.38+**),
+which resolves the merge in memory.
+
+```sh
+git-wt 1 merge 2 dry-run
+```
+
+It exits 0 when clean and 1 when it would conflict, so it drives a script:
+
+```sh
+if git-wt 1 merge 2 dry-run; then git-wt 1 merge 2; fi
+```
+
+`dry-run` takes no commit-shaping flags (`-m`, `--no-ff`, `--squash`, `-f`) —
+there is no commit for them to shape. A side is allowed, since it changes the
+answer.
 
 Merges never open an editor: without `-m`, git's default message is taken as-is.
 A destination with uncommitted changes to **tracked** files is refused without
@@ -321,15 +392,16 @@ A conflict exits 1 and names the files:
 $ git-wt 1 merge 2
 error: merge conflict in /Users/me/code/myapp
   src/auth.rs
-hint: resolve them there, 'git add' each, then 'git-wt 1 merge --continue'
-hint: or undo the merge with 'git-wt 1 merge --abort'
+hint: resolve them there, 'git add' each, then 'git-wt 1 merge continue'
+hint: or undo the merge with 'git-wt 1 merge abort'
+hint: or redo it letting one side win: 'git-wt 1 merge abort', then 'git-wt 1 merge <M|BRANCH> theirs'
 ```
 
 Fix the files in worktree N, `git add` them, then:
 
 ```sh
-git-wt 1 merge --continue   # conclude it (bare 'continue' also works)
-git-wt 1 merge --abort      # or undo the whole merge
+git-wt 1 merge continue   # conclude it ('--continue' and '-c' also work)
+git-wt 1 merge abort      # or undo the whole merge
 ```
 
 Both also accept the bare words `continue` / `abort`. They take no source and no
@@ -375,8 +447,11 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 merge 2 --no-ff -m "sync"` | Merge commit with a message |
 | `git-wt 1 merge 2 --squash` | Stage the merge, don't commit |
 | `git-wt 1 merge 2 -f` | Merge even though worktree 1 is dirty |
-| `git-wt 1 merge --continue` | Conclude a conflicted merge (alias: `continue`) |
-| `git-wt 1 merge --abort` | Undo a conflicted merge (alias: `abort`) |
+| `git-wt 1 merge 2 theirs` | Merge, letting 2 win every collision (`-X theirs`) |
+| `git-wt 1 merge 2 ours` | Merge, letting 1 win every collision (`-X ours`) |
+| `git-wt 1 merge 2 dry-run` | Report whether it would merge; change nothing |
+| `git-wt 1 merge continue` | Conclude a conflicted merge (`--continue`, `-c`) |
+| `git-wt 1 merge abort` | Undo a conflicted merge (`--abort`, `-a`) |
 
 ### Diff — `git-wt <N>,<M> diff [flags]`
 
@@ -463,13 +538,18 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt show 1` (legacy) | `unknown command 'show'; use 'git-wt 1 path'` |
 | `git-wt remove 1` (legacy) | `unknown command 'remove'; use 'git-wt 1 remove'` |
 | `git-wt merge 2` (target missing) | `unknown command 'merge'; use 'git-wt 1 merge 2'` |
-| `git-wt 1 merge` | `merge needs a source: 'git-wt <N> merge <M\|BRANCH>', or --continue/--abort` |
+| `git-wt 1 merge` | `merge needs a source: 'git-wt <N> merge <M\|BRANCH>', or continue/abort` |
 | `git-wt 1 merge zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
 | `git-wt 1 merge 1` | `'main' is already checked out in worktree 1` |
 | `git-wt 1 merge 2` (worktree 1 dirty) | `worktree 1 has uncommitted changes` + `-f` hint |
 | `git-wt 1 merge 2` (merge in progress) | `a merge is already in progress` + continue/abort hint |
-| `git-wt 1 merge --continue` (none started) | `no merge in progress in <path>` |
-| `git-wt 1 merge --continue 2` | `--continue takes no argument (got '2')` |
+| `git-wt 1 merge 2 theirs` (merge in progress) | Explains, then prompts to abort and redo `[y/N]` |
+| `git-wt 1 merge continue` (none started) | `no merge in progress in <path>` |
+| `git-wt 1 merge continue 2` | `continue takes no argument (got '2')` |
+| `git-wt 1 merge 2 ours theirs` | `ours and theirs conflict` |
+| `git-wt 1 merge theirs continue` | `continue takes no merge options` + why, and the abort/redo route |
+| `git-wt 1 merge 2 dry-run --no-ff` | `dry-run takes no merge options` |
+| `git-wt 1 merge 2 dry-run` (git < 2.38) | `dry-run needs git 2.38 or newer (git merge-tree --write-tree)` |
 | `add feat/x -n a --dirname b` | `--name and --dirname conflict` |
 | `add feat/x -n ""` | `--name cannot be empty` |
 | `add feat/x --dirname ""` | `--dirname cannot be empty` |

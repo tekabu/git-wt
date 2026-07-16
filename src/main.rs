@@ -27,7 +27,7 @@ USAGE:
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f]  Remove worktree N
     git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
-    git-wt <N> merge --continue|--abort
+    git-wt <N> merge continue|abort
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
@@ -76,26 +76,41 @@ MELD:
         git-wt 1,3 meld      -> meld <dir 1> <dir 3>
         git-wt 2,1,3 meld    -> meld <dir 2> <dir 1> <dir 3>  (3-way)
 
+MERGE WORDS:            (each takes an optional '--': 'abort' == '--abort')
+    -c, continue          Conclude a conflicted merge
+    -a, abort             Undo a conflicted merge
+    -o, ours              On a conflicting hunk, keep worktree N's side
+    -t, theirs            On a conflicting hunk, take the source's side
+    -d, dry-run           Report whether it would merge; change nothing
+
 MERGE OPTIONS:
     -m, --message MSG     Merge commit message
         --no-ff           Always create a merge commit
         --ff-only         Refuse anything but a fast-forward
         --squash          Stage the merge without committing
     -f, --force           Merge even when worktree N has uncommitted changes
-        --continue        Conclude a conflicted merge (alias: continue)
-        --abort           Undo a conflicted merge (alias: abort)
 
 MERGE:
     The merge runs inside worktree N, so N's branch is the one that moves:
 
         git-wt 1 merge 2          # worktree 2's branch -> worktree 1's branch
         git-wt 1 merge feat/x     # a branch name works too
+        git-wt 1 merge 2 dry-run  # would it conflict? nothing is touched
+        git-wt 1 merge 2 theirs   # let 2 win every collision
 
-    A number that names a worktree wins over a branch of the same name.
+    A number that names a worktree wins over a branch of the same name, and
+    the words above win over a branch of the same name: to merge a branch
+    called 'theirs', spell it 'heads/theirs'.
+
     On conflict, git-wt exits nonzero and lists the conflicted files; fix
-    them in worktree N, then run 'git-wt N merge --continue' (or --abort).
+    them in worktree N, then run 'git-wt N merge continue' (or abort).
     Merge commits never open an editor: without -m, git's default message is
     taken as-is.
+
+    'ours'/'theirs' are git's -X strategy options, so they settle only the
+    hunks that actually collide -- the rest of both sides still merges. They
+    are applied while the merge is computed, so they cannot join a merge that
+    has already stopped: git-wt offers to abort and redo it instead.
 
 ADD:
     The worktree directory is a sibling of the repo root, named
@@ -734,13 +749,38 @@ fn cmd_remove(
 // Merge: git-wt <N> merge <M|BRANCH> | --continue | --abort
 // ---------------------------------------------------------------------------
 
-/// What a `merge` invocation asks for. `--continue`/`--abort` resume or undo a
+/// What a `merge` invocation asks for. `continue`/`abort` resume or undo a
 /// merge that is already in progress, so they carry no source and no options.
 #[derive(Debug, PartialEq, Eq)]
 enum MergeOp {
     Start(String),
     Continue,
     Abort,
+}
+
+/// Which side wins a hunk that both branches touched. Maps to git's
+/// `-X ours` / `-X theirs`, never `-s ours`: the strategy *option* picks a side
+/// only where hunks actually collide, while the whole-tree *strategy* would drop
+/// the source's changes entirely and still record a merge — silent data loss.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Ours,
+    Theirs,
+}
+
+impl Side {
+    /// The word the user typed, for echoing back in messages.
+    fn word(self) -> &'static str {
+        match self {
+            Side::Ours => "ours",
+            Side::Theirs => "theirs",
+        }
+    }
+
+    /// git's `-X` argument.
+    fn strategy_option(self) -> &'static str {
+        self.word()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -751,21 +791,36 @@ struct MergeArgs {
     ff_only: bool,
     squash: bool,
     force: bool,
+    side: Option<Side>,
+    dry_run: bool,
 }
 
-/// Parse the words after `git-wt <N> merge`. `continue`/`abort` are accepted
-/// bare as well as with dashes, since both spellings read naturally here.
+/// Parse the words after `git-wt <N> merge`.
+///
+/// The verb-ish words — `continue`, `abort`, `ours`, `theirs`, `dry-run` — each
+/// take an optional `--` plus a short form, so `abort`, `--abort` and `-a` are
+/// one thing: they read as words in this grammar, and the dashes are noise. The
+/// flags that mirror git's own spelling (`--no-ff`, `--squash`, ...) keep their
+/// dashes so muscle memory carries over.
+///
+/// Keywords are matched ahead of the positional source, so a branch actually
+/// named `ours` or `abort` must be spelled `heads/ours` to be merged.
 fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
     let mut source: Option<String> = None;
     let mut op: Option<MergeOp> = None;
     let mut message = None;
-    let (mut no_ff, mut ff_only, mut squash, mut force) = (false, false, false, false);
+    let mut side: Option<Side> = None;
+    let (mut no_ff, mut ff_only, mut squash, mut force, mut dry_run) =
+        (false, false, false, false, false);
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--continue" | "continue" => set_merge_op(&mut op, MergeOp::Continue)?,
-            "--abort" | "abort" => set_merge_op(&mut op, MergeOp::Abort)?,
+            "continue" | "--continue" | "-c" => set_merge_op(&mut op, MergeOp::Continue)?,
+            "abort" | "--abort" | "-a" => set_merge_op(&mut op, MergeOp::Abort)?,
+            "ours" | "--ours" | "-o" => set_side(&mut side, Side::Ours)?,
+            "theirs" | "--theirs" | "-t" => set_side(&mut side, Side::Theirs)?,
+            "dry-run" | "--dry-run" | "-d" => dry_run = true,
             "-m" | "--message" => {
                 message = Some(it.next().ok_or("--message needs a message")?.clone());
             }
@@ -798,29 +853,109 @@ fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
     // A resume takes no source and no merge options: those were settled when
     // the merge started, so silently accepting them would be a lie.
     if let Some(op) = op {
-        let word = if op == MergeOp::Continue { "--continue" } else { "--abort" };
+        let word = if op == MergeOp::Continue { "continue" } else { "abort" };
         if let Some(s) = source {
             return Err(format!("{word} takes no argument (got '{s}')"));
         }
-        if message.is_some() || no_ff || ff_only || squash || force {
-            return Err(format!("{word} takes no merge options"));
+        // The tempting one: `merge theirs continue` reads as "finish this
+        // conflict by taking theirs", but a side is chosen when the merge is
+        // computed. Name the real path instead of ignoring the word.
+        if let Some(sd) = side {
+            return Err(format!(
+                "{word} takes no merge options\n\
+                 hint: '{w}' is applied when a merge starts, so it cannot join one already stopped\n\
+                 hint: 'git-wt <N> merge abort', then re-run the merge with '{w}'",
+                w = sd.word()
+            ));
         }
-        return Ok(MergeArgs { op, message: None, no_ff: false, ff_only: false, squash: false, force: false });
+        let mut bad = shaping_flags(message.as_ref(), no_ff, ff_only, squash, force);
+        if dry_run {
+            bad.push("dry-run");
+        }
+        if !bad.is_empty() {
+            return Err(format!("{word} takes no merge options (got {})", bad.join(", ")));
+        }
+        return Ok(MergeArgs {
+            op,
+            message: None,
+            no_ff: false,
+            ff_only: false,
+            squash: false,
+            force: false,
+            side: None,
+            dry_run: false,
+        });
+    }
+
+    // A dry run computes the merge in memory and writes nothing, so the flags
+    // that shape a real merge commit have nothing to act on.
+    if dry_run {
+        let bad = shaping_flags(message.as_ref(), no_ff, ff_only, squash, force);
+        if !bad.is_empty() {
+            return Err(format!("dry-run takes no merge options (got {})", bad.join(", ")));
+        }
     }
 
     let source = source.ok_or(
-        "merge needs a source: 'git-wt <N> merge <M|BRANCH>', or --continue/--abort",
+        "merge needs a source: 'git-wt <N> merge <M|BRANCH>', or continue/abort",
     )?;
-    Ok(MergeArgs { op: MergeOp::Start(source), message, no_ff, ff_only, squash, force })
+    Ok(MergeArgs { op: MergeOp::Start(source), message, no_ff, ff_only, squash, force, side, dry_run })
 }
 
-/// Record `--continue`/`--abort`, rejecting a second one.
-fn set_merge_op(slot: &mut Option<MergeOp>, op: MergeOp) -> Result<(), String> {
-    if slot.is_some() {
-        return Err("--continue and --abort conflict".into());
+/// Record `ours`/`theirs`. They are opposite answers to one question, so asking
+/// for both is a mistake worth naming; asking twice for the same side is not.
+fn set_side(slot: &mut Option<Side>, side: Side) -> Result<(), String> {
+    match slot {
+        Some(s) if *s == side => Ok(()),
+        Some(_) => Err("ours and theirs conflict".into()),
+        None => {
+            *slot = Some(side);
+            Ok(())
+        }
     }
-    *slot = Some(op);
-    Ok(())
+}
+
+/// Record `continue`/`abort`. Like `set_side`, they are opposite answers to one
+/// question, so asking for both is a mistake; asking twice for the same one is
+/// only redundant.
+fn set_merge_op(slot: &mut Option<MergeOp>, op: MergeOp) -> Result<(), String> {
+    match slot {
+        Some(cur) if *cur == op => Ok(()),
+        Some(_) => Err("continue and abort conflict".into()),
+        None => {
+            *slot = Some(op);
+            Ok(())
+        }
+    }
+}
+
+/// The merge-shaping flags that are set, named as the user would type them.
+/// Shared so `continue`/`abort`/`dry-run` can all name what they are rejecting
+/// instead of just saying "no merge options".
+fn shaping_flags(
+    message: Option<&String>,
+    no_ff: bool,
+    ff_only: bool,
+    squash: bool,
+    force: bool,
+) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if message.is_some() {
+        v.push("-m");
+    }
+    if no_ff {
+        v.push("--no-ff");
+    }
+    if ff_only {
+        v.push("--ff-only");
+    }
+    if squash {
+        v.push("--squash");
+    }
+    if force {
+        v.push("-f");
+    }
+    v
 }
 
 fn cmd_merge(
@@ -863,20 +998,60 @@ fn cmd_merge(
         MergeOp::Start(_) => {}
     }
 
-    if in_progress {
-        return Err(format!(
-            "a merge is already in progress in {}\n\
-             hint: 'git-wt {n} merge --continue' or 'git-wt {n} merge --abort'",
-            dir.display(),
-            n = idx + 1
-        ));
-    }
-
     let MergeOp::Start(source) = &args.op else { unreachable!() };
     let src_branch = resolve_merge_source(root, trees, source)?;
 
     if dest.branch.as_deref() == Some(src_branch.as_str()) {
         return Err(format!("'{src_branch}' is already checked out in worktree {}", idx + 1));
+    }
+
+    // A dry run only reads, so it answers before any of the guards below: it
+    // never prompts, never writes, and is happy to report on a merge that is
+    // currently stopped.
+    if args.dry_run {
+        return merge_dry_run(dir, &src_branch, &label(dest), color);
+    }
+
+    if in_progress {
+        // `ours`/`theirs` are applied while the merge is computed, so they can't
+        // join one that has already stopped. Redoing it from a clean state is
+        // the only way to honor the word — and it costs whatever resolution has
+        // been done in that tree, so it is the user's call, not ours.
+        let Some(sd) = args.side else {
+            return Err(format!(
+                "a merge is already in progress in {}\n\
+                 hint: 'git-wt {n} merge continue' or 'git-wt {n} merge abort'",
+                dir.display(),
+                n = idx + 1
+            ));
+        };
+        eprintln!(
+            "A merge is already in progress in {}, and '{}' only applies when a merge starts.",
+            dir.display(),
+            sd.word()
+        );
+        // Mid-merge, tracked changes are the half-resolved conflict itself —
+        // but a merge started with -f over a dirty tree buried the user's own
+        // edits in there too, and `merge --abort` unwinds the lot. Say so only
+        // when there is actually something to lose.
+        let at_risk = git_stdout(dir, &["status", "--porcelain"])
+            .map(|p| has_tracked_changes(&p))
+            .unwrap_or(true);
+        let cost = if at_risk {
+            "Uncommitted changes in that tree, including any conflict resolution \
+             already done, are discarded"
+        } else {
+            "Any conflict resolution already done there is discarded"
+        };
+        if !confirm(&format!(
+            "Abort it and re-merge '{src_branch}' with '{}'? {cost}. [y/N] ",
+            sd.word()
+        ))? {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+        git_run(dir, &["merge", "--abort"])?;
+        eprintln!("{} the previous merge", paint("Abandoned", GREEN, color));
     }
 
     // A merge into uncommitted work can end with the user's own edits tangled in
@@ -902,6 +1077,9 @@ fn cmd_merge(
     if args.squash {
         argv.push("--squash".into());
     }
+    if let Some(sd) = args.side {
+        argv.extend(["-X".into(), sd.strategy_option().into()]);
+    }
     if let Some(m) = &args.message {
         argv.extend(["-m".into(), m.clone()]);
     }
@@ -918,15 +1096,66 @@ fn cmd_merge(
 
     let into = label(dest);
     let what = if args.squash { "Squashed" } else { "Merged" };
-    eprintln!(
-        "{} {src_branch} into {into}  ({})",
-        paint(what, GREEN, color),
-        leaf_of(dir)
-    );
+    // Name the side when one was forced: it silently decided every collision,
+    // so it belongs in the record of what just happened.
+    let how = match args.side {
+        Some(sd) => format!("{}, {} won conflicts", leaf_of(dir), sd.word()),
+        None => leaf_of(dir),
+    };
+    eprintln!("{} {src_branch} into {into}  ({how})", paint(what, GREEN, color));
     if args.squash {
         eprintln!("hint: the merge is staged but not committed");
     }
     Ok(())
+}
+
+/// Report whether `src` would merge into the worktree's HEAD, touching nothing.
+///
+/// `git merge-tree --write-tree` does the whole job: it resolves the merge into
+/// a tree object and exits 1 when a path conflicts, with no index, no checkout
+/// and nothing to clean up afterwards. It needs git 2.38+, which is checked by
+/// running it rather than by parsing `git --version`.
+fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> Result<(), String> {
+    let out = git_cmd(dir, &["merge-tree", "--write-tree", "--name-only", "HEAD", src])
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+
+    match out.status.code() {
+        Some(0) => {
+            eprintln!(
+                "{} {src} merges into {into} cleanly",
+                paint("Clean", GREEN, color)
+            );
+            Ok(())
+        }
+        // Conflicts. stdout is the resulting tree's oid, then the paths that
+        // collided. Exiting nonzero keeps `if git-wt 1 merge 2 dry-run; then`
+        // meaningful, and mirrors what a real merge does on a conflict.
+        Some(1) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let files: Vec<String> = stdout
+                .lines()
+                .skip(1)
+                .filter(|l| !l.trim().is_empty())
+                .map(str::to_string)
+                .collect();
+            let mut m = format!("{src} does NOT merge into {into} cleanly\n");
+            for f in &files {
+                m.push_str(&format!("  {f}\n"));
+            }
+            m.push_str("hint: nothing was changed — this was a dry run\n");
+            m.push_str("hint: 'ours' or 'theirs' would settle these automatically");
+            Err(m)
+        }
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            // Older git has merge-tree, but not --write-tree.
+            if err.contains("unknown option") || err.contains("usage:") {
+                return Err("dry-run needs git 2.38 or newer (git merge-tree --write-tree)".into());
+            }
+            Err(err.trim().to_string())
+        }
+    }
 }
 
 /// Resolve a merge source word to a branch name. A number that names a
@@ -979,8 +1208,10 @@ fn conflict_msg(dir: &Path, files: &[String], idx: usize) -> String {
     }
     let n = idx + 1;
     m.push_str(&format!(
-        "hint: resolve them there, 'git add' each, then 'git-wt {n} merge --continue'\n\
-         hint: or undo the merge with 'git-wt {n} merge --abort'"
+        "hint: resolve them there, 'git add' each, then 'git-wt {n} merge continue'\n\
+         hint: or undo the merge with 'git-wt {n} merge abort'\n\
+         hint: or redo it letting one side win: 'git-wt {n} merge abort', then \
+         'git-wt {n} merge <M|BRANCH> theirs'"
     ));
     m
 }
@@ -1948,6 +2179,82 @@ mod tests {
         assert_eq!(merge_args(&["--continue"]).unwrap().op, MergeOp::Continue);
         assert_eq!(merge_args(&["abort"]).unwrap().op, MergeOp::Abort);
         assert_eq!(merge_args(&["--abort"]).unwrap().op, MergeOp::Abort);
+    }
+
+    /// Every keyword means the same thing bare, dashed, or short.
+    #[test]
+    fn merge_words_take_optional_dashes_and_shorts() {
+        for (bare, dashed, short) in [
+            ("continue", "--continue", "-c"),
+            ("abort", "--abort", "-a"),
+        ] {
+            let want = merge_args(&[bare]).unwrap().op;
+            assert_eq!(merge_args(&[dashed]).unwrap().op, want, "{dashed}");
+            assert_eq!(merge_args(&[short]).unwrap().op, want, "{short}");
+        }
+        for (bare, dashed, short, want) in [
+            ("ours", "--ours", "-o", Side::Ours),
+            ("theirs", "--theirs", "-t", Side::Theirs),
+        ] {
+            for w in [bare, dashed, short] {
+                assert_eq!(merge_args(&["2", w]).unwrap().side, Some(want), "{w}");
+            }
+        }
+        for w in ["dry-run", "--dry-run", "-d"] {
+            assert!(merge_args(&["2", w]).unwrap().dry_run, "{w}");
+        }
+    }
+
+    #[test]
+    fn merge_side_maps_to_strategy_option() {
+        // -X ours / -X theirs, never -s ours: the whole-tree strategy would
+        // drop the source's changes and still record a merge.
+        assert_eq!(Side::Ours.strategy_option(), "ours");
+        assert_eq!(Side::Theirs.strategy_option(), "theirs");
+    }
+
+    #[test]
+    fn merge_rejects_both_ops_but_allows_repeats() {
+        let e = merge_args(&["continue", "abort"]).unwrap_err();
+        assert_eq!(e, "continue and abort conflict");
+        assert!(merge_args(&["-c", "--abort"]).is_err());
+        // Saying the same word twice is redundant, not wrong — same rule as
+        // ours/theirs.
+        assert_eq!(merge_args(&["continue", "-c"]).unwrap().op, MergeOp::Continue);
+    }
+
+    #[test]
+    fn merge_rejections_name_the_offending_flag() {
+        let e = merge_args(&["abort", "-m", "x", "--squash"]).unwrap_err();
+        assert!(e.contains("got -m, --squash"), "{e}");
+        let e = merge_args(&["2", "dry-run", "--no-ff", "-f"]).unwrap_err();
+        assert!(e.contains("got --no-ff, -f"), "{e}");
+    }
+
+    #[test]
+    fn merge_rejects_both_sides_but_allows_repeats() {
+        assert!(merge_args(&["2", "ours", "theirs"]).is_err());
+        assert!(merge_args(&["2", "-o", "--theirs"]).is_err());
+        // Saying the same side twice is redundant, not wrong.
+        assert_eq!(merge_args(&["2", "ours", "-o"]).unwrap().side, Some(Side::Ours));
+    }
+
+    #[test]
+    fn merge_resume_rejects_a_side_with_a_pointed_hint() {
+        // 'theirs continue' reads as "finish this by taking theirs", which git
+        // cannot do — the error has to say so rather than ignore the word.
+        let e = merge_args(&["theirs", "continue"]).unwrap_err();
+        assert!(e.contains("applied when a merge starts"), "{e}");
+        assert!(e.contains("merge abort"), "{e}");
+    }
+
+    #[test]
+    fn merge_dry_run_rejects_commit_shaping_flags() {
+        assert!(merge_args(&["2", "dry-run", "--no-ff"]).is_err());
+        assert!(merge_args(&["2", "dry-run", "-m", "x"]).is_err());
+        assert!(merge_args(&["2", "dry-run", "-f"]).is_err());
+        // A side is fine: it changes what the dry run would report.
+        assert!(merge_args(&["2", "dry-run", "theirs"]).is_ok());
     }
 
     #[test]

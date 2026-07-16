@@ -364,7 +364,7 @@ MRG="$ROOT/mrg/app"; mkdir -p "$MRG"
   echo base > base.txt; echo 0 > shared.txt
   git add .; git commit -q -m init
   git branch feat-a; git branch cb1; git branch cb2; git branch cb3; git branch cb4
-  git branch ffbr; git branch dirtybr
+  git branch ffbr; git branch dirtybr; git branch lmbr
   git checkout -q feat-a; echo a > a.txt; git add a.txt; git commit -q -m a
   git checkout -q cb1; echo A > shared.txt; git commit -q -am A
   git checkout -q cb2; echo B > shared.txt; git commit -q -am B
@@ -378,12 +378,16 @@ MRG="$ROOT/mrg/app"; mkdir -p "$MRG"
   "$BIN" add cb1     --dirname w-cb1   >/dev/null 2>&1
   "$BIN" add cb2     --dirname w-cb2   >/dev/null 2>&1
   "$BIN" add stuckbr --dirname w-ff2   >/dev/null 2>&1
-  "$BIN" add dirtybr --dirname w-dirty >/dev/null 2>&1 )
+  "$BIN" add dirtybr --dirname w-dirty >/dev/null 2>&1
+  # The list form names both sides by number, so the source needs a worktree
+  # too — cb3 gets one, and lmbr is a clean destination to merge into.
+  "$BIN" add cb3     --dirname w-cb3   >/dev/null 2>&1
+  "$BIN" add lmbr    --dirname w-lm    >/dev/null 2>&1 )
 
 cd "$MRG" || exit 1
 midx() { "$BIN" list | awk -v b="$1" '$2==b{print $1}'; }
 A="$(midx feat-a)"; C1="$(midx cb1)"; C2="$(midx cb2)"; D="$(midx dirtybr)"
-FF2="$(midx stuckbr)"
+FF2="$(midx stuckbr)"; M3="$(midx cb3)"; LM="$(midx lmbr)"
 
 # Errors before any state changes.
 check "merge needs a source"         exit=1 err="merge needs a source" -- 1 merge
@@ -501,6 +505,24 @@ if [ "$(cat "$ROOT/mrg/w-ff2/shared.txt")" = "C" ]; then
 else
   report FAIL HAPPY "redo let theirs win" "cat shared.txt  # in w-ff2" \
     "shared.txt is '$(cat "$ROOT/mrg/w-ff2/shared.txt")', want C"
+fi
+
+# List form: '1,2 merge' == '1 merge 2'. Same dest-first reading as meld's list.
+check "list form dry-run clean"      exit=0 err="merges into" -- "1,$A" merge dry-run
+check "list form takes options"      exit=1 err="does NOT merge" -- "$C1,$M3" merge dry-run
+check "list form rejects 3"          exit=1 err="exactly two worktrees" -- "1,$A,$C1" merge
+check "list form needs an action"    exit=1 err="a worktree list needs an action" -- "1,$A"
+check "list form malformed"          exit=1 err="bad worktree list '1,'" -- "1," merge
+check "list form + continue"         exit=1 err="takes no source" -- "1,$A" merge continue
+check "list form + abort short"      exit=1 err="takes no source" -- "1,$A" merge -a
+check "list form bad number"         exit=1 err="bad worktree list" -- "1,x" merge
+# The real thing: worktree M's branch lands in worktree N, list-style.
+check "list form merges M into N"    exit=0 err="Merged feat-a into" -- "$LM,$A" merge
+if [ -f "$ROOT/mrg/w-lm/a.txt" ]; then
+  report PASS HAPPY "list form moved the files" "test -f a.txt  # in w-lm"
+else
+  report FAIL HAPPY "list form moved the files" "test -f a.txt  # in w-lm" \
+    "a.txt absent from w-lm after '$LM,$A merge'"
 fi
 
 # --squash stages the merge without committing it.

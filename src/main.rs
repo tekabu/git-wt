@@ -27,6 +27,7 @@ USAGE:
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f]  Remove worktree N
     git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
+    git-wt <N>,<M> merge         Same thing: merge M into N
     git-wt <N> merge continue|abort
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
@@ -94,9 +95,17 @@ MERGE:
     The merge runs inside worktree N, so N's branch is the one that moves:
 
         git-wt 1 merge 2          # worktree 2's branch -> worktree 1's branch
+        git-wt 1,2 merge          # the same thing, list-style like meld
         git-wt 1 merge feat/x     # a branch name works too
         git-wt 1 merge 2 dry-run  # would it conflict? nothing is touched
         git-wt 1 merge 2 theirs   # let 2 win every collision
+
+    Both target forms read dest-first, so '1,2 merge' merges 2 into 1 just
+    as '1 merge 2' does. The list takes exactly two worktrees -- unlike
+    meld, which diffs 2-3 -- because a merge has one destination and one
+    source. The list already names the source, so it cannot be combined
+    with 'continue'/'abort'; those take a single target, 'git-wt 1 merge
+    continue'.
 
     A number that names a worktree wins over a branch of the same name, and
     the words above win over a branch of the same name: to merge a branch
@@ -227,7 +236,7 @@ fn unknown_command_msg(tok: &str) -> String {
     match tok {
         "show" => "unknown command 'show'; use 'git-wt 1 path'".into(),
         "remove" | "rm" => format!("unknown command '{tok}'; use 'git-wt 1 remove'"),
-        "merge" => "unknown command 'merge'; use 'git-wt 1 merge 2'".into(),
+        "merge" => "unknown command 'merge'; use 'git-wt 1 merge 2' or 'git-wt 1,2 merge'".into(),
         _ if branch_like(tok) => format!("unknown command '{tok}'; did you mean 'add {tok}'?"),
         _ => format!("unknown command '{tok}'"),
     }
@@ -326,11 +335,46 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
             cmd_meld(&trees, &idxs)
         }
         Some("diff") => cmd_diff(root, &trees, &idxs, &rest[1..]),
+        // `1,2 merge` == `1 merge 2`: the list reads dest-first, exactly like
+        // the spelled-out form, so 2 merges into 1.
+        Some("merge") => {
+            if idxs.len() != 2 {
+                return Err(format!(
+                    "merge takes exactly two worktrees, not {}: 'git-wt <N>,<M> merge' \
+                     merges M into N",
+                    idxs.len()
+                ));
+            }
+            // The list already names the source, so a resume word contradicts
+            // it: there is nothing for `continue` to take a source from.
+            if let Some(word) = rest[1..].iter().find_map(|a| resume_word(a)) {
+                return Err(format!(
+                    "'{word}' takes no source, so a worktree list has nothing to name\n\
+                     hint: 'git-wt {n} merge {word}'",
+                    n = ns[0]
+                ));
+            }
+            // Hand the source to the single-target parser as the positional it
+            // already understands, so both spellings share one code path.
+            let mut argv = vec![(idxs[1] + 1).to_string()];
+            argv.extend_from_slice(&rest[1..]);
+            let args = parse_merge_args(&argv)?;
+            cmd_merge(root, &trees, idxs[0], &args)
+        }
         // A list only makes sense for actions that take more than one worktree.
         Some(other) => Err(format!(
-            "'{other}' takes a single worktree; only 'diff' and 'meld' take a list"
+            "'{other}' takes a single worktree; only 'diff', 'meld' and 'merge' take a list"
         )),
         None => Err("a worktree list needs an action, e.g. 'git-wt 1,2 diff'".into()),
+    }
+}
+
+/// The resume word a token spells, in any of its accepted forms, or None.
+fn resume_word(tok: &str) -> Option<&'static str> {
+    match tok {
+        "continue" | "--continue" | "-c" => Some("continue"),
+        "abort" | "--abort" | "-a" => Some("abort"),
+        _ => None,
     }
 }
 

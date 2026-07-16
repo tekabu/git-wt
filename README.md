@@ -115,6 +115,7 @@ git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
 git-wt <N> remove [-y] [-f]  Remove worktree N
 git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
+git-wt <N>,<M> merge         Same thing: merge M into N
 git-wt <N> merge continue|abort
 git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
@@ -286,6 +287,7 @@ directory against itself is never what you meant.
 
 ```sh
 git-wt 1 merge 2            # worktree 2's branch -> worktree 1's branch
+git-wt 1,2 merge            # the same thing, list-style like meld
 git-wt 1 merge feat/x       # a branch name works too
 git-wt 1 merge 2 dry-run    # would it conflict? nothing is touched
 git-wt 1 merge 2 theirs     # let 2 win every collision
@@ -297,6 +299,29 @@ and you never have to `cd` anywhere to do it.
 
 The source can be a worktree number or any branch/ref. A number that names a
 worktree wins over a branch of the same name.
+
+### Two ways to name the targets
+
+`git-wt 1,2 merge` is the list form, spelled like `meld`'s. Both forms read
+**dest-first**, so these are identical:
+
+```sh
+git-wt 1 merge 2     # spelled out
+git-wt 1,2 merge     # list-style
+```
+
+Options work the same either way — `git-wt 1,2 merge theirs dry-run`.
+
+Two differences from `meld`, both because a merge is directional:
+
+- The list takes **exactly two** worktrees. `meld` diffs 2–3; a merge has one
+  destination and one source, so `git-wt 1,2,3 merge` is an error.
+- Both sides are worktree **numbers**. To merge a branch that has no worktree,
+  use the spelled-out form: `git-wt 1 merge feat/x`.
+
+The list already names the source, so it can't be combined with
+`continue`/`abort` — those take a single target (`git-wt 1 merge continue`), and
+asking otherwise says so.
 
 ### Words and options
 
@@ -443,6 +468,7 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 remove -y -f` | Remove, no prompt, discard dirty |
 | `git-wt 1 rm` | Alias → remove |
 | `git-wt 1 merge 2` | Merge worktree 2's branch into worktree 1's |
+| `git-wt 1,2 merge` | The same, list-style (exactly two, dest first) |
 | `git-wt 1 merge feat/x` | Merge branch `feat/x` into worktree 1's branch |
 | `git-wt 1 merge 2 --no-ff -m "sync"` | Merge commit with a message |
 | `git-wt 1 merge 2 --squash` | Stage the merge, don't commit |
@@ -537,7 +563,11 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt lsit` (not branch-like) | `unknown command 'lsit'` |
 | `git-wt show 1` (legacy) | `unknown command 'show'; use 'git-wt 1 path'` |
 | `git-wt remove 1` (legacy) | `unknown command 'remove'; use 'git-wt 1 remove'` |
-| `git-wt merge 2` (target missing) | `unknown command 'merge'; use 'git-wt 1 merge 2'` |
+| `git-wt merge 2` (target missing) | `unknown command 'merge'; use 'git-wt 1 merge 2' or 'git-wt 1,2 merge'` |
+| `git-wt 1,2,3 merge` | `merge takes exactly two worktrees, not 3` |
+| `git-wt 1,2 merge continue` | `'continue' takes no source, so a worktree list has nothing to name` |
+| `git-wt 1,x merge` | `bad worktree list '1,x'; want numbers, e.g. '1,2'` |
+| `git-wt 1,2` (no action) | `a worktree list needs an action, e.g. 'git-wt 1,2 meld'` |
 | `git-wt 1 merge` | `merge needs a source: 'git-wt <N> merge <M\|BRANCH>', or continue/abort` |
 | `git-wt 1 merge zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
 | `git-wt 1 merge 1` | `'main' is already checked out in worktree 1` |

@@ -243,11 +243,11 @@ didx="$("$BIN" list | awk '$2=="feature/login"{print $1}')"
 ( cd "$CODE/myapp-feature-login" && echo l > onlylogin.txt && git add -A && git commit -qm loginside )
 
 # '..' is both directions: main's file shows as a deletion, login's as an add.
-check "diff --name-only both sides"  exit=0 out="onlylogin.txt" -- 1 diff "$didx" --name-only
-check "diff .. keeps main-only file" exit=0 out="onlymain.txt" -- 1 diff "$didx" .. --name-only
+check "diff --name-only both sides"  exit=0 out="onlylogin.txt" -- "1,$didx" diff --name-only
+check "diff .. keeps main-only file" exit=0 out="onlymain.txt" -- "1,$didx" diff .. --name-only
 # '...' is "since the fork", so main's own later commit drops out.
-dots3="$("$BIN" 1 diff "$didx" ... --name-only 2>/dev/null)"
-dcmd="$(fmt_cmd 1 diff "$didx" ... --name-only)"
+dots3="$("$BIN" "1,$didx" diff ... --name-only 2>/dev/null)"
+dcmd="$(fmt_cmd "1,$didx" diff ... --name-only)"
 case "$dots3" in
   *onlymain.txt*)
     report FAIL HAPPY "diff ... hides main-only file" "$dcmd" "main-only file still listed: '$dots3'" ;;
@@ -256,31 +256,34 @@ case "$dots3" in
   *)
     report FAIL HAPPY "diff ... hides main-only file" "$dcmd" "wanted login's file, got '$dots3'" ;;
 esac
-check "diff --stat"                  exit=0 out="1 +" -- 1 diff "$didx" --stat
-check "diff --name-status"           exit=0 out="A" -- 1 diff "$didx" --name-status
+check "diff --stat"                  exit=0 out="1 +" -- "1,$didx" diff --stat
+check "diff --name-status"           exit=0 out="A" -- "1,$didx" diff --name-status
 # Exact output, not a substring: the unfiltered diff also *contains*
 # 'onlylogin.txt', so a substring assertion here would pass even if the
 # pathspec were dropped on the floor. "Limits" means the other files are gone.
-pspec="$("$BIN" 1 diff "$didx" --name-only -- onlylogin.txt 2>/dev/null)"
-pcmd="$(fmt_cmd 1 diff "$didx" --name-only -- onlylogin.txt)"
+pspec="$("$BIN" "1,$didx" diff --name-only -- onlylogin.txt 2>/dev/null)"
+pcmd="$(fmt_cmd "1,$didx" diff --name-only -- onlylogin.txt)"
 if [ "$pspec" = "onlylogin.txt" ]; then
   report PASS HAPPY "diff -- pathspec limits" "$pcmd"
 else
   report FAIL HAPPY "diff -- pathspec limits" "$pcmd" "wanted exactly 'onlylogin.txt', got '$pspec'"
 fi
-check "diff needs second worktree"   exit=1 err="diff needs a second worktree" -- 1 diff
-check "diff non-numeric target"      exit=1 err="'x' is not a worktree number" -- 1 diff x
-check "diff bad index errors"        exit=1 err="no worktree #99" -- 1 diff 99
-check "diff against itself errors"   exit=1 err="against itself" -- 1 diff 1
-check "diff rejects other git flags" exit=1 err="unexpected argument '-w' for diff" -- 1 diff "$didx" -w
+check "diff needs two worktrees"     exit=1 err="diff takes a worktree list" -- 1 diff
+# The old 'N diff M' grammar: the trailing target is now junk in the action slot.
+check "diff old form errors"         exit=1 err="diff takes a worktree list" -- 1 diff "$didx"
+check "diff non-numeric target"      exit=1 err="bad worktree list '1,x'" -- "1,x" diff
+check "diff bad index errors"        exit=1 err="no worktree #99" -- "1,99" diff
+check "diff against itself errors"   exit=1 err="against itself" -- "1,1" diff
+# meld takes 3; diff cannot, since 'git diff' compares exactly two things.
+check "diff rejects three targets"   exit=1 err="exactly two worktrees, got 3" -- "1,$didx,1" diff
+check "diff rejects other git flags" exit=1 err="unexpected argument '-w' for diff" -- "1,$didx" diff -w
 # The hint must name the real branches, not echo the offending flag back as a
 # ref: 'git diff -w..feat -w' is what a shadowed loop variable looks like.
-check "diff flag error hints git"    exit=1 err="run git itself: git diff main..feature/login -w" -- 1 diff "$didx" -w
-check "diff list form errors"        exit=1 err="diff spells its second target out" -- "1,$didx" diff
+check "diff flag error hints git"    exit=1 err="run git itself: git diff main..feature/login -w" -- "1,$didx" diff -w
 
 # Uncommitted work is invisible to a ref diff, so it must be called out.
 echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"
-check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- 1 diff "$didx" --name-only
+check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- "1,$didx" diff --name-only
 rm -f "$CODE/myapp-feature-login/uncommitted.txt"
 
 # --- meld -------------------------------------------------------------------

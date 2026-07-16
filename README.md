@@ -114,9 +114,9 @@ git-wt <N>                   == git-wt <N> switch
 git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
 git-wt <N> remove [-y] [-f]  Remove worktree N
-git-wt <N> diff <M> [flags]  Diff worktree N against worktree M
 git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
 git-wt <N> merge --continue|--abort
+git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
 git-wt version
@@ -235,10 +235,10 @@ leaves you exactly where you are.
 Diff two worktrees in the terminal, through git's own pager:
 
 ```sh
-git-wt 1 diff 2             # git diff <branch 1>..<branch 2>
-git-wt 1 diff 2 ...         # git diff <branch 1>...<branch 2>
-git-wt 1 diff 2 --name-only
-git-wt 1 diff 2 --stat -- src/
+git-wt 1,2 diff             # git diff <branch 1>..<branch 2>
+git-wt 1,2 diff ...         # git diff <branch 1>...<branch 2>
+git-wt 1,2 diff --name-only
+git-wt 1,2 diff --stat -- src/
 ```
 
 It compares the two worktrees' **branches**, not their directories — a directory
@@ -378,19 +378,19 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 merge --continue` | Conclude a conflicted merge (alias: `continue`) |
 | `git-wt 1 merge --abort` | Undo a conflicted merge (alias: `abort`) |
 
-### Diff — `git-wt <N> diff <M> [flags]`
+### Diff — `git-wt <N>,<M> diff [flags]`
 
 | Command | Effect |
 |---|---|
-| `git-wt 1 diff 2` | `git diff <branch 1>..<branch 2>` — everything that differs |
-| `git-wt 1 diff 2 ..` | Same, spelled out |
-| `git-wt 1 diff 2 ...` | `git diff <branch 1>...<branch 2>` — only 2's own commits |
-| `git-wt 1 diff 2 --name-only` | File names only (also `--name-status`, `--stat`) |
-| `git-wt 1 diff 2 -- src/` | Limit to `src/`; combines with the flags above |
-| `git-wt 1 diff 1` | Error `worktree #1 against itself is always empty` |
-| `git-wt 1 diff` | Error `diff needs a second worktree` |
-| `git-wt 1 diff 2 -w` | Error — unknown flag, with the `git diff` command to run instead |
-| `git-wt 1,2 diff` | Error — `diff` spells its second target out |
+| `git-wt 1,2 diff` | `git diff <branch 1>..<branch 2>` — everything that differs |
+| `git-wt 1,2 diff ..` | Same, spelled out |
+| `git-wt 1,2 diff ...` | `git diff <branch 1>...<branch 2>` — only 2's own commits |
+| `git-wt 1,2 diff --name-only` | File names only (also `--name-status`, `--stat`) |
+| `git-wt 1,2 diff -- src/` | Limit to `src/`; combines with the flags above |
+| `git-wt 1,1 diff` | Error `worktree #1 against itself is always empty` |
+| `git-wt 1 diff` | Error — `diff` takes a worktree list |
+| `git-wt 1,2 diff -w` | Error — unknown flag, with the `git diff` command to run instead |
+| `git-wt 1,2,3 diff` | Error — `diff` takes exactly two worktrees; `meld` compares three |
 
 ### Multi-target — `git-wt <N>,<N>[,<N>] meld`
 
@@ -401,7 +401,7 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 meld` | Error `meld needs 2 or 3 worktrees` |
 | `git-wt 1,2,3,4 meld` | Error `meld takes at most 3 worktrees, got 4` |
 | `git-wt 1,1 meld` | Error `worktree #1 listed twice` |
-| `git-wt 1,2 remove` | Error — only `meld` takes a list |
+| `git-wt 1,2 remove` | Error — only `diff` and `meld` take a list |
 
 Through the wrapper: `wt 1` / `wt 1 switch` / `wt 1 cd` cd into it; `wt 1 remove`
 cd's back to main; `wt 1 path` / `wt 1 show` only print.

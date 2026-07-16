@@ -26,9 +26,9 @@ USAGE:
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f]  Remove worktree N
-    git-wt <N> diff <M> [flags]  Diff worktree N against worktree M
     git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
     git-wt <N> merge --continue|--abort
+    git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
     git-wt version
@@ -61,10 +61,10 @@ DIFF:
     own pager, so uncommitted work does not show up -- 'meld' is the tool for
     that, and diff warns when either side is dirty.
 
-        git-wt 1 diff 2              -> git diff <branch 1>..<branch 2>
-        git-wt 1 diff 2 ...          -> git diff <branch 1>...<branch 2>
-        git-wt 1 diff 2 --stat
-        git-wt 1 diff 2 -- src/
+        git-wt 1,2 diff              -> git diff <branch 1>..<branch 2>
+        git-wt 1,2 diff ...          -> git diff <branch 1>...<branch 2>
+        git-wt 1,2 diff --stat
+        git-wt 1,2 diff -- src/
 
     Any other git flag is an error, not a passthrough: run git yourself,
     'git diff <A>..<B> <flag>'. The error prints that command for you.
@@ -257,7 +257,10 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
             }
             cmd_remove(root, &trees, idx, yes, force)
         }
-        "diff" => cmd_diff(root, &trees, idx, &rest[1..]),
+        // `1 diff 2` was the old grammar; point at the list form meld already uses.
+        "diff" => Err(format!(
+            "diff takes a worktree list: 'git-wt {n},<M> diff'"
+        )),
         "merge" => {
             let args = parse_merge_args(&rest[1..])?;
             cmd_merge(root, &trees, idx, &args)
@@ -268,7 +271,7 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
         // each action carries its own, after its own verb.
         other if other.starts_with('-') => Err(format!(
             "'{other}' is an option, not an action; options follow the action, \
-             e.g. 'git-wt {n} remove -f' or 'git-wt {n} diff 2 --stat'"
+             e.g. 'git-wt {n} remove -f' or 'git-wt {n},2 diff --stat'"
         )),
         other => Err(format!(
             "unknown action '{other}' (switch, path, remove, diff, merge, meld)"
@@ -307,13 +310,12 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
             }
             cmd_meld(&trees, &idxs)
         }
-        // `1,2 diff` is a plausible typo for the real grammar; name it.
-        Some("diff") => Err("diff spells its second target out: 'git-wt 1 diff 2'".into()),
+        Some("diff") => cmd_diff(root, &trees, &idxs, &rest[1..]),
         // A list only makes sense for actions that take more than one worktree.
         Some(other) => Err(format!(
-            "'{other}' takes a single worktree; only 'meld' takes a list"
+            "'{other}' takes a single worktree; only 'diff' and 'meld' take a list"
         )),
-        None => Err("a worktree list needs an action, e.g. 'git-wt 1,2 meld'".into()),
+        None => Err("a worktree list needs an action, e.g. 'git-wt 1,2 diff'".into()),
     }
 }
 
@@ -984,7 +986,7 @@ fn conflict_msg(dir: &Path, files: &[String], idx: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Diff: git-wt <N> diff <M> [..|...] [flags] [-- PATH...]
+// Diff: git-wt <N>,<M> diff [..|...] [flags] [-- PATH...]
 // ---------------------------------------------------------------------------
 
 /// The committed state a worktree points at. A branch name reads better in
@@ -998,21 +1000,26 @@ fn ref_of(w: &Worktree) -> Result<String, String> {
     Ok(sha.trim().to_string())
 }
 
-/// Diff worktree `idx` against worktree M, as `git diff <ref1><dots><ref2>`.
+/// Diff two worktrees, as `git diff <ref1><dots><ref2>`.
 ///
 /// Refs, not directories: a directory diff would drag in build output and
 /// everything else .gitignore exists to hide. That also means uncommitted work
 /// is invisible here, so warn when either side is dirty and point at meld.
-fn cmd_diff(root: &Path, trees: &[Worktree], idx: usize, rest: &[String]) -> Result<(), String> {
-    let target = rest
-        .first()
-        .ok_or("diff needs a second worktree, e.g. 'git-wt 1 diff 2'")?;
-    let n: usize = target
-        .parse()
-        .map_err(|_| format!("'{target}' is not a worktree number; try 'git-wt 1 diff 2'"))?;
-    let other = check_index(n, trees.len())?;
+fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], rest: &[String]) -> Result<(), String> {
+    let (idx, other) = match idxs {
+        [a, b] => (*a, *b),
+        _ => {
+            return Err(format!(
+                "diff takes exactly two worktrees, got {}\nhint: 'git-wt 1,2,3 meld' compares three",
+                idxs.len()
+            ));
+        }
+    };
     if other == idx {
-        return Err(format!("worktree #{n} against itself is always empty"));
+        return Err(format!(
+            "worktree #{} against itself is always empty",
+            idx + 1
+        ));
     }
 
     let a = ref_of(&trees[idx])?;
@@ -1022,7 +1029,7 @@ fn cmd_diff(root: &Path, trees: &[Worktree], idx: usize, rest: &[String]) -> Res
     // rather than becoming a flag with a new name to learn.
     let mut dots = "..";
     let mut argv: Vec<String> = Vec::new();
-    let mut it = rest[1..].iter();
+    let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             ".." => dots = "..",

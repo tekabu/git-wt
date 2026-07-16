@@ -26,8 +26,8 @@ USAGE:
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f]  Remove worktree N
-    git-wt <N> merge <M|BRANCH>  Merge M (or BRANCH) into worktree N
-    git-wt <N>,<M> merge         Same thing: merge M into N
+    git-wt <N>,<M> merge         Merge M into N
+    git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
     git-wt <N> merge continue|abort
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
@@ -78,9 +78,9 @@ DIFF LIVE:
     worktrees sitting on the same commit. Only paths git would list are
     considered, so .gitignore is honored and build output stays out.
 
-        git-wt 1 diff 2 live         # literal files on disk
-        git-wt 1 diff 2 live hunks   # + changed line numbers
-        git-wt 1 diff 2 --live       # dashes optional, same thing
+        git-wt 1,2 diff live         # literal files on disk
+        git-wt 1,2 diff live hunks   # + changed line numbers
+        git-wt 1,2 diff --live       # dashes optional, same thing
 
     'live' takes no range: '..'/'...' compare commits, which is the opposite
     question. --name-only/--name-status/--stat/-- PATH... all still apply.
@@ -110,18 +110,16 @@ MERGE OPTIONS:
 MERGE:
     The merge runs inside worktree N, so N's branch is the one that moves:
 
-        git-wt 1 merge 2          # worktree 2's branch -> worktree 1's branch
-        git-wt 1,2 merge          # the same thing, list-style like meld
-        git-wt 1 merge feat/x     # a branch name works too
-        git-wt 1 merge 2 dry-run  # would it conflict? nothing is touched
-        git-wt 1 merge 2 theirs   # let 2 win every collision
+        git-wt 1,2 merge            # worktree 2's branch -> worktree 1's branch
+        git-wt 1 merge feat/x       # a branch name works too
+        git-wt 1,2 merge dry-run    # would it conflict? nothing is touched
+        git-wt 1,2 merge theirs     # let 2 win every collision
 
-    Both target forms read dest-first, so '1,2 merge' merges 2 into 1 just
-    as '1 merge 2' does. The list takes exactly two worktrees -- unlike
-    meld, which diffs 2-3 -- because a merge has one destination and one
-    source. The list already names the source, so it cannot be combined
-    with 'continue'/'abort'; those take a single target, 'git-wt 1 merge
-    continue'.
+    The list reads dest-first, so '1,2 merge' merges 2 into 1. It takes
+    exactly two worktrees -- unlike meld, which diffs 2-3 -- because a
+    merge has one destination and one source. The list already names the
+    source, so it cannot be combined with 'continue'/'abort'; those take a
+    single target, 'git-wt 1 merge continue' (or 'git-wt 1 merge abort').
 
     A number that names a worktree wins over a branch of the same name, and
     the words above win over a branch of the same name: to merge a branch
@@ -252,7 +250,7 @@ fn unknown_command_msg(tok: &str) -> String {
     match tok {
         "show" => "unknown command 'show'; use 'git-wt 1 path'".into(),
         "remove" | "rm" => format!("unknown command '{tok}'; use 'git-wt 1 remove'"),
-        "merge" => "unknown command 'merge'; use 'git-wt 1 merge 2' or 'git-wt 1,2 merge'".into(),
+        "merge" => "unknown command 'merge'; use 'git-wt 1,2 merge'".into(),
         _ if branch_like(tok) => format!("unknown command '{tok}'; did you mean 'add {tok}'?"),
         _ => format!("unknown command '{tok}'"),
     }
@@ -297,12 +295,27 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
             }
             cmd_remove(root, &trees, idx, yes, force)
         }
-        // `1 diff 2` was the old grammar; point at the list form meld already uses.
+        // `1 diff 2` was the old grammar; point at the list form meld already
+        // uses. `merge` keeps the single-target form for branch sources and for
+        // `continue`/`abort`; only a worktree-number source now uses the list.
+        // A source equal to the destination is left to `cmd_merge`, which gives
+        // the clearer "already checked out" error and preserves the documented
+        // worktree-wins rule for digit branch names.
         "diff" => Err(format!(
             "diff takes a worktree list: 'git-wt {n},<M> diff'"
         )),
         "merge" => {
             let args = parse_merge_args(&rest[1..])?;
+            if let MergeOp::Start(src) = &args.op {
+                if let Ok(m) = src.parse::<usize>() {
+                    if m != n && (1..=trees.len()).contains(&m) {
+                        return Err(format!(
+                            "merge takes a worktree list: 'git-wt {n},{m} merge' \
+                             (or use 'heads/{m}' for a branch of the same name)"
+                        ));
+                    }
+                }
+            }
             cmd_merge(root, &trees, idx, &args)
         }
         // A single target can't be melded, but say so in meld's own terms.
@@ -351,23 +364,24 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
             cmd_meld(&trees, &idxs)
         }
         Some("diff") => cmd_diff(root, &trees, &idxs, &rest[1..]),
-        // `1,2 merge` == `1 merge 2`: the list reads dest-first, exactly like
-        // the spelled-out form, so 2 merges into 1.
+        // `1,2 merge`: the list reads dest-first, so 2 merges into 1.
         Some("merge") => {
-            if idxs.len() != 2 {
-                return Err(format!(
-                    "merge takes exactly two worktrees, not {}: 'git-wt <N>,<M> merge' \
-                     merges M into N",
-                    idxs.len()
-                ));
-            }
             // The list already names the source, so a resume word contradicts
             // it: there is nothing for `continue` to take a source from.
+            // Check this before the count so an over-long list with `continue`
+            // gets the more useful resume-word message.
             if let Some(word) = rest[1..].iter().find_map(|a| resume_word(a)) {
                 return Err(format!(
                     "'{word}' takes no source, so a worktree list has nothing to name\n\
                      hint: 'git-wt {n} merge {word}'",
                     n = ns[0]
+                ));
+            }
+            if idxs.len() != 2 {
+                return Err(format!(
+                    "merge takes exactly two worktrees, not {}: 'git-wt <N>,<M> merge' \
+                     merges M into N",
+                    idxs.len()
                 ));
             }
             // Hand the source to the single-target parser as the positional it
@@ -811,7 +825,7 @@ fn cmd_remove(
 }
 
 // ---------------------------------------------------------------------------
-// Merge: git-wt <N> merge <M|BRANCH> | --continue | --abort
+// Merge: git-wt <N>,<M> merge | --continue | --abort
 // ---------------------------------------------------------------------------
 
 /// What a `merge` invocation asks for. `continue`/`abort` resume or undo a
@@ -860,7 +874,14 @@ struct MergeArgs {
     dry_run: bool,
 }
 
-/// Parse the words after `git-wt <N> merge`.
+/// Parse the words after a `merge` verb, in either target form.
+///
+/// The list form hands its source in as a positional, so both spellings land
+/// here with the same shape. A worktree-number source is only legal via the
+/// list — `dispatch_target` rejects `git-wt <N> merge <M>` before this parser's
+/// result is used — but a branch source and the resume words (`continue`,
+/// `abort`, whose source is implicit in the in-progress merge) still arrive
+/// from the single-target form.
 ///
 /// The verb-ish words — `continue`, `abort`, `ours`, `theirs`, `dry-run` — each
 /// take an optional `--` plus a short form, so `abort`, `--abort` and `-a` are
@@ -962,7 +983,8 @@ fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
     }
 
     let source = source.ok_or(
-        "merge needs a source: 'git-wt <N> merge <M|BRANCH>', or continue/abort",
+        "merge needs a source: 'git-wt <N>,<M> merge' \
+         (or 'git-wt <N> merge <BRANCH>', or continue/abort)",
     )?;
     Ok(MergeArgs { op: MergeOp::Start(source), message, no_ff, ff_only, squash, force, side, dry_run })
 }
@@ -1199,7 +1221,7 @@ fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> Result<(), S
             Ok(())
         }
         // Conflicts. stdout is the resulting tree's oid, then the paths that
-        // collided. Exiting nonzero keeps `if git-wt 1 merge 2 dry-run; then`
+        // collided. Exiting nonzero keeps `if git-wt 1,2 merge dry-run; then`
         // meaningful, and mirrors what a real merge does on a conflict.
         Some(1) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1281,7 +1303,7 @@ fn conflict_msg(dir: &Path, files: &[String], idx: usize) -> String {
         "hint: resolve them there, 'git add' each, then 'git-wt {n} merge continue'\n\
          hint: or undo the merge with 'git-wt {n} merge abort'\n\
          hint: or redo it letting one side win: 'git-wt {n} merge abort', then \
-         'git-wt {n} merge <M|BRANCH> theirs'"
+         'git-wt {n},<M> merge theirs'"
     ));
     m
 }
@@ -2861,6 +2883,10 @@ mod tests {
         assert_eq!(
             unknown_command_msg("remove"),
             "unknown command 'remove'; use 'git-wt 1 remove'"
+        );
+        assert_eq!(
+            unknown_command_msg("merge"),
+            "unknown command 'merge'; use 'git-wt 1,2 merge'"
         );
         assert_eq!(
             unknown_command_msg("feat/x"),

@@ -171,6 +171,47 @@ check "legacy remove hint"           exit=1 err="use 'git-wt 1 remove'" -- remov
 check "branch-like suggests add"     exit=1 err="did you mean 'add feat/x'" -- feat/x
 check "plain unknown no suggest"     exit=1 err="unknown command 'lsit'" -- lsit
 
+# --- meld -------------------------------------------------------------------
+# A stub 'meld' on PATH echoes its argv, so we can assert on the paths AND the
+# order without a GUI. Real meld is never launched.
+FAKEBIN="$ROOT/fakebin"
+mkdir -p "$FAKEBIN"
+printf '#!/bin/sh\necho "$@"\n' > "$FAKEBIN/meld"
+chmod +x "$FAKEBIN/meld"
+PATH="$FAKEBIN:$PATH"
+
+# Indices come from list (git's own order); paths from 'path', so the assertion
+# compares what git-wt reports against what it handed the stub.
+lidx="$("$BIN" list | awk '$2=="feature/login"{print $1}')"
+ridx="$("$BIN" list | awk '$2=="logout"||$2=="feature/logout"{print $1}')"
+lpath="$("$BIN" "$lidx" path 2>/dev/null)"
+rpath="$("$BIN" "$ridx" path 2>/dev/null)"
+mpath="$("$BIN" 1 path 2>/dev/null)"
+
+check "meld 2 trees passes both dirs" exit=0 out="$mpath $lpath" -- "1,$lidx" meld
+check "meld 3 trees, listed order"    exit=0 out="$lpath $mpath $rpath" -- "$lidx,1,$ridx" meld
+check "meld one tree errors"          exit=1 err="meld needs 2 or 3 worktrees" -- 1 meld
+check "meld over 3 errors"            exit=1 err="at most 3 worktrees, got 4" -- 1,2,3,4 meld
+check "meld dup tree errors"          exit=1 err="worktree #1 listed twice" -- 1,1 meld
+check "meld bad index errors"         exit=1 err="no worktree #99" -- 1,99 meld
+check "meld non-numeric list errors"  exit=1 err="bad worktree list '1,x'" -- 1,x meld
+check "meld takes no options"         exit=1 err="meld takes no options" -- 1,2 meld -x
+check "list needs an action"          exit=1 err="needs an action" -- 1,2
+check "list rejects single-tree verb" exit=1 err="'remove' takes a single worktree" -- 1,2 remove
+
+# meld missing from PATH: a PATH holding only git proves the check fires
+# regardless of whether the host has a real meld installed.
+GITONLY="$ROOT/gitonly"
+mkdir -p "$GITONLY"
+ln -sf "$(command -v git)" "$GITONLY/git"
+meld_err="$(PATH="$GITONLY" "$BIN" 1,2 meld 2>&1 >/dev/null; )"
+case "$meld_err" in
+  *"meld is not installed"*)
+    printf '  \033[32mPASS\033[0m  %s\n' "meld missing gives install hint"; pass=$((pass+1)) ;;
+  *)
+    printf '  \033[31mFAIL\033[0m  %s  (got '\''%s'\'')\n' "meld missing gives install hint" "$meld_err"; fail=$((fail+1)) ;;
+esac
+
 # --- remove -----------------------------------------------------------------
 check "remove main refused"          exit=1 err="refusing to remove the main worktree" -- 1 remove -y
 # Removing a tree you are NOT standing in prints nothing (wrapper stays put).

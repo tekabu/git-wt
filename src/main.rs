@@ -26,6 +26,7 @@ USAGE:
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f]  Remove worktree N
+    git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
     git-wt version
     git-wt --help
@@ -43,6 +44,13 @@ ADD OPTIONS:
 REMOVE OPTIONS:
     -y                    Skip the confirmation prompt
     -f, --force           Discard uncommitted/untracked changes
+
+MELD:
+    Opens meld on the worktree directories, in the order you list them, and
+    waits until you close it. Requires meld on PATH.
+
+        git-wt 1,3 meld      -> meld <dir 1> <dir 3>
+        git-wt 2,1,3 meld    -> meld <dir 2> <dir 1> <dir 3>  (3-way)
 
 ADD:
     The worktree directory is a sibling of the repo root, named
@@ -139,6 +147,12 @@ fn run() -> Result<(), String> {
         return dispatch_target(&root, n, &args[1..]);
     }
 
+    // <N>,<N>[,<N>] <action> — the multi-target grammar (meld).
+    if let Some(ns) = parse_target_list(first)? {
+        let root = repo_root()?;
+        return dispatch_targets(&root, &ns, &args[1..]);
+    }
+
     if first.starts_with('-') {
         return Err(format!("unknown option '{first}'\nTry 'git-wt --help'"));
     }
@@ -197,11 +211,54 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
             }
             cmd_remove(root, &trees, idx, yes, force)
         }
+        // A single target can't be melded, but say so in meld's own terms.
+        "meld" => cmd_meld(&trees, &[idx]),
         "-n" | "--name" => Err("switch/path/remove take no --name".into()),
         other if other.starts_with('-') => {
             Err(format!("switch/path/remove take no {other}"))
         }
-        other => Err(format!("unknown action '{other}' (switch, path, remove)")),
+        other => Err(format!(
+            "unknown action '{other}' (switch, path, remove, meld)"
+        )),
+    }
+}
+
+/// Recognize a comma-separated target list like `1,2,3`. Returns Ok(None) when
+/// the token is not one at all (so the caller keeps looking), and an error when
+/// it clearly meant to be one but is malformed (`1,,2`, `1,x`).
+fn parse_target_list(tok: &str) -> Result<Option<Vec<usize>>, String> {
+    if !tok.contains(',') {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    for part in tok.split(',') {
+        let n: usize = part
+            .parse()
+            .map_err(|_| format!("bad worktree list '{tok}'; want numbers, e.g. '1,2'"))?;
+        out.push(n);
+    }
+    Ok(Some(out))
+}
+
+fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), String> {
+    let trees = worktrees(root)?;
+    let mut idxs = Vec::new();
+    for &n in ns {
+        idxs.push(check_index(n, trees.len())?);
+    }
+
+    match rest.first().map(String::as_str) {
+        Some("meld") => {
+            if rest.len() > 1 {
+                return Err("meld takes no options\nTry 'git-wt --help'".into());
+            }
+            cmd_meld(&trees, &idxs)
+        }
+        // A list only makes sense for actions that take more than one worktree.
+        Some(other) => Err(format!(
+            "'{other}' takes a single worktree; only 'meld' takes a list"
+        )),
+        None => Err("a worktree list needs an action, e.g. 'git-wt 1,2 meld'".into()),
     }
 }
 
@@ -614,6 +671,73 @@ fn cmd_remove(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Diff: git-wt <N>,<N>[,<N>] meld
+// ---------------------------------------------------------------------------
+
+/// Open meld on 2-3 worktree directories, in the order given, and wait for it.
+/// meld itself is the arbiter of 2-way vs 3-way, so we only pass the paths.
+fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
+    match idxs.len() {
+        2 | 3 => {}
+        1 => return Err("meld needs 2 or 3 worktrees, e.g. 'git-wt 1,2 meld'".into()),
+        n => return Err(format!("meld takes at most 3 worktrees, got {n}")),
+    }
+
+    // meld would silently show a directory against itself; that is never meant.
+    for (i, a) in idxs.iter().enumerate() {
+        if idxs[i + 1..].contains(a) {
+            return Err(format!("worktree #{} listed twice", a + 1));
+        }
+    }
+
+    if !on_path("meld") {
+        return Err(
+            "meld is not installed (or not on PATH)\n\
+             hint: macOS 'brew install --cask meld', Debian/Ubuntu 'apt install meld', \
+             Fedora 'dnf install meld'"
+                .into(),
+        );
+    }
+
+    let paths: Vec<&Path> = idxs.iter().map(|&i| trees[i].path.as_path()).collect();
+    let on = std::io::stderr().is_terminal() && color_enabled(true);
+    let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
+    eprintln!("{} {}", paint("meld", GREEN, on), names.join("  ↔  "));
+
+    let status = Command::new("meld")
+        .args(&paths)
+        .status()
+        .map_err(|e| format!("failed to run meld: {e}"))?;
+    if !status.success() {
+        return Err("meld exited with an error".into());
+    }
+    Ok(())
+}
+
+/// Is `cmd` an executable file on PATH? Checked before spawning so a missing
+/// tool is a clear error rather than an opaque NotFound from the OS.
+fn on_path(cmd: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let p = dir.join(cmd);
+        p.is_file() && is_executable(&p)
+    })
+}
+
+#[cfg(unix)]
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_p: &Path) -> bool {
+    true
 }
 
 // ---------------------------------------------------------------------------

@@ -113,6 +113,7 @@ git-wt <N>                   == git-wt <N> switch
 git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
 git-wt <N> remove [-y] [-f]  Remove worktree N
+git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
 git-wt version
 git-wt --help
@@ -225,6 +226,24 @@ the tree you just removed** (your cwd now dangles), so the `wt` wrapper cd's you
 back to main. Remove some *other* worktree and it prints nothing — the wrapper
 leaves you exactly where you are.
 
+## Meld
+
+Compare worktrees side by side in [meld](https://meldmerge.org/):
+
+```sh
+git-wt 1,3 meld             # 2-way: meld <dir 1> <dir 3>
+git-wt 2,1,3 meld           # 3-way: meld <dir 2> <dir 1> <dir 3>
+```
+
+The list order is the pane order, so `2,1,3` puts worktree 2 on the left. Takes
+2 or 3 worktrees — meld itself decides 2-way vs 3-way from how many it gets.
+git-wt waits until you close meld; background it with `&` if you'd rather not.
+
+Requires `meld` on PATH; without it you get an error and an install hint
+(`brew install --cask meld`, `apt install meld`, `dnf install meld`) rather than
+a silent no-op. Listing the same worktree twice is refused — comparing a
+directory against itself is never what you meant.
+
 ## Command reference (all combinations)
 
 Every form the CLI accepts. Examples assume:
@@ -257,6 +276,17 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 remove -f` | Remove, discard dirty (still prompts) |
 | `git-wt 1 remove -y -f` | Remove, no prompt, discard dirty |
 | `git-wt 1 rm` | Alias → remove |
+
+### Multi-target — `git-wt <N>,<N>[,<N>] meld`
+
+| Command | Effect |
+|---|---|
+| `git-wt 1,2 meld` | 2-way diff of worktrees 1 and 2, in that pane order |
+| `git-wt 2,1,3 meld` | 3-way diff; worktree 2 on the left |
+| `git-wt 1 meld` | Error `meld needs 2 or 3 worktrees` |
+| `git-wt 1,2,3,4 meld` | Error `meld takes at most 3 worktrees, got 4` |
+| `git-wt 1,1 meld` | Error `worktree #1 listed twice` |
+| `git-wt 1,2 remove` | Error — only `meld` takes a list |
 
 Through the wrapper: `wt 1` / `wt 1 switch` / `wt 1 cd` cd into it; `wt 1 remove`
 cd's back to main; `wt 1 path` / `wt 1 show` only print.

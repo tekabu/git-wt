@@ -1,8 +1,8 @@
 # git-wt test report
 
 - Version: `git-wt 1.1.1`
-- Build: `debug`
-- Date: `2026-07-16 23:24:01 PST`
+- Build: `release`
+- Date: `2026-07-16 23:25:10 PST`
 
 ## Results
 

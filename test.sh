@@ -281,7 +281,92 @@ check "diff list form errors"        exit=1 err="diff spells its second target o
 # Uncommitted work is invisible to a ref diff, so it must be called out.
 echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"
 check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- 1 diff "$didx" --name-only
+check "dirty warning points at live" exit=0 err="git-wt 1 diff $didx live" -- 1 diff "$didx" --name-only
 rm -f "$CODE/myapp-feature-login/uncommitted.txt"
+
+# --- diff live --------------------------------------------------------------
+# The case no ref diff can answer: put BOTH worktrees on the same commit, then
+# change one on disk only. 'git diff <a>..<b>' is provably empty here -- both
+# refs resolve to the same tree -- so any output at all proves live read disk.
+LIVE="$CODE/myapp-live"
+"$BIN" add livebr --dirname myapp-live --from main >/dev/null 2>&1 <<< y
+( cd "$APP" && git checkout -q main )
+lidx="$("$BIN" list | awk '$2=="livebr"{print $1}')"
+printf 'one\ntwo\nthree\n' > "$APP/shared.txt"
+( cd "$APP" && git add -A && git commit -qm shared )
+( cd "$LIVE" && git merge -q main )     # same commit, same tree, both sides
+echo 'ignoreme/' > "$APP/.gitignore"
+( cd "$APP" && git add -A && git commit -qm ign )
+( cd "$LIVE" && git merge -q main )
+
+# Uncommitted-only divergence in the live worktree.
+printf 'one\nTWO\nthree\nfour\n' > "$LIVE/shared.txt"   # 1 modified, 1 added
+echo brandnew > "$LIVE/untracked.txt"                    # untracked -> a real add
+mkdir -p "$LIVE/ignoreme" && echo junk > "$LIVE/ignoreme/x.o"
+
+# Both on one commit: the ref diff is empty, and that is the whole problem.
+refout="$("$BIN" 1 diff "$lidx" --name-only 2>/dev/null)"
+rcmd="$(fmt_cmd 1 diff "$lidx" --name-only)"
+if [ -z "$refout" ]; then
+  report PASS HAPPY "ref diff blind on same commit" "$rcmd  # empty, as designed"
+else
+  report FAIL HAPPY "ref diff blind on same commit" "$rcmd" "wanted empty, got '$refout'"
+fi
+
+check "live sees uncommitted edit"   exit=0 out="shared.txt" -- 1 diff "$lidx" live --name-only
+check "live sees untracked as add"   exit=0 out="A	untracked.txt" -- 1 diff "$lidx" live --name-status
+check "live counts hunks"            exit=0 out="+2" -- 1 diff "$lidx" live
+check "live summary counts lines"    exit=0 out="2 files changed, 3 insertions(+), 1 deletion(-)" -- 1 diff "$lidx" live
+check "live hunks show line numbers" exit=0 out="modified 1" -- 1 diff "$lidx" live hunks
+check "live --stat still works"      exit=0 out="3 ++-" -- 1 diff "$lidx" live --stat
+check "live suppresses dirty warn"   exit=0 err="" -- 1 diff "$lidx" live --name-only
+
+# .gitignore is the reason live can't just be 'diff -rq': without it, build
+# output drowns the signal.
+ligr="$("$BIN" 1 diff "$lidx" live --name-only 2>/dev/null)"
+gcmd="$(fmt_cmd 1 diff "$lidx" live --name-only)"
+case "$ligr" in
+  *ignoreme*) report FAIL HAPPY "live honors .gitignore" "$gcmd" "ignored file listed: '$ligr'" ;;
+  *)          report PASS HAPPY "live honors .gitignore" "$gcmd" ;;
+esac
+
+lspec="$("$BIN" 1 diff "$lidx" live --name-only -- shared.txt 2>/dev/null)"
+lpcmd="$(fmt_cmd 1 diff "$lidx" live --name-only -- shared.txt)"
+if [ "$lspec" = "shared.txt" ]; then
+  report PASS HAPPY "live -- pathspec limits" "$lpcmd"
+else
+  report FAIL HAPPY "live -- pathspec limits" "$lpcmd" "wanted exactly 'shared.txt', got '$lspec'"
+fi
+
+# A deleted-on-disk file is a delete, and its hunk must not read as '+0'.
+rm "$LIVE/shared.txt"
+check "live reports on-disk delete"  exit=0 out="D	shared.txt" -- 1 diff "$lidx" live --name-status
+check "live delete is not an add"    exit=0 out="deleted 3" -- 1 diff "$lidx" live hunks
+printf 'one\nTWO\nthree\nfour\n' > "$LIVE/shared.txt"
+
+# Identical contents: stdout stays empty so a pipe sees nothing, and the note
+# that this is a real answer (not the empty-ref-diff bug) goes to stderr.
+check "live identical is empty out"  exit=0 out="" err="no differences" -- 1 diff "$lidx" live -- .gitignore
+
+check "live identical says so once"  exit=0 err="no differences" -- 1 diff "$lidx" live --name-only -- .gitignore
+# The ref-diff hint would contradict the mode the user is already in, and it
+# must not reappear just because 'live' came after the offending flag.
+check "live bad flag hints no-index"  exit=1 err="git diff --no-index" -- 1 diff "$lidx" live -w
+check "live hint survives word order" exit=1 err="git diff --no-index" -- 1 diff "$lidx" -w live
+livehint="$("$BIN" 1 diff "$lidx" live -w 2>&1)"
+lhcmd="$(fmt_cmd 1 diff "$lidx" live -w)"
+case "$livehint" in
+  *"run git itself"*) report FAIL UNHAPPY "live bad flag drops ref hint" "$lhcmd" "ref-diff hint leaked: '$livehint'" ;;
+  *)                  report PASS UNHAPPY "live bad flag drops ref hint" "$lhcmd" ;;
+esac
+# A pathspec named 'live' is a path, not the mode word.
+check "pathspec 'live' not the mode"  exit=0 err="" -- 1 diff "$lidx" --name-only -- live
+
+check "live rejects .. range"        exit=1 err="'live' and '..' cannot combine" -- 1 diff "$lidx" live ..
+check "live rejects ... range"       exit=1 err="'live' and '...' cannot combine" -- 1 diff "$lidx" live ...
+check "hunks rejects --stat"         exit=1 err="cannot combine" -- 1 diff "$lidx" hunks --stat
+check "--live dashed form works"     exit=0 out="shared.txt" -- 1 diff "$lidx" --live --name-only
+check "hunks works without live"     exit=0 out="committed state" -- 1 diff "$didx" hunks
 
 # --- meld -------------------------------------------------------------------
 # A stub 'meld' on PATH echoes its argv, so we can assert on the paths AND the

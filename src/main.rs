@@ -110,6 +110,8 @@ COMMITS OPTIONS:
         --no-cherry       Skip the patch comparison behind '≈' (faster)
         --pick-id         Add a 'pick' column: the sha the '≈' copy of the
                           commit carries elsewhere
+        --files           Add the changed files under each commit, with
+                          status and +/- line counts
         --topo            Group each branch's commits, don't interleave
         --reverse         Newest last (alias: --oldest-first)
     -w, --wrap [N]        Let a long subject take N terminal lines, not
@@ -295,6 +297,16 @@ COMMITS DATES:
     off a terminal -- '--subjw 60 | grep' cuts at 60, where a bare 'commits |
     grep' still sees whole subjects. N is at least 24: below that a cut subject
     says nothing, which is what 'full' is for.
+
+    '--files' adds the files a commit touched, indented under the subject.
+    Each file shows a status letter (A/M/D/R/C) and the added/removed line
+    count. A blank line separates the commit from its file block, and another
+    separates the block from the next commit. The work is scoped to the rows
+    the table already shows, so pair it with '-n' or filters on large logs.
+    Merge commits show the diff against their first parent.
+
+        git-wt 1,2 commits -n 10 --files
+        git-wt 1,2 commits --author regoso --files
 
 MARKS:
     ✓   the branch has this commit
@@ -2797,6 +2809,17 @@ struct CommitRow {
     key: String,
 }
 
+/// One file touched by a commit, with status and line-count summary.
+#[derive(Debug, Clone)]
+struct FileStat {
+    status: char,
+    path: String,
+    /// Added lines. `None` means the file is binary.
+    added: Option<usize>,
+    /// Removed lines. `None` means the file is binary.
+    removed: Option<usize>,
+}
+
 /// How a `--date` bound compares.
 ///
 /// Inclusive bounds only: `--from-date`/`--to-date` already say "this day and
@@ -2883,6 +2906,8 @@ struct CommitsArgs {
     pick: bool,
     /// Rows come from every worktree at once, not the first one's log alone.
     union: bool,
+    /// Add the changed files under each displayed commit.
+    files: bool,
     /// Terminal lines a subject may take. Moot off a terminal: nothing is cut.
     wrap: Wrap,
     /// Columns the subject gets. None lets the terminal decide, as it always has.
@@ -2903,6 +2928,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut no_cherry = false;
     let mut pick = false;
     let mut union = false;
+    let mut files = false;
     let mut wrap = Wrap::Lines(1);
     let mut subjectw = None;
     let mut it = args.iter().peekable();
@@ -2918,6 +2944,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             "--reverse" | "--oldest-first" => reverse = true,
             "--no-cherry" => no_cherry = true,
             "--pick-id" => pick = true,
+            "--files" => files = true,
             "--union" | "--any" => union = true,
             // The count is optional, and only a count or 'full' is read as
             // one: '--wrap --topo' asks for the whole subject, not for a
@@ -3021,7 +3048,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     }
     Ok(CommitsArgs {
         limit, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, pick, union,
-        wrap, subjectw,
+        files, wrap, subjectw,
     })
 }
 
@@ -3237,6 +3264,16 @@ fn cmd_commits(
         rows.reverse();
     }
 
+    // File stats are scoped to the displayed rows, so a large log only pays for
+    // what the user is looking at. Merge commits diff against their first parent.
+    let row_files: Vec<Vec<FileStat>> = if args.files {
+        rows.iter()
+            .map(|r| commit_files(root, &r.sha))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
     if rows.is_empty() {
         // A filter that matched nothing is a different story from a history
         // with nothing in it: say which one happened.
@@ -3284,11 +3321,31 @@ fn cmd_commits(
             if rest.is_empty() { "" } else { " " },
             rest.join(" ")
         );
-        return write_md(Path::new(&file), &rows, &names, &sets, &equiv, picks.as_ref(), &cmd);
+        return write_md(
+            Path::new(&file),
+            &rows,
+            &row_files,
+            &names,
+            &sets,
+            &equiv,
+            picks.as_ref(),
+            &cmd,
+        );
     }
 
     let tty = std::io::stdout().is_terminal();
-    render_commits(&rows, &names, &sets, &equiv, picks.as_ref(), color_enabled(tty), term_width(tty), args.wrap, args.subjectw);
+    render_commits(
+        &rows,
+        &row_files,
+        &names,
+        &sets,
+        &equiv,
+        picks.as_ref(),
+        color_enabled(tty),
+        term_width(tty),
+        args.wrap,
+        args.subjectw,
+    );
     Ok(())
 }
 
@@ -3310,6 +3367,112 @@ fn cmd_commits(
 /// out of order against its date column while the history stays true. That is
 /// the right trade: a table whose rows contradicted the history would be
 /// lying, where one whose dates jump is merely reporting a wrong clock.
+
+/// The files a commit touched, with status and line counts.
+///
+/// Diffed against the first parent (or the empty tree for root commits), which
+/// matches what a reader expects from a one-line log entry. Merge commits show
+/// the first-parent diff only, not the combined merge.
+fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, String> {
+    // First parent, or the empty tree for a root commit. The empty tree hash is
+    // stable across git versions, so we use it directly rather than spawning a
+    // command to compute it.
+    const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    let parents = git_stdout(root, &["rev-list", "--parents", "-n", "1", sha])?
+        .lines()
+        .next()
+        .map(|line| {
+            line.split_whitespace()
+                .skip(1)
+                .map(String::from)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+    let base = parents.first().map(String::as_str).unwrap_or(EMPTY_TREE);
+
+    let status_out = git_stdout(
+        root,
+        &["diff-tree", "-r", "--name-status", "-M", "-C", base, sha],
+    )?;
+    let numstat_out = git_stdout(
+        root,
+        &["diff-tree", "-r", "--numstat", "-M", "-C", base, sha],
+    )?;
+
+    // Map path -> status. Renames/copies keep the new path.
+    let mut status_by_path: HashMap<String, char> = HashMap::new();
+    for line in status_out.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let Some(status_field) = parts.next() else {
+            continue;
+        };
+        let Some(status) = status_field.chars().next() else {
+            continue;
+        };
+        match status {
+            'R' | 'C' => {
+                // R100<tab>old<tab>new
+                let Some(old) = parts.next() else {
+                    continue;
+                };
+                let Some(new) = parts.next() else {
+                    continue;
+                };
+                status_by_path.insert(new.to_string(), status);
+                // `--numstat` reports the rename as `old => new`, so keep that
+                // lookup key too.
+                status_by_path.insert(format!("{} => {}", old, new), status);
+            }
+            _ => {
+                let Some(path) = parts.next() else {
+                    continue;
+                };
+                status_by_path.insert(path.to_string(), status);
+            }
+        }
+    }
+
+    let mut stats: Vec<FileStat> = Vec::new();
+    for line in numstat_out.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, '\t');
+        let Some(added_field) = parts.next() else {
+            continue;
+        };
+        let Some(removed_field) = parts.next() else {
+            continue;
+        };
+        let Some(path) = parts.next() else {
+            continue;
+        };
+        let added = if added_field == "-" {
+            None
+        } else {
+            added_field.parse::<usize>().ok()
+        };
+        let removed = if removed_field == "-" {
+            None
+        } else {
+            removed_field.parse::<usize>().ok()
+        };
+        let status = status_by_path.get(path).copied().unwrap_or('M');
+        stats.push(FileStat {
+            status,
+            path: path.to_string(),
+            added,
+            removed,
+        });
+    }
+
+    stats.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(stats)
+}
+
 fn commit_rows(
     root: &Path,
     refs: &[String],
@@ -3716,6 +3879,7 @@ fn md_cell(s: &str) -> String {
 fn write_md(
     path: &Path,
     rows: &[CommitRow],
+    row_files: &[Vec<FileStat>],
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
@@ -3763,7 +3927,7 @@ fn write_md(
         .max()
         .unwrap_or(0);
 
-    for row in rows {
+    for (i, row) in rows.iter().enumerate() {
         out.push_str(&format!("| `{}` |", md_cell(&row.short)));
         if let Some(p) = picks {
             match p.get(&row.sha) {
@@ -3779,7 +3943,23 @@ fn write_md(
         for (set, eq) in sets.iter().zip(equiv) {
             out.push_str(&format!(" {} |", Mark::of(&row.sha, set, eq).glyph()));
         }
-        out.push_str(&format!(" {} |\n", md_cell(&row.text)));
+        let mut subject = md_cell(&row.text);
+        if let Some(file_stats) = row_files.get(i) {
+            if !file_stats.is_empty() {
+                let mut lines = String::from("<br><br>");
+                for f in file_stats {
+                    lines.push_str(&format!(
+                        "{} {} +{} -{}<br>",
+                        f.status,
+                        md_cell(&f.path),
+                        f.added.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()),
+                        f.removed.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()),
+                    ));
+                }
+                subject.push_str(&lines);
+            }
+        }
+        out.push_str(&format!(" {} |\n", subject));
     }
 
     std::fs::write(path, out).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
@@ -3852,6 +4032,7 @@ fn wrap_wide(s: &str, max: usize, lines: usize) -> Vec<String> {
 /// escapes never skew the columns either.
 fn render_commits(
     rows: &[CommitRow],
+    row_files: &[Vec<FileStat>],
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
@@ -3952,7 +4133,7 @@ fn render_commits(
     head.push_str("  subject");
     println!("{}", paint(&head, DIM, color));
 
-    for (row, text) in rows {
+    for (i, (row, text)) in rows.iter().enumerate() {
         let mut line = format!("{:<shaw$}  ", row.short);
         if let Some(w) = pickw {
             // Blank, not '·': the column names a sha or it has nothing to say,
@@ -3985,6 +4166,55 @@ fn render_commits(
         // the eye has to scan.
         for more in &text[1..] {
             println!("{}{}", " ".repeat(fixed), more.trim_end());
+        }
+
+        // File block, tab-indented under the commit row. Kept dim so the commit
+        // rows remain the primary scan target.
+        if let Some(file_stats) = row_files.get(i) {
+            if !file_stats.is_empty() {
+                let pathw = file_stats
+                    .iter()
+                    .map(|f| f.path.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                let added_strs: Vec<String> = file_stats
+                    .iter()
+                    .map(|f| {
+                        f.added
+                            .map(|n| format!("+{}", n))
+                            .unwrap_or_else(|| "-".to_string())
+                    })
+                    .collect();
+                let removed_strs: Vec<String> = file_stats
+                    .iter()
+                    .map(|f| {
+                        f.removed
+                            .map(|n| format!("-{}", n))
+                            .unwrap_or_else(|| "-".to_string())
+                    })
+                    .collect();
+                let addw = added_strs
+                    .iter()
+                    .map(|s| width_bound(s))
+                    .max()
+                    .unwrap_or(1);
+                let remw = removed_strs
+                    .iter()
+                    .map(|s| width_bound(s))
+                    .max()
+                    .unwrap_or(1);
+                println!();
+                for (f, (add_s, rem_s)) in file_stats
+                    .iter()
+                    .zip(added_strs.iter().zip(removed_strs.iter()))
+                {
+                    let file_line = format!(
+                        "\t{}  {:<pathw$}  {:>addw$}  {:>remw$}",
+                        f.status, f.path, add_s, rem_s
+                    );
+                    println!("{}", paint(&file_line, DIM, color));
+                }
+            }
         }
     }
 }
@@ -5219,6 +5449,10 @@ diff --git a/gone.txt b/gone.txt
         assert!(parse(&["--pick-id"]).unwrap().pick);
         // And it cannot be asked for and switched off at once.
         assert!(parse(&["--pick-id", "--no-cherry"]).unwrap_err().contains("drop one of them"));
+
+        // --files is also opt-in: it spawns a diff per displayed commit.
+        assert!(!parse(&[]).unwrap().files);
+        assert!(parse(&["--files"]).unwrap().files);
     }
 
     #[test]

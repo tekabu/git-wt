@@ -46,6 +46,7 @@ Replace branch switching with separate folders next door.
 | Peek at a branch without disturbing your current work | `git-wt add bugfix/123 --stay` | The folder is created; you stay where you are |
 | Fold one task's work into another | `wt 1,2 merge` | Task 2's branch is merged into task 1's, without leaving your shell |
 | See which tasks have which commits | `wt 1,2,3 commits` | A table: one row per commit, a check under every task that has it |
+| Catch every task up with the server | `wt pull --all` | Each folder pulls its own branch; the last line counts what worked |
 | Clean up a finished task | `wt 1 remove` | The extra folder disappears; the branch stays in Git |
 
 No more stashing, no more “wait, which branch was I on?”, no more half-finished
@@ -124,6 +125,9 @@ git-wt <N> merged            Is N's branch already in the current branch?
 git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
 git-wt <N>,<M>[,...] commits Table: which commit is on which branch
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
+git-wt <N> fetch|pull|push   Run it in worktree N
+git-wt <N>,<M> pull          Run it in each worktree listed
+git-wt fetch|pull|push --all Run it in every worktree
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
 git-wt version
 git-wt --help
@@ -830,6 +834,83 @@ The answer is still correct, just less readable. A detached worktree has no
 branch to name, so the list form is the way to ask about one:
 `git-wt 1,2 merged` answers by SHA.
 
+## Sync — `fetch` / `pull` / `push`
+
+Run a remote verb inside a worktree's own directory, so it syncs that
+worktree's branch against that branch's upstream. Nothing here does anything
+git does not — it is the `cd` you would type first.
+
+```sh
+git-wt 1 pull                # git -C <dir 1> pull
+git-wt 1,3 fetch --prune     # both, one after the other
+git-wt pull --all            # every worktree
+git-wt 2 push -u             # push and set the upstream
+```
+
+`--all` is the point. A repo with six worktrees is six branches, and they go
+stale one at a time. It sweeps every worktree in `list` order, and it names no
+target — `git-wt pull --all` is the one verb-first form left in the grammar,
+because there is nothing to put in front of it.
+
+### A sweep never stops on a failure
+
+One worktree with no upstream, or a pull that hits a conflict, would otherwise
+leave the worktrees after it untouched and unmentioned — half-synced, with no
+line saying which half. So every one runs, each failure prints where it
+happened, and the last line counts them:
+
+```
+pull main
+Updating cc9e437..a22b97f
+Fast-forward
+skip (detached) (detached HEAD, no branch to sync)
+pull feat/x
+Already up to date.
+pull lonely
+error: There is no tracking information for the current branch.
+
+pull: 2 ok, 1 failed, 1 skipped
+error: pull failed in 1: lonely
+```
+
+The exit code is that summary — nonzero when anything failed. A single target
+is not a sweep: git's own error is the whole story, and it exits with it
+unsummarized rather than with a one-line count of itself.
+
+Skipped is what the verb cannot mean, and it is not a failure — there was
+nothing to do. A bare worktree has nothing to pull into, and a detached HEAD
+has no branch, so no upstream to push to. `fetch` only moves remote-tracking
+refs, so it runs on both.
+
+### `--all` counts worktrees, not remotes
+
+`git fetch --all` means every *remote*. Here `--all` means every *worktree*,
+always, for all three verbs: `git-wt` counts worktrees, that is what it is for.
+For every remote, run git yourself.
+
+### Options
+
+Flags are a curated list, not a passthrough — the same rule `diff` follows.
+Any other git flag is an error, and the error prints the command to run
+instead.
+
+| Verb | Flags |
+|---|---|
+| `fetch` | `-p, --prune` · `--tags` · `--no-tags` · `--force` |
+| `pull` | `--rebase` · `--no-rebase` · `--ff-only` · `-p, --prune` · `--autostash` |
+| `push` | `-u, --set-upstream` · `--force-with-lease` · `--tags` · `-n, --dry-run` |
+| all three | `-a, --all` |
+
+`push --force` is the one flag refused outright: it overwrites a remote branch
+without checking what is on it, and `--all` would do that to every branch at
+once. `--force-with-lease` is the one that checks.
+
+`push -u` on a branch with no upstream names the remote and branch for you —
+a bare `git push -u` has no upstream to read them off of, which is the exact
+situation `-u` exists for, so git rejects it. The remote is `origin` when it
+exists, otherwise the only remote there is; more than one and no `origin` is an
+error, since that is not a choice git-wt can make for you.
+
 ## Command reference (all combinations)
 
 Every form the CLI accepts. Examples assume:
@@ -876,6 +957,30 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 merged` | Is worktree 1's branch already in the current branch? |
 | `git-wt 1 merged feat/x` | Is branch `feat/x` already in worktree 1's branch? |
 | `git-wt 1,2 merged` | Is worktree 2's branch already in worktree 1's? |
+
+### Sync — `fetch` / `pull` / `push`
+
+| Command | Effect |
+|---|---|
+| `git-wt 1 fetch` | `git fetch` in worktree 1 |
+| `git-wt 1 pull` | `git pull` in worktree 1 |
+| `git-wt 1 push` | `git push` in worktree 1 |
+| `git-wt 1,3 pull` | Each worktree listed, in that order |
+| `git-wt pull --all` | Every worktree (`-a` too) |
+| `git-wt 1 fetch --prune` | `-p` also |
+| `git-wt 1 pull --rebase` | Also `--no-rebase`, `--ff-only`, `--prune`, `--autostash` |
+| `git-wt 1 push -u` | Push and set the upstream; names `origin <branch>` when there is none |
+| `git-wt 1 push --force-with-lease` | Force, but refuse when the remote moved |
+| `git-wt 1 push --dry-run` | `-n` also |
+| `git-wt pull --all` (one fails) | Sweep finishes, `pull: 2 ok, 1 failed, 1 skipped`, exit 1 |
+| `git-wt 1 pull` (fails) | git's own error, unsummarized, exit 1 |
+| `git-wt pull` | Error — `'pull' needs a worktree: 'git-wt <N> pull'` |
+| `git-wt 1 pull --all` | Error — `--all` is every worktree, so a target adds nothing |
+| `git-wt 1,1 fetch` | Error `worktree #1 listed twice` |
+| `git-wt 1 push --force` | Error — use `--force-with-lease` |
+| `git-wt 1 fetch --rebase` | Error — `--rebase` is `pull`'s flag |
+| `git-wt 1 pull --depth=1` | Error — not a passthrough; the error prints the `git` command |
+| `git-wt 1 pull --rebase --no-rebase` | Error — the two contradict each other |
 
 ### Diff — `git-wt <N>,<M> diff [flags]`
 

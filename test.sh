@@ -288,7 +288,7 @@ check "index 0 errors"               exit=1 err="no worktree #0" -- 0
 check "index over range errors"      exit=1 err="there are" -- 99
 # Pin the whole action list, not just the prefix: the README documents it, and
 # a substring match let it drift silently when diff/meld were added.
-check "unknown action errors"        exit=1 err="unknown action 'bogus' (switch, path, remove, diff, commits, merge, meld, merged)" -- 1 bogus
+check "unknown action errors"        exit=1 err="unknown action 'bogus' (switch, path, remove, diff, commits, merge, meld, merged, fetch, pull, push)" -- 1 bogus
 check "flag on target errors"        exit=1 err="'-n' is an option, not an action" -- 1 -n x
 # The message must not claim an action rejects flags that it actually takes.
 check "flag on target hints actions" exit=1 err="options follow the action" -- 1 --stat
@@ -991,6 +991,91 @@ else
   report FAIL HAPPY "--squash leaves changes staged" "git diff --cached  # in w-ff" \
     "nothing staged after --squash"
 fi
+
+cd "$APP" || exit 1
+
+# --- sync: fetch / pull / push ----------------------------------------------
+# Self-contained clone with a real remote: these verbs move refs on both sides,
+# which the shared fixture's origin is not there to survive.
+#   main    tracks origin/main; a second clone pushes a commit for it to pull
+#   feat-s  tracks origin/feat-s, up to date
+#   lonely  no upstream at all   (the failure a sweep must survive)
+#   detached                     (skipped: no branch to sync)
+SR="$ROOT/syn/origin.git"; SA="$ROOT/syn/app"; mkdir -p "$ROOT/syn"
+( git init -q --bare "$SR"
+  git clone -q "$SR" "$SA" 2>/dev/null
+  cd "$SA"
+  git config user.email t@t; git config user.name t
+  git checkout -q -b main 2>/dev/null
+  echo s > s.txt; git add .; git commit -q -m init; git push -q -u origin main
+  git branch feat-s; git branch lonely
+  "$BIN" add feat-s --dirname w-feat-s >/dev/null 2>&1
+  git -C "$ROOT/syn/w-feat-s" push -q -u origin feat-s
+  # lonely is never pushed, so it has no upstream: pull/push fail on it.
+  "$BIN" add lonely --dirname w-lonely >/dev/null 2>&1
+  git worktree add -q --detach "$ROOT/syn/w-det" HEAD
+  # A separate clone is the "someone else pushed" the sweep then pulls.
+  git clone -q "$SR" "$ROOT/syn/other" 2>/dev/null
+  cd "$ROOT/syn/other"
+  git config user.email t@t; git config user.name t
+  echo upstream >> s.txt; git commit -q -am "upstream work"; git push -q origin main )
+
+cd "$SA" || exit 1
+sidx() { "$BIN" list | awk -v b="$1" '$2==b{print $1}'; }
+SF="$(sidx feat-s)"; SL="$(sidx lonely)"; SD="$(sidx '(detached)')"
+
+# Grammar, before anything moves.
+check "sync bare verb needs target"  exit=1 err="'pull' needs a worktree" -- pull
+check "sync fetch bare verb"         exit=1 err="'fetch' needs a worktree" -- fetch
+check "sync target + --all"          exit=1 err="'--all' is every worktree, so worktree #1" -- 1 pull --all
+check "sync list + --all"            exit=1 err="'--all' is every worktree, so a worktree list" -- "1,$SF" push --all
+check "sync list dup"                exit=1 err="worktree #1 listed twice" -- "1,1" fetch
+check "sync unknown flag"            exit=1 err="unknown option '--depth=1' for pull" -- 1 pull --depth=1
+check "sync flag names git for you"  exit=1 err="git -C <dir> pull --depth=1" -- 1 pull --depth=1
+check "sync flags are per verb"      exit=1 err="unknown option '--rebase' for fetch" -- 1 fetch --rebase
+check "sync push has no --rebase"    exit=1 err="unknown option '--rebase' for push" -- 1 push --rebase
+check "sync pull has no -u"          exit=1 err="unknown option '-u' for pull" -- 1 pull -u
+check "sync push --force refused"    exit=1 err="no '--force' for push" -- 1 push --force
+check "sync push -f refused"         exit=1 err="--force-with-lease" -- 1 push -f
+check "sync contradiction"           exit=1 err="'--rebase' and '--no-rebase' contradict" -- 1 pull --rebase --no-rebase
+check "sync rebase vs ff-only"       exit=1 err="'--rebase' and '--ff-only' contradict" -- 1 pull --rebase --ff-only
+
+# fetch works everywhere: it moves remote-tracking refs, so even a detached
+# HEAD has something to do.
+check "fetch one worktree"           exit=0 -- 1 fetch
+check "fetch takes --prune"          exit=0 -- 1 fetch --prune
+check "fetch list form"              exit=0 err="fetch: 2 ok, 0 failed, 0 skipped" -- "1,$SF" fetch
+check "fetch --all sweeps"           exit=0 err="fetch: 4 ok, 0 failed, 0 skipped" -- fetch --all
+check "fetch detached is not skipped" exit=0 err="fetch: 2 ok, 0 failed, 0 skipped" -- "1,$SD" fetch
+
+# pull: main is behind by the other clone's commit, so this is a real update.
+check "pull one worktree"            exit=0 err="Fast-forward" -- 1 pull
+if [ "$(git -C "$SA" log --oneline -1 --format=%s)" = "upstream work" ]; then
+  report PASS HAPPY "pull moved the branch" "git log -1  # in syn/app"
+else
+  report FAIL HAPPY "pull moved the branch" "git log -1  # in syn/app" \
+    "HEAD is '$(git -C "$SA" log --oneline -1 --format=%s)', want 'upstream work'"
+fi
+# The sweep: 1 and feat-s pull, detached is skipped, lonely has no upstream and
+# fails — and the ones after it still ran.
+check "pull --all keeps going"       exit=1 err="pull: 2 ok, 1 failed, 1 skipped" -- pull --all
+check "pull --all names the failure" exit=1 err="pull failed in 1: lonely" -- pull --all
+check "pull --all skips detached"    exit=1 err="detached HEAD, no branch to sync" -- pull --all
+check "pull single error is git's"   exit=1 err="no tracking information" -- "$SL" pull
+check "pull takes --ff-only"         exit=0 -- 1 pull --ff-only
+
+# push -u on a branch with no upstream: a bare 'git push -u' has none to read
+# the remote off of, so git-wt names 'origin lonely' the way you would.
+check "push -u sets the upstream"    exit=0 err="set up to track 'origin/lonely'" -- "$SL" push -u
+if [ "$(git -C "$ROOT/syn/w-lonely" rev-parse --abbrev-ref '@{upstream}' 2>&1)" = "origin/lonely" ]; then
+  report PASS HAPPY "push -u left an upstream" "git rev-parse --abbrev-ref @{u}  # in w-lonely"
+else
+  report FAIL HAPPY "push -u left an upstream" "git rev-parse --abbrev-ref @{u}  # in w-lonely" \
+    "upstream is '$(git -C "$ROOT/syn/w-lonely" rev-parse --abbrev-ref '@{upstream}' 2>&1)'"
+fi
+check "push -u again is fine"        exit=0 -- "$SL" push -u
+check "push --all sweeps"            exit=0 err="push: 3 ok, 0 failed, 1 skipped" -- push --all
+check "push takes --dry-run"         exit=0 -- 1 push --dry-run
 
 cd "$APP" || exit 1
 

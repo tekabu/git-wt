@@ -38,6 +38,11 @@ git-wt 2 fetch origin
 
 Flags pass through to `git fetch` / `git pull`.
 
+Shipped, with `push` alongside them and a `--all` sweep over every worktree,
+which is what makes it more than a saved `cd`. Flags do not pass through: each
+verb takes a curated list and any other git flag is an error, the same rule
+`diff` follows. `--all` counts worktrees, never remotes.
+
 ### 4. `git-wt <N> open` — open the worktree in an external tool
 
 ```sh
@@ -226,7 +231,7 @@ GIT_WT_NO_PROMPT=1 git-wt 2 remove -y
 
 | Phase | Features |
 |---|---|
-| First ship | `run`, ~~`diff`~~ (shipped), `fetch`, `pull`, `open`, shell completions |
+| First ship | `run`, ~~`diff`~~ (shipped), ~~`fetch`, `pull`~~ (shipped, with `push`), `open`, shell completions |
 | Next | `rename`, `prune`, `list --porcelain` / `--json` |
 | Later | `sync`, `switch -`, config file, worktree notes |
 | Maybe | `--copy-from`, `--remote`, `doctor` |

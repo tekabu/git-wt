@@ -394,12 +394,21 @@ check "commits human + time"         exit=0 out=", $(date +%Y) " -- "1,$didx" co
 # A date read off the table pastes back into a filter unchanged.
 check "commits ISO round-trips"      exit=0 out="mainside" -- "1,$didx" commits --from-date "$(date +%F)"
 
-# Nothing is cut at the fork: the rows are the whole log, so the shared commit
-# is a row -- checked in every column, which is the answer 'everyone has this'.
-check "commits keeps shared history" exit=0 out="init" -- "1,$didx" commits
-# The flag that used to ask for it is gone, and says where the question went.
-check "commits --all is gone"        exit=1 err="no '--all' for commits" -- "1,$didx" commits --all
-check "commits --all points at union" exit=1 err="--union" -- "1,$didx" commits --all
+# The default is a merge-request slice: only branch 1's commits the others
+# miss. 'mainside' is main's alone, so it shows; the shared 'init' is cut.
+check "commits default shows slice"  exit=0 out="mainside" -- "1,$didx" commits
+# --all brings back the whole first-branch log, so the shared root reappears.
+check "commits --all shows full log" exit=0 out="init" -- "1,$didx" commits --all
+# --all and --union are different row sources and cannot combine.
+check "commits --all vs --union"     exit=1 err="two different row sources" -- "1,$didx" commits --all --union
+# The default really drops the shared root -- not merely 'not asserted'.
+droot="$("$BIN" "1,$didx" commits 2>/dev/null | grep -cw init || true)"
+dcmd2="$(fmt_cmd "1,$didx" commits)"
+if [ "$droot" = 0 ]; then
+  report PASS HAPPY "commits default drops shared root" "$dcmd2  # no init row"
+else
+  report FAIL HAPPY "commits default drops shared root" "$dcmd2" "init present in default range"
+fi
 
 # A row is checked only where the branch really has the commit. The subject is
 # the last field now, so login's mark -- the last column -- is the one before

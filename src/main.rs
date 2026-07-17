@@ -102,8 +102,8 @@ COMMITS OPTIONS:
 
 COMMITS:
     A table of the commits the listed worktrees do NOT share: one row per
-    commit, its author, then one column per worktree with a check where that
-    branch contains it.
+    commit -- sha, author, date -- then one column per worktree with a check
+    where that branch contains it, and the subject last.
     Answers 'who has what' for 3+ branches at once, which diff cannot: diff
     compares exactly two, and by content rather than by commit.
 
@@ -117,10 +117,13 @@ COMMITS:
     Commits are dated newest-first across all branches at once, so a row's
     neighbors are its contemporaries, not its branch-mates.
 
-    A subject too long for the terminal is cut, not wrapped: the marks are the
-    point of the table, and a wrapped row puts them on a line of their own.
-    Piped output is never cut, so 'commits | grep' still sees whole subjects.
-    The author is .mailmap-aware, so one contributor is one name.
+    The subject comes last because it is the only free-form cell: an emoji is
+    two terminal columns wide but one character, so a padded subject column
+    would shift every column after it. Nothing is padded after it, so the marks
+    line up whatever the subject holds. Too long for the terminal, it is cut
+    rather than wrapped; piped output is never cut, so 'commits | grep' still
+    sees whole subjects. Dates are author dates, and the author is
+    .mailmap-aware, so one contributor is one name.
 
     A cherry-picked or rebased commit is a different commit to git, so it
     shows as unchecked in the branch it was copied from -- same patch, new
@@ -2154,12 +2157,14 @@ fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
     Ok(())
 }
 
-/// One table row: a commit, the text `--oneline` would print for it, and who
-/// wrote it.
+/// One table row: a commit, its short name, who wrote it when, and its subject.
 struct CommitRow {
+    /// Full sha, for the set lookups; never printed.
     sha: String,
+    short: String,
     text: String,
     author: String,
+    date: String,
 }
 
 /// Options for `commits`.
@@ -2279,6 +2284,12 @@ fn octopus_base(root: &Path, refs: &[String]) -> Option<String> {
 /// text `git log --oneline` shows, which is the format the rows are meant to
 /// read as. `%aN` respects .mailmap, so a contributor who has committed under
 /// two names is one name here.
+///
+/// Author dates throughout, and `--author-date-order` to match: the column
+/// says when the work was written, so the rows must sort by the same clock or
+/// a rebased commit lands out of order against its own printed date. Commit
+/// dates would answer "when did this land here", which is not what a table
+/// about who-wrote-what is asking.
 fn commit_rows(
     root: &Path,
     refs: &[String],
@@ -2286,7 +2297,12 @@ fn commit_rows(
     limit: Option<usize>,
 ) -> Result<Vec<CommitRow>, String> {
     let count;
-    let mut args = vec!["log", "--date-order", "--format=%H%x09%aN%x09%h %s"];
+    let mut args = vec![
+        "log",
+        "--author-date-order",
+        "--date=format:%b. %-d, %Y",
+        "--format=%H%x09%aN%x09%ad%x09%h%x09%s",
+    ];
     if let Some(n) = limit {
         count = format!("-n{n}");
         args.push(&count);
@@ -2301,10 +2317,12 @@ fn commit_rows(
     Ok(out
         .lines()
         .filter_map(|line| {
-            let mut f = line.splitn(3, '\t');
+            let mut f = line.splitn(5, '\t');
             Some(CommitRow {
                 sha: f.next()?.to_string(),
                 author: f.next()?.to_string(),
+                date: f.next()?.to_string(),
+                short: f.next()?.to_string(),
                 text: f.next()?.to_string(),
             })
         })
@@ -2326,6 +2344,7 @@ fn ref_shas(root: &Path, r: &str, base: Option<&str>) -> Result<HashSet<String>,
 
 const CHECK: &str = "✓";
 const MISS: &str = "·";
+const ELLIPSIS: char = '…';
 /// Below this, a truncated subject says nothing; let the line wrap instead.
 const MIN_TEXTW: usize = 24;
 /// Enough for a full name; past it, the subject has the better claim.
@@ -2353,25 +2372,66 @@ fn term_width(is_tty: bool) -> Option<usize> {
     Some(out.unwrap_or(80))
 }
 
+/// An upper bound on the terminal columns `s` will occupy.
+///
+/// Deliberately not a width table: getting that right needs Unicode data this
+/// crate has no dependency for, and a wrong *padding* silently breaks a column.
+/// So no column is padded by this -- only the last one is budgeted by it, where
+/// over-estimating costs a few characters of subject and under-estimating could
+/// only ever wrap. Every non-ASCII char is assumed double-width, which is true
+/// of the ones that actually turn up in subjects (emoji, CJK) and merely
+/// pessimistic for the rest (accented Latin).
+fn width_bound(s: &str) -> usize {
+    s.chars()
+        .map(|c| match c {
+            // Our own marker, and known narrow: counting it wide would let a
+            // budgeted string exceed the budget it was just cut to.
+            ELLIPSIS => 1,
+            c if c.is_ascii() => 1,
+            _ => 2,
+        })
+        .sum()
+}
+
 /// Cut `s` to `max` characters, ending in an ellipsis when anything was lost.
 fn ellipsize(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
     let keep = max.saturating_sub(1);
-    s.chars().take(keep).chain(std::iter::once('…')).collect()
+    s.chars().take(keep).chain(std::iter::once(ELLIPSIS)).collect()
 }
 
-/// Print the table: the commit text in column 1, then one mark per branch.
+/// Cut `s` to fit `max` terminal columns by `width_bound`'s reckoning.
+fn ellipsize_wide(s: &str, max: usize) -> String {
+    if width_bound(s) <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    // The ellipsis needs a column of its own, so stop one short of the budget.
+    for c in s.chars() {
+        let w = if c.is_ascii() { 1 } else { 2 };
+        if used + w > max.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push(ELLIPSIS);
+    out
+}
+
+/// Print the table: sha, author, date, a mark per branch, then the subject.
 ///
-/// Widths are measured on the plain text and the marks are centered inside
-/// them, so color -- applied last -- never skews the columns.
+/// The subject comes last because it is the only cell holding arbitrary text.
+/// Padding a cell means knowing its rendered width, and an emoji subject is
+/// wider than its `chars().count()` -- so a padded subject column shifts every
+/// column after it, which is precisely the table failing to line up. Last, it
+/// is never padded, and no width table is needed to keep the marks straight.
 ///
-/// Subjects are long and the marks are the point, so column 1 is what gives
-/// when `width` is set: a full-width subject would push the marks past the
-/// right edge, and a wrapped row puts them on a line of their own, which is
-/// exactly the table not lining up. Piped output has no width to fit and stays
-/// whole, so `| grep` still sees the real subject.
+/// Widths are measured on the plain text and color applied after, so the ANSI
+/// escapes never skew the columns either.
 fn render_commits(
     rows: &[CommitRow],
     names: &[String],
@@ -2381,6 +2441,13 @@ fn render_commits(
 ) {
     let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
     let marksw: usize = widths.iter().map(|w| w + 2).sum();
+
+    let shaw = rows
+        .iter()
+        .map(|r| r.short.chars().count())
+        .chain(std::iter::once("commit".len()))
+        .max()
+        .unwrap_or(0);
 
     // The author column is sized to its longest name, but a name is not worth
     // unbounded width when the subject is competing for the same line; on a
@@ -2395,36 +2462,54 @@ fn render_commits(
         authw = authw.min(AUTHOR_MAX);
     }
 
-    let mut textw = rows
+    // The date is never cut: half a date is not a date. It is ASCII and a fixed
+    // shape, so it costs the same on every row.
+    let datew = rows
         .iter()
-        .map(|r| r.text.chars().count())
-        .chain(std::iter::once("commit".len()))
+        .map(|r| r.date.chars().count())
+        .chain(std::iter::once("date".len()))
         .max()
         .unwrap_or(0);
-    if let Some(w) = width {
-        textw = textw.min(w.saturating_sub(marksw + authw + 2).max(MIN_TEXTW));
-    }
+
     let rows: Vec<CommitRow> = rows
         .iter()
         .map(|r| CommitRow {
             sha: r.sha.clone(),
-            text: ellipsize(&r.text, textw),
+            short: r.short.clone(),
             author: ellipsize(&r.author, authw),
+            date: r.date.clone(),
+            text: match width {
+                // Only the tail is budgeted, and only to keep a long subject
+                // from wrapping; piped output has no terminal to fit.
+                Some(w) => {
+                    let fixed = shaw + 2 + authw + 2 + datew + marksw + 2;
+                    ellipsize_wide(&r.text, w.saturating_sub(fixed).max(MIN_TEXTW))
+                }
+                None => r.text.clone(),
+            },
         })
         .collect();
     let rows = &rows;
 
-    let mut head = format!("{:<textw$}  {:<authw$}", "commit", "author");
+    // The date is right-aligned so the years line up: an unpadded day makes
+    // 'Jan. 1, 2026' a character shorter than 'Sep. 15, 2026', and left-aligned
+    // that ragged edge is the first thing you see in the column.
+    let mut head = format!(
+        "{:<shaw$}  {:<authw$}  {:>datew$}",
+        "commit", "author", "date"
+    );
     for (n, w) in names.iter().zip(&widths) {
         head.push_str("  ");
         head.push_str(&format!("{n:<w$}"));
     }
-    println!("{}", paint(head.trim_end(), DIM, color));
+    head.push_str("  subject");
+    println!("{}", paint(&head, DIM, color));
 
     for row in rows {
-        let mut line = format!("{:<textw$}  ", row.text);
-        // Dim, so the marks and subjects stay the two things the eye lands on.
-        line.push_str(&paint(&format!("{:<authw$}", row.author), DIM, color));
+        let mut line = format!("{:<shaw$}  ", row.short);
+        // Dim, so the marks and the subject stay what the eye lands on.
+        let meta = format!("{:<authw$}  {:>datew$}", row.author, row.date);
+        line.push_str(&paint(&meta, DIM, color));
         for (set, w) in sets.iter().zip(&widths) {
             let hit = set.contains(&row.sha);
             let (mark, code) = if hit { (CHECK, GREEN) } else { (MISS, DIM) };
@@ -2435,6 +2520,8 @@ fn render_commits(
             line.push_str(&paint(mark, code, color));
             line.push_str(&" ".repeat(w - 1 - pad));
         }
+        line.push_str("  ");
+        line.push_str(&row.text);
         println!("{}", line.trim_end());
     }
 }
@@ -3558,6 +3645,38 @@ diff --git a/gone.txt b/gone.txt
     }
 
     #[test]
+    fn width_bound_never_under_counts_a_subject() {
+        // ASCII is exact.
+        assert_eq!(width_bound("abc"), 3);
+        // An emoji is two columns wide but one char: counting chars is what
+        // shifted every column after an emoji subject.
+        assert_eq!("🚀 fix".chars().count(), 5);
+        assert_eq!(width_bound("🚀 fix"), 6);
+        // CJK, likewise.
+        assert_eq!(width_bound("日本語"), 6);
+        // Pessimistic on accented Latin -- costs a character of subject, never
+        // an overflow, which is the safe direction for a budget.
+        assert_eq!(width_bound("é"), 2);
+    }
+
+    #[test]
+    fn ellipsize_wide_budgets_in_columns_not_chars() {
+        assert_eq!(ellipsize_wide("abcdef", 10), "abcdef");
+        assert_eq!(ellipsize_wide("abcdef", 4), "abc…");
+        // Two emoji = 4 columns, so a 4-column budget fits them whole: exactly
+        // the budget is not an overflow.
+        assert_eq!(ellipsize_wide("🚀🚀", 4), "🚀🚀");
+        // Never cut mid-emoji: the char is atomic, so a budget that cannot fit
+        // it drops it rather than splitting it.
+        assert_eq!(ellipsize_wide("🚀🚀", 3), "🚀…");
+        // The result always fits the budget it was given.
+        for max in 2..12 {
+            let out = ellipsize_wide("🚀 (ci): add validate stage", max);
+            assert!(width_bound(&out) <= max, "{max}: {out:?}");
+        }
+    }
+
+    #[test]
     fn a_piped_table_has_no_width_to_fit() {
         // Not a terminal: the subject is the payload for `| grep`, so it must
         // arrive whole however long it is.
@@ -3575,21 +3694,30 @@ diff --git a/gone.txt b/gone.txt
             let out = c.output().unwrap();
             assert!(out.status.success(), "git {:?} failed: {:?}", args, out);
         }
-        fn commit(dir: &std::path::Path, name: &str) {
+        // A fixed author date: the date column's format is part of the
+        // contract, and "now" cannot be asserted against.
+        fn commit(dir: &std::path::Path, name: &str, when: &str) {
             std::fs::write(dir.join(format!("{name}.txt")), name).unwrap();
             git(dir, &["add", "-A"]);
-            git(dir, &["commit", "--quiet", "-m", name]);
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(["commit", "--quiet", "-m", name])
+                .env("GIT_AUTHOR_DATE", when)
+                .env("GIT_COMMITTER_DATE", when)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "commit {name} failed: {out:?}");
         }
 
         std::fs::create_dir_all(&tmp).unwrap();
         git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
         git(&tmp, &["config", "user.email", "t@test"]);
         git(&tmp, &["config", "user.name", "t"]);
-        commit(&tmp, "shared");
+        commit(&tmp, "shared", "2025-12-20T10:00:00");
         git(&tmp, &["branch", "feat"]);
-        commit(&tmp, "on-main");
+        commit(&tmp, "on-main", "2026-01-01T10:00:00");
         git(&tmp, &["checkout", "--quiet", "feat"]);
-        commit(&tmp, "on-feat");
+        commit(&tmp, "on-feat", "2026-09-15T10:00:00");
 
         let refs = vec!["main".to_string(), "feat".to_string()];
         let base = octopus_base(&tmp, &refs).expect("branches share a root commit");
@@ -3598,9 +3726,15 @@ diff --git a/gone.txt b/gone.txt
         let rows = commit_rows(&tmp, &refs, Some(&base), None).unwrap();
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rows.len(), 2, "{subjects:?}");
-        // The author is parsed off its own field, so a subject with no tab in
-        // it cannot shift into the wrong column.
+        // Each field is parsed off its own tab, so nothing can shift into the
+        // wrong column. The date is the format the table promises, single-digit
+        // days unpadded.
         assert!(rows.iter().all(|r| r.author == "t"), "{:?}", rows[0].author);
+        assert!(rows.iter().all(|r| !r.short.is_empty()));
+        let dates: Vec<&str> = rows.iter().map(|r| r.date.as_str()).collect();
+        assert_eq!(dates, ["Sep. 15, 2026", "Jan. 1, 2026"], "{dates:?}");
+        // --author-date-order, so the rows descend by the date they print.
+        assert!(rows[0].text.ends_with("on-feat"), "{:?}", rows[0].text);
         assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
         assert!(subjects.iter().any(|t| t.ends_with("on-feat")), "{subjects:?}");
         assert!(!subjects.iter().any(|t| t.ends_with("shared")), "{subjects:?}");

@@ -366,6 +366,8 @@ check "commits lists both sides"     exit=0 out="mainside" -- "1,$didx" commits
 check "commits lists the other side" exit=0 out="loginside" -- "1,$didx" commits
 check "commits heads the author col" exit=0 out="author" -- "1,$didx" commits
 check "commits names the author"     exit=0 out="Test" -- "1,$didx" commits
+check "commits heads the subject col" exit=0 out="subject" -- "1,$didx" commits
+check "commits dates the rows"       exit=0 out=", $(date +%Y)" -- "1,$didx" commits
 
 # The cut is the point: a shared history would check in every column and say
 # nothing, so it is excluded until --all asks for it.
@@ -377,9 +379,10 @@ case "$shared" in
 esac
 check "commits --all adds shared"    exit=0 out="init" -- "1,$didx" commits --all
 
-# A row is checked only where the branch really has the commit. Marks are
-# positional, so assert the whole row: 'mainside' is main's alone.
-mrow="$("$BIN" "1,$didx" commits 2>/dev/null | awk '/mainside/{print $NF}')"
+# A row is checked only where the branch really has the commit. The subject is
+# the last field now, so login's mark -- the last column -- is the one before
+# it: 'mainside' is main's alone.
+mrow="$("$BIN" "1,$didx" commits 2>/dev/null | awk '/mainside/{print $(NF-1)}')"
 mcmd="$(fmt_cmd "1,$didx" commits)"
 if [ "$mrow" = "·" ]; then
   report PASS HAPPY "commits leaves foreign cell" "$mcmd  # mainside unchecked on login"
@@ -406,6 +409,21 @@ for spelling in "-n 1" "--limit=1"; do
 done
 
 # A worktree against itself is a column of guaranteed checks: never meant.
+# The subject is the last column precisely so an emoji -- two terminal columns
+# wide, but one char -- cannot shift what follows it. Single-word subjects
+# throughout, so awk's field numbers mean what they look like: the two marks are
+# the fields before the subject. Left of the reorder, this row slid right by one.
+# Last in the section: it adds a third diverged commit, which the row-count
+# cases above are not expecting.
+( cd "$APP" && git commit -q --allow-empty -m "🚀emojisubject" )
+erow="$("$BIN" "1,$didx" commits 2>/dev/null | awk '/emojisubject/{print $(NF-2)"|"$(NF-1)}')"
+ecmd="$(fmt_cmd "1,$didx" commits)"
+if [ "$erow" = "✓|·" ]; then
+  report PASS HAPPY "commits align past an emoji" "$ecmd  # emoji subject, marks hold"
+else
+  report FAIL HAPPY "commits align past an emoji" "$ecmd" "wanted '✓|·', got '$erow'"
+fi
+
 check "commits rejects a dup target" exit=1 err="listed twice" -- "1,1" commits
 check "commits needs two worktrees"  exit=1 err="commits takes a worktree list" -- 1 commits
 check "commits bad index errors"     exit=1 err="no worktree #99" -- "1,99" commits

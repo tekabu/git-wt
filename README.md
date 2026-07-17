@@ -331,21 +331,30 @@ git-wt 1,2,3 commits
 ```
 
 ```
-commit                              author  main  feat/login  bugfix-123
-a1b2c3d fix token expiry            Nino      ·        ✓           ✓
-9f8e7d6 add oauth scopes            Jhon      ·        ✓           ·
-4c5d6e7 bump serde                  Nino      ✓        ✓           ✓
+commit   author  date            main  feat/login  bugfix-123  subject
+a1b2c3d  Nino    Sep. 15, 2026    ·        ✓           ✓       fix token expiry
+9f8e7d6  Jhon     Apr. 2, 2026    ·        ✓           ·       🚀 add oauth scopes
+4c5d6e7  Nino     Jan. 1, 2026    ✓        ✓           ✓       bump serde
 ```
 
-One row per commit — the same text `git log --oneline` prints — then its
-author, then one column per worktree, checked where that branch contains it.
-This is the question `diff` cannot answer: `diff` compares exactly two
-branches, and compares their *content*. `commits` compares any number, by
-*commit*, so "who already has the oauth fix?" is one glance instead of three
-`merged` calls.
+One row per commit — sha, author, date — then one column per worktree, checked
+where that branch contains it, and the subject last. This is the question
+`diff` cannot answer: `diff` compares exactly two branches, and compares their
+*content*. `commits` compares any number, by *commit*, so "who already has the
+oauth fix?" is one glance instead of three `merged` calls.
 
 Authors come from `%aN`, so a `.mailmap` is honored and a contributor who has
-committed under two names or addresses shows up as one.
+committed under two names or addresses shows up as one. Dates are *author*
+dates — when the work was written, not when it landed here — and the rows sort
+by the same clock, so a rebased commit never appears out of order against its
+own printed date.
+
+The subject sits last for a reason worth knowing: it is the only free-form cell,
+and an emoji like 🚀 occupies two terminal columns while being a single
+character. Any column padded to a "length" measured in characters would shift
+by one on exactly those rows. Nothing is padded after the subject, so the marks
+line up whatever anyone puts in a commit message — no Unicode width tables, and
+no dependencies.
 
 Rows stop at the branches' common ancestor, so only the diverged commits are
 listed — the shared history would be a check in every column, saying nothing,
@@ -365,6 +374,11 @@ marks are the point of the table, and a wrapped row strands them on a line of
 their own. Long author names cap at 16 characters for the same reason. Piped
 output has no terminal to fit, so it keeps whole subjects and names, and
 `git-wt 1,2 commits | grep oauth` still works.
+
+One honest limitation: the author column *is* padded, so a name written in a
+double-width script (CJK) can still shift the columns to its right by a
+character. Latin names — the overwhelming case — are unaffected, and fixing it
+properly would mean a Unicode width table this crate has no dependency for.
 
 One caveat, inherited from git: a **cherry-picked or rebased commit is a
 different commit**, so it shows unchecked in the branch it was copied from —

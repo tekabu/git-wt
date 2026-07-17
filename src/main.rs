@@ -18,11 +18,13 @@ git-wt — worktrees in sibling directories named <repo>-<branch>
 
 USAGE:
     git-wt                       List worktrees, numbered from 1
-    git-wt list [SEARCH] [--col ...] [--long|--short]
+    git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path]
                                  List, optional fuzzy filter; --col picks/orders
                                  columns (1=id, 2=branch, 3=dir, 4=status,
-                                 5=last-commit, 6=merged). --long shows id/branch/dir/
-                                 status/last; --short is a one-line id+branch+status summary.
+                                 5=last-commit, 6=merged). --show-path (-p) adds the
+                                 dir column, which a terminal leaves out; --long shows
+                                 id/branch/dir/status/last; --short is a one-line
+                                 id+branch+status summary.
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
@@ -685,6 +687,7 @@ fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
     let mut search: Option<String> = None;
     let mut cols: Option<Vec<usize>> = None;
     let mut mode = ListMode::Normal;
+    let mut show_path = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -695,6 +698,7 @@ fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
             s if s.starts_with("--col=") => cols = Some(parse_cols(&s["--col=".len()..])?),
             "--long" | "-l" => mode = ListMode::Long,
             "--short" | "-s" => mode = ListMode::Short,
+            "--show-path" | "-p" => show_path = true,
             s if s.starts_with('-') && s != "-" => {
                 return Err(format!("unknown option '{s}'\nTry 'git-wt --help'"));
             }
@@ -706,7 +710,7 @@ fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
             }
         }
     }
-    cmd_list(root, search.as_deref(), cols, mode)
+    cmd_list(root, search.as_deref(), cols, mode, show_path)
 }
 
 /// Verbosity for `list`. Normal enriches to status + last-commit only on a
@@ -723,6 +727,7 @@ fn cmd_list(
     search: Option<&str>,
     cols: Option<Vec<usize>>,
     mode: ListMode,
+    show_path: bool,
 ) -> Result<(), String> {
     let trees = worktrees(root)?;
 
@@ -751,11 +756,17 @@ fn cmd_list(
     // Without --col: Short is a compact summary, Long shows everything, and
     // Normal enriches only on a TTY so a piped `git-wt list` keeps the plain
     // id/branch/dir contract.
+    //
+    // A path is the widest cell and the least read -- it is the branch name
+    // with a prefix, and `git-wt <N> path` is how a script gets one anyway --
+    // so on a terminal it waits for --show-path. A pipe keeps it unasked: the
+    // id/branch/dir contract is what the flagless form has always emitted.
     let cols = match (cols, mode) {
         (Some(c), _) => c,
         (None, ListMode::Short) => vec![1, 2, 4],
         (None, ListMode::Long) => vec![1, 2, 3, 4, 5],
-        (None, ListMode::Normal) if stdout_tty => vec![1, 2, 3, 4, 5],
+        (None, ListMode::Normal) if stdout_tty && show_path => vec![1, 2, 3, 4, 5],
+        (None, ListMode::Normal) if stdout_tty => vec![1, 2, 4, 5],
         (None, ListMode::Normal) => vec![1, 2, 3],
     };
 
@@ -811,12 +822,41 @@ fn cmd_list(
         .collect();
 
     let header_cells: Vec<String> = cols.iter().map(|c| col_header(*c).to_string()).collect();
+    let mut cells = cells;
 
     // Per-column width over the header and every data row.
     let mut widths = vec![0usize; cols.len()];
     for row in cells.iter().chain(header.then_some(&header_cells)) {
         for (k, cell) in row.iter().enumerate() {
             widths[k] = widths[k].max(cell.chars().count());
+        }
+    }
+
+    // A branch name is the one cell with no bound, and an issue-shaped one is
+    // long enough to wrap the row on its own. So it gets whatever width the
+    // terminal has left once every other column is paid for, and the overflow
+    // is cut off each cell. `term_width` is None off a terminal, so a pipe
+    // still sees every name whole.
+    if let (Some(term), Some(k)) = (term_width(stdout_tty), cols.iter().position(|c| *c == 2)) {
+        let gaps = 2 * (cols.len() - 1);
+        let others: usize = widths
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != k)
+            .map(|(_, w)| w)
+            .sum();
+        let budget = term.saturating_sub(gaps + others);
+        if budget < widths[k] {
+            // Below the floor the row wraps anyway, and a name cut to nothing
+            // names nothing: keep enough to tell two branches apart.
+            let cap = budget.max(BRANCH_MIN);
+            for row in cells.iter_mut() {
+                row[k] = ellipsize(&row[k], cap);
+            }
+            widths[k] = cells.iter().map(|r| r[k].chars().count()).max().unwrap_or(0);
+            if header {
+                widths[k] = widths[k].max(header_cells[k].chars().count());
+            }
         }
     }
 
@@ -2891,6 +2931,11 @@ const MISS: &str = "·";
 /// Not this commit, but this patch: a cherry-pick or a rebase's copy.
 const EQUIV: &str = "≈";
 const ELLIPSIS: char = '…';
+
+/// The narrowest `list` will cut the branch column to, however tight the
+/// terminal gets. Wide enough to hold the header and a name's distinguishing
+/// head; past this the row is better off wrapping.
+const BRANCH_MIN: usize = 12;
 
 /// What a branch has of a given commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -3020,6 +3020,7 @@ impl DateFmt {
 }
 
 /// One table row: a commit, its short name, who wrote it when, and its subject.
+#[derive(Clone)]
 struct CommitRow {
     /// Full sha, for the set lookups; never printed.
     sha: String,
@@ -3030,6 +3031,11 @@ struct CommitRow {
     date: String,
     /// The same date as `YYYY-MM-DD`, which `--date` compares against.
     key: String,
+    /// Author date as a Unix timestamp, compared numerically. The default
+    /// view's floor is found on this, not on the day-granular `key`, so two
+    /// commits on the same day still order against each other and the window
+    /// does not swallow a whole day of shared history.
+    stamp: String,
 }
 
 /// One file touched by a commit, with status and line-count summary.
@@ -3419,13 +3425,13 @@ fn cmd_commits(
     // Three row-source modes:
     //   --union: every branch contributes rows (full logs, unioned).
     //   --all:   only the first branch contributes rows (its full log).
-    //   default: the first branch's log, truncated at its earliest divergent
-    //            commit -- a merge-request view of what it has that the others
-    //            do not, from the furthest divergence up to its tip. Shared
-    //            commits above that floor stay in; the floor is found by
-    //            position in the display order, not by ancestry, so a merge
-    //            DAG's side branches cannot leak past it and --topo cuts at its
-    //            own lowest divergent row.
+    //   default: the first branch's log, cut at its earliest divergent commit
+    //            -- a merge-request view of what it has that the others do not,
+    //            from the furthest divergence up to its tip. Shared commits
+    //            newer than that floor stay in; the floor is a date, not a
+    //            position or an ancestry base, so a merge DAG's older side
+    //            branches cannot leak past it and --topo only regroups the same
+    //            rows rather than changing which ones show.
     //
     // The column marks are always computed against each branch's full history,
     // so a shared commit inside the range still shows as present in the other
@@ -3465,9 +3471,9 @@ fn cmd_commits(
         args.fmt,
         args.no_merges,
     )?;
-    // Default view: cut the ordered log at its lowest divergent row, keeping the
-    // shared commits above it. Positional, so it stops at the same commit in
-    // date or --topo order alike.
+    // Default view: keep the log down to its earliest divergent date, shared
+    // commits above the floor included. A date threshold, so --topo shows the
+    // same rows this does, only regrouped.
     let all_rows = match &divergent {
         Some(d) => window_to_divergent(all_rows, d),
         None => all_rows,
@@ -3737,7 +3743,7 @@ fn commit_rows(
         "log",
         order.flag(),
         &date_arg,
-        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%s",
+        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%s",
     ];
     // Merge commits carry no work of their own; dropping them leaves the
     // commits someone actually wrote. The mark columns are unaffected: a
@@ -3759,13 +3765,14 @@ fn commit_rows(
     Ok(out
         .lines()
         .filter_map(|line| {
-            let mut f = line.splitn(6, '\t');
+            let mut f = line.splitn(7, '\t');
             Some(CommitRow {
                 sha: f.next()?.to_string(),
                 author: f.next()?.to_string(),
                 date: f.next()?.to_string(),
                 key: f.next()?.to_string(),
                 short: f.next()?.to_string(),
+                stamp: f.next()?.to_string(),
                 text: f.next()?.to_string(),
             })
         })
@@ -3831,22 +3838,34 @@ fn divergent_set(root: &Path, target: &str, sources: &[String]) -> Result<HashSe
     Ok(out)
 }
 
-/// Cut an ordered log at its lowest divergent row: keep every row from the tip
-/// down to and including the last one in `divergent`, drop the rest.
+/// Keep the first branch's log down to its earliest divergent commit: find the
+/// oldest date among the divergent rows, then keep every row at least that new.
 ///
-/// The floor is a *position* in the rows the walk already produced, so it lands
-/// on the same commit whatever order made them -- date or `--topo`. An ancestry
-/// base (`floor^@` excluded from the walk) cannot do this: on a merge DAG the
-/// side branches merged in above the floor are not ancestors of its parent, so
-/// they survive the exclusion and leak in as rows far below the floor.
+/// A date threshold, not a cut at a position, so the window is the same set of
+/// commits whatever order produced the rows -- `--topo` regroups them, it does
+/// not change which ones show. A positional cut would not: topo orders a shared
+/// commit below the floor where date order keeps it above, so the two would
+/// disagree on the row count. And unlike an ancestry base (`floor^@` excluded
+/// from the walk) the threshold cannot leak a merge DAG's older side branches
+/// past the floor -- they are older than it, so it drops them.
 ///
-/// Empty out means no row was divergent -- e.g. `--no-merges` dropped the only
-/// commits the others were missing; the caller reports it like an empty log.
+/// The floor is the oldest divergent timestamp, so every divergent row clears
+/// the threshold by construction; the shared rows above it are the in-between
+/// history. Timestamp, not day: a shared commit older than the floor but landed
+/// on the same date stays out. Empty out means no row was divergent -- e.g.
+/// `--no-merges` dropped the only commits the others were missing; the caller
+/// reports it like an empty log.
 fn window_to_divergent(rows: Vec<CommitRow>, divergent: &HashSet<String>) -> Vec<CommitRow> {
-    match rows.iter().rposition(|r| divergent.contains(&r.sha)) {
-        Some(i) => rows.into_iter().take(i + 1).collect(),
-        None => Vec::new(),
-    }
+    let stamp = |r: &CommitRow| r.stamp.parse::<i64>().unwrap_or(i64::MIN);
+    let Some(floor) = rows
+        .iter()
+        .filter(|r| divergent.contains(&r.sha))
+        .map(stamp)
+        .min()
+    else {
+        return Vec::new();
+    };
+    rows.into_iter().filter(|r| stamp(r) >= floor).collect()
 }
 
 /// Per column, the commits it has an *equivalent* of but not the commit itself:
@@ -4393,6 +4412,7 @@ fn render_commits(
                 author: ellipsize(&r.author, authw),
                 date: r.date.clone(),
                 key: r.key.clone(),
+                stamp: r.stamp.clone(),
                 text: r.text.clone(),
             };
             (row, text)
@@ -6271,11 +6291,27 @@ diff --git a/gone.txt b/gone.txt
         assert_eq!(divergent.len(), 2, "MAINLINE is shared, not divergent");
 
         let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
-        let rows = window_to_divergent(full, &divergent);
+        let rows = window_to_divergent(full.clone(), &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         // FLOOR down to SIDE, and nothing below: MAINLINE must not leak in even
         // though it is reachable from main outside SIDE's ancestry.
         assert_eq!(subjects, ["FLOOR", "SIDE"], "{subjects:?}");
+
+        // The window is a set, not a slice of one ordering: feeding the rows in
+        // any order -- as --topo would -- keeps the same commits, so --topo can
+        // only regroup the table, never change its row count.
+        let mut scrambled = full;
+        scrambled.reverse();
+        let sorted_shas = |v: Vec<CommitRow>| {
+            let mut s: Vec<String> = v.into_iter().map(|r| r.sha).collect();
+            s.sort();
+            s
+        };
+        assert_eq!(
+            sorted_shas(window_to_divergent(scrambled, &divergent)),
+            sorted_shas(rows),
+            "window must be order-independent",
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }

@@ -561,6 +561,40 @@ fi
 rm -f "$APP"/commits_*.md
 check "commits --md bad dir errors"  exit=1 err="cannot write" -- "1,$didx" commits --md /nope/nope/x.md
 
+# A cherry-picked patch is neither present nor missing: '≈', not '·'. main
+# already has work of its own, so the pick lands on a different parent and is
+# a real copy -- picked onto the same parent, every input matches and git
+# reproduces the original's sha instead.
+( cd "$CODE/myapp-feature-login" && echo picked > picked.txt && git add -A && git commit -q -m "cherrypicked-work" )
+psha="$(cd "$CODE/myapp-feature-login" && git rev-parse HEAD)"
+( cd "$APP" && git cherry-pick "$psha" >/dev/null 2>&1 )
+# LC_ALL=C, or sort collates '✓' and '≈' as equal -- they are symbols, which a
+# UTF-8 locale ignores when comparing -- and -u folds the two rows into one.
+crow="$("$BIN" "1,$didx" commits 2>/dev/null | awk '/cherrypicked-work/{print $(NF-2)"|"$(NF-1)}' | LC_ALL=C sort -u | tr '\n' ' ')"
+ccmd="$(fmt_cmd "1,$didx" commits)"
+# Two rows now carry that patch: main's copy (✓ ≈) and login's original (≈ ✓).
+if [ "$crow" = "≈|✓ ✓|≈ " ]; then
+  report PASS HAPPY "commits marks a cherry-pick" "$ccmd  # ≈ = same patch, other sha"
+else
+  report FAIL HAPPY "commits marks a cherry-pick" "$ccmd" "wanted '≈|✓ ✓|≈ ', got '$crow'"
+fi
+check "commits --no-cherry drops ≈"   exit=0 err="" -- "1,$didx" commits --no-cherry
+nc="$("$BIN" "1,$didx" commits --no-cherry 2>/dev/null | grep -c "≈")"
+nccmd="$(fmt_cmd "1,$didx" commits --no-cherry)"
+if [ "$nc" = 0 ]; then
+  report PASS HAPPY "commits --no-cherry is plain" "$nccmd  # no ≈ without the walk"
+else
+  report FAIL HAPPY "commits --no-cherry is plain" "$nccmd" "$nc rows still marked ≈"
+fi
+# '≈' must mean something: work nobody picked still reads as absent.
+lrow="$("$BIN" "1,$didx" commits 2>/dev/null | awk '/loginside/{print $(NF-1)}')"
+lcmd="$(fmt_cmd "1,$didx" commits)"
+if [ "$lrow" = "✓" ]; then
+  report PASS HAPPY "commits leaves unpicked work" "$lcmd  # loginside: not on main, not ≈"
+else
+  report FAIL HAPPY "commits leaves unpicked work" "$lcmd" "wanted login's '✓', got '$lrow'"
+fi
+
 # --author is the same fuzzy subsequence 'list' filters with.
 check "commits --author exact"        exit=0 out="mainside" -- "1,$didx" commits --author Test
 check "commits --author fuzzy"        exit=0 out="mainside" -- "1,$didx" commits --author tst

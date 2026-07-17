@@ -101,6 +101,7 @@ COMMITS OPTIONS:
     -n, --limit N         Show at most N commits (newest first)
         --all             Every commit, not just the diverged ones
         --no-merges       Drop merge commits; keep the work they joined
+        --no-cherry       Skip the patch comparison behind '≈' (faster)
         --topo            Group each branch's commits, don't interleave
         --reverse         Newest last (alias: --oldest-first)
         --md [FILE]       Write a markdown table instead of printing one
@@ -237,9 +238,21 @@ COMMITS DATES:
     sees whole subjects. Dates are author dates, and the author is
     .mailmap-aware, so one contributor is one name.
 
-    A cherry-picked or rebased commit is a different commit to git, so it
-    shows as unchecked in the branch it was copied from -- same patch, new
-    sha. Ask '1,2 merged' or '1,2 diff' when the question is content.
+MARKS:
+    ✓   the branch has this commit
+    ≈   the branch has this patch under a different sha
+    ·   the branch has neither
+
+    '≈' is a cherry-pick or a rebase's copy. To git those are different
+    commits, so a bare '✓/·' calls them missing -- which reads as work to
+    do, when the work is done. The comparison is git's own 'git cherry':
+    patch-ids, not history, per pair of branches. '--no-cherry' skips it
+    and takes the old, cheaper answer, for a repo whose branches have
+    diverged by thousands of commits.
+
+    A picked commit shows twice, once per sha: the original row is '≈' in
+    the branch that took it, the copy's row is '≈' in the branch it came
+    from. Both are true -- they are two commits carrying one patch.
 
 MELD:
     Opens meld on the worktree directories, in the order you list them, and
@@ -2391,6 +2404,7 @@ struct CommitsArgs {
     /// `Some(None)` is `--md` with no path: a timestamped name in the cwd.
     md: Option<Option<String>>,
     reverse: bool,
+    no_cherry: bool,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
@@ -2405,6 +2419,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut fmt = DateFmt { human: false, time: false };
     let mut md = None;
     let mut reverse = false;
+    let mut no_cherry = false;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -2417,6 +2432,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             "--topo" | "--topo-order" => topo = true,
             "--no-merges" => no_merges = true,
             "--reverse" | "--oldest-first" => reverse = true,
+            "--no-cherry" => no_cherry = true,
             "--show-time" => fmt.time = true,
             "--date-human" => fmt.human = true,
             // The path is optional, so the next word is only it when it is not
@@ -2475,7 +2491,9 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             }
         }
     }
-    Ok(CommitsArgs { limit, all, dates, from, to, author, topo, no_merges, fmt, md, reverse })
+    Ok(CommitsArgs {
+        limit, all, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry,
+    })
 }
 
 const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
@@ -2673,6 +2691,17 @@ fn cmd_commits(
         .map(|r| ref_shas(root, r, base.as_deref()))
         .collect::<Result<_, _>>()?;
 
+    // Patch equivalence is what tells "not merged yet" from "already there,
+    // under a different sha" -- the difference between work to do and work
+    // done, which a bare '·' reports as the same thing. It costs a patch-id
+    // walk per ordered pair, so --no-cherry buys the old, cheaper answer back
+    // on a repo whose branches have diverged enormously.
+    let equiv = if args.no_cherry {
+        vec![HashSet::new(); refs.len()]
+    } else {
+        equivalents(root, &refs)
+    };
+
     let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
 
     if let Some(path) = &args.md {
@@ -2683,11 +2712,11 @@ fn cmd_commits(
             if rest.is_empty() { "" } else { " " },
             rest.join(" ")
         );
-        return write_md(Path::new(&file), &rows, &names, &sets, &cmd);
+        return write_md(Path::new(&file), &rows, &names, &sets, &equiv, &cmd);
     }
 
     let tty = std::io::stdout().is_terminal();
-    render_commits(&rows, &names, &sets, color_enabled(tty), term_width(tty));
+    render_commits(&rows, &names, &sets, &equiv, color_enabled(tty), term_width(tty));
     Ok(())
 }
 
@@ -2813,6 +2842,37 @@ fn reachable_from(root: &Path, c: &str) -> Result<HashSet<String>, String> {
         .collect())
 }
 
+/// Per column, the commits it has an *equivalent* of but not the commit itself:
+/// same patch, different sha -- a cherry-pick, or a rebase's copy.
+///
+/// `git cherry <upstream> <head>` is exactly this question: it lists head's
+/// commits since the fork and marks `-` on the ones upstream already carries
+/// under another sha, comparing patch-ids rather than history. Doing it per
+/// ordered pair costs N*(N-1) walks, each bounded by that pair's merge-base,
+/// which is the same divergence the table is already showing.
+///
+/// A pair that cannot be compared (unrelated histories) is skipped rather than
+/// fatal: the column simply keeps its `·`, which is what it said before.
+fn equivalents(root: &Path, refs: &[String]) -> Vec<HashSet<String>> {
+    let mut out = vec![HashSet::new(); refs.len()];
+    for (i, upstream) in refs.iter().enumerate() {
+        for head in refs.iter() {
+            if head == upstream {
+                continue;
+            }
+            let Ok(text) = git_stdout(root, &["cherry", upstream, head]) else {
+                continue;
+            };
+            for line in text.lines() {
+                if let Some(sha) = line.strip_prefix("- ") {
+                    out[i].insert(sha.trim().to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Every commit sha reachable from `r`, cut at `base` the same way the rows are.
 fn ref_shas(root: &Path, r: &str, base: Option<&str>) -> Result<HashSet<String>, String> {
     let mut args = vec!["rev-list", r];
@@ -2828,7 +2888,51 @@ fn ref_shas(root: &Path, r: &str, base: Option<&str>) -> Result<HashSet<String>,
 
 const CHECK: &str = "✓";
 const MISS: &str = "·";
+/// Not this commit, but this patch: a cherry-pick or a rebase's copy.
+const EQUIV: &str = "≈";
 const ELLIPSIS: char = '…';
+
+/// What a branch has of a given commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    /// The commit itself.
+    Has,
+    /// The same patch under a different sha.
+    Equivalent,
+    /// Neither.
+    Missing,
+}
+
+impl Mark {
+    fn of(sha: &str, has: &HashSet<String>, equiv: &HashSet<String>) -> Mark {
+        // Containment wins: a branch that has the commit has it, whatever a
+        // patch comparison would also say about an equivalent elsewhere.
+        if has.contains(sha) {
+            Mark::Has
+        } else if equiv.contains(sha) {
+            Mark::Equivalent
+        } else {
+            Mark::Missing
+        }
+    }
+
+    fn glyph(self) -> &'static str {
+        match self {
+            Mark::Has => CHECK,
+            Mark::Equivalent => EQUIV,
+            Mark::Missing => MISS,
+        }
+    }
+
+    fn color(self) -> &'static str {
+        match self {
+            Mark::Has => GREEN,
+            // Yellow: present, but not as the commit in this row.
+            Mark::Equivalent => YELLOW,
+            Mark::Missing => DIM,
+        }
+    }
+}
 /// Below this, a truncated subject says nothing; let the line wrap instead.
 const MIN_TEXTW: usize = 24;
 /// Enough for a full name; past it, the subject has the better claim.
@@ -2949,6 +3053,7 @@ fn write_md(
     rows: &[CommitRow],
     names: &[String],
     sets: &[HashSet<String>],
+    equiv: &[HashSet<String>],
     cmd: &str,
 ) -> Result<(), String> {
     let mut out = String::new();
@@ -2958,7 +3063,10 @@ fn write_md(
         .map(|n| format!("`{}`", md_cell(n)))
         .collect::<Vec<_>>()
         .join(", ")));
-    out.push_str(&format!("- Commits: {}\n\n", rows.len()));
+    out.push_str(&format!("- Commits: {}\n", rows.len()));
+    // The glyphs are the whole content of the table; a reader who was not at
+    // the terminal has nowhere else to learn them.
+    out.push_str("- Legend: `✓` has the commit · `≈` has the same patch under another sha · `·` has neither\n\n");
 
     out.push_str("| commit | author | date |");
     for n in names {
@@ -2977,8 +3085,8 @@ fn write_md(
             md_cell(&row.author),
             md_cell(&row.date)
         ));
-        for set in sets {
-            out.push_str(if set.contains(&row.sha) { " ✓ |" } else { " · |" });
+        for (set, eq) in sets.iter().zip(equiv) {
+            out.push_str(&format!(" {} |", Mark::of(&row.sha, set, eq).glyph()));
         }
         out.push_str(&format!(" {} |\n", md_cell(&row.text)));
     }
@@ -3002,6 +3110,7 @@ fn render_commits(
     rows: &[CommitRow],
     names: &[String],
     sets: &[HashSet<String>],
+    equiv: &[HashSet<String>],
     color: bool,
     width: Option<usize>,
 ) {
@@ -3078,14 +3187,13 @@ fn render_commits(
         // Dim, so the marks and the subject stay what the eye lands on.
         let meta = format!("{:<authw$}  {:>datew$}", row.author, row.date);
         line.push_str(&paint(&meta, DIM, color));
-        for (set, w) in sets.iter().zip(&widths) {
-            let hit = set.contains(&row.sha);
-            let (mark, code) = if hit { (CHECK, GREEN) } else { (MISS, DIM) };
+        for ((set, eq), w) in sets.iter().zip(equiv).zip(&widths) {
+            let mark = Mark::of(&row.sha, set, eq);
             // Center the one-cell mark under its header.
             let pad = (w - 1) / 2;
             line.push_str("  ");
             line.push_str(&" ".repeat(pad));
-            line.push_str(&paint(mark, code, color));
+            line.push_str(&paint(mark.glyph(), mark.color(), color));
             line.push_str(&" ".repeat(w - 1 - pad));
         }
         line.push_str("  ");
@@ -4615,6 +4723,92 @@ diff --git a/gone.txt b/gone.txt
         assert_eq!(rows[4].key, "2026-07-01");
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn a_cherry_picked_patch_is_neither_present_nor_missing() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-cherry-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2026-07-17T10:00:00")
+                .env("GIT_COMMITTER_DATE", "2026-07-17T10:00:00")
+                .env("GIT_EDITOR", "true")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        let commit = |name: &str, file: &str| {
+            std::fs::write(tmp.join(file), name).unwrap();
+            git(&tmp, &["add", "-A"]);
+            git(&tmp, &["commit", "--quiet", "-m", name]);
+        };
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        commit("base", "base.txt");
+        git(&tmp, &["checkout", "--quiet", "-b", "feat"]);
+        commit("shared-fix", "fix.txt");
+        let feat_fix = git(&tmp, &["rev-parse", "HEAD"]);
+        commit("feat-only", "only.txt");
+        let feat_only = git(&tmp, &["rev-parse", "HEAD"]);
+        git(&tmp, &["checkout", "--quiet", "main"]);
+        // main needs work of its own first: onto the same parent, with the
+        // dates pinned, a pick reproduces every input of the original and so
+        // reproduces its sha -- the same commit, not a copy of it.
+        commit("main-work", "mainwork.txt");
+        // main takes the fix by cherry-pick: same patch, its own sha.
+        git(&tmp, &["cherry-pick", &feat_fix]);
+        let main_fix = git(&tmp, &["rev-parse", "HEAD"]);
+        assert_ne!(feat_fix, main_fix, "a pick makes a new commit");
+
+        let refs = vec!["main".to_string(), "feat".to_string()];
+        let equiv = equivalents(&tmp, &refs);
+        let sets: Vec<HashSet<String>> = refs
+            .iter()
+            .map(|r| ref_shas(&tmp, r, None).unwrap())
+            .collect();
+        let mark = |sha: &str, col: usize| Mark::of(sha, &sets[col], &equiv[col]);
+        let (main_col, feat_col) = (0, 1);
+
+        // Each side has its own sha of the fix, and an equivalent of the
+        // other's: same patch, so neither '✓' nor '·' is the truth.
+        assert_eq!(mark(&main_fix, main_col), Mark::Has);
+        assert_eq!(mark(&main_fix, feat_col), Mark::Equivalent);
+        assert_eq!(mark(&feat_fix, feat_col), Mark::Has);
+        assert_eq!(mark(&feat_fix, main_col), Mark::Equivalent);
+
+        // The commit main really is missing stays missing: '≈' must mean
+        // something, so it cannot leak onto work nobody picked.
+        assert_eq!(mark(&feat_only, feat_col), Mark::Has);
+        assert_eq!(mark(&feat_only, main_col), Mark::Missing);
+
+        // --no-cherry is the old answer: equivalence unasked, so the picked
+        // commit reads as absent again.
+        let none = vec![HashSet::new(); refs.len()];
+        assert_eq!(Mark::of(&feat_fix, &sets[main_col], &none[main_col]), Mark::Missing);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn containment_beats_equivalence_in_a_mark() {
+        let has: HashSet<String> = ["a".to_string()].into_iter().collect();
+        let equiv: HashSet<String> = ["a".to_string(), "b".to_string()].into_iter().collect();
+        // A branch holding both the commit and a copy of its patch still just
+        // has the commit; '≈' would understate it.
+        assert_eq!(Mark::of("a", &has, &equiv), Mark::Has);
+        assert_eq!(Mark::of("b", &has, &equiv), Mark::Equivalent);
+        assert_eq!(Mark::of("c", &has, &equiv), Mark::Missing);
+        assert_eq!(Mark::Has.glyph(), "✓");
+        assert_eq!(Mark::Equivalent.glyph(), "≈");
+        assert_eq!(Mark::Missing.glyph(), "·");
     }
 
     #[test]

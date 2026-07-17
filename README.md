@@ -562,10 +562,41 @@ double-width script (CJK) can still shift the columns to its right by a
 character. Latin names — the overwhelming case — are unaffected, and fixing it
 properly would mean a Unicode width table this crate has no dependency for.
 
-One caveat, inherited from git: a **cherry-picked or rebased commit is a
-different commit**, so it shows unchecked in the branch it was copied from —
-same patch, new sha. When the question is content rather than identity, that's
-what `1,2 diff` and `1,2 merged` are for.
+### What the marks mean
+
+| Mark | Meaning |
+|---|---|
+| `✓` | The branch has this commit |
+| `≈` | The branch has this **patch**, under a different sha |
+| `·` | The branch has neither |
+
+`≈` is a cherry-pick, or a rebase's copy. To git those are different commits,
+so a bare `✓`/`·` calls them *missing* — which reads as work still to do, when
+the work is already there. That distinction is the difference between "needs
+merging" and "already shipped, twice":
+
+```
+commit   author  date        main  feat  subject
+2526759  Nino    2026-07-17   ✓     ≈    the shared fix      ← main's copy
+04ecfc1  Jhon    2026-07-17   ·     ✓    feat only           ← genuinely missing
+2a506f6  Jhon    2026-07-17   ≈     ✓    the shared fix      ← feat's original
+```
+
+A picked commit shows up twice, once per sha, and each row's `≈` is true from
+its own side — they're two commits carrying one patch. Work nobody picked keeps
+its `·`, which is what makes `≈` worth reading.
+
+The comparison is git's own `git cherry` — patch-ids, not history — run per
+pair of branches. It costs one walk per ordered pair, bounded by that pair's
+merge-base; measured at 0.13s for two columns and 0.43s for six on a 59-commit
+repo. `--no-cherry` skips it if your branches have diverged by thousands of
+commits and you'd rather have the cheap answer.
+
+A **cherry-picked or rebased commit is a different commit** to git — same
+patch, new sha — so identity alone would call it missing. It isn't: those rows
+are marked `≈` rather than `·`, which is what [the marks](#what-the-marks-mean)
+are about. When the question is the content of the whole branch rather than
+per-commit, `1,2 diff` and `1,2 merged` still answer it directly.
 
 ## Meld
 

@@ -109,6 +109,9 @@ COMMITS OPTIONS:
         --reverse         Newest last (alias: --oldest-first)
     -w, --wrap [N]        Let a long subject take N terminal lines, not
                           one; 'full' or a bare --wrap never cuts it
+        --subject-width N Give the subject N columns rather than what the
+                          terminal left it; 'full' never cuts (alias:
+                          --subjw)
         --md [FILE]       Write a markdown table instead of printing one
                           (default: commits_<date>_<time>.md in the cwd)
         --show-time       Add the time to the date column, 24-hour
@@ -270,6 +273,23 @@ COMMITS DATES:
     outruns it. 'full' wraps until the subject is spent, so nothing is ever
     lost; off a terminal there is nothing to wrap to and --wrap does nothing,
     the whole subject being on the line already.
+
+    '--subject-width N' moves the cut itself. The subject's width is normally
+    whatever the columns left of it did not take, which is the right answer
+    until the subject is what you came to read -- and then those columns are
+    the ones in the way. N is that width instead, however wide the terminal
+    is, so a subject may run past the edge. That is the point: the terminal
+    soft-wraps it, or 'less -S' scrolls it, and either beats an ellipsis.
+
+        git-wt 1,2 commits --subject-width 100   # 100 columns, edge or no edge
+        git-wt 1,2 commits --subjw full          # never cut, however long
+        git-wt 1,2 commits --subjw 60 --wrap 3   # 3 lines of 60
+
+    The two compose: --subject-width is how wide a line is, --wrap is how many
+    of them. An asked-for width is the width, so unlike --wrap it also applies
+    off a terminal -- '--subjw 60 | grep' cuts at 60, where a bare 'commits |
+    grep' still sees whole subjects. N is at least 24: below that a cut subject
+    says nothing, which is what 'full' is for.
 
 MARKS:
     ✓   the branch has this commit
@@ -2460,6 +2480,20 @@ impl DateFilter {
     }
 }
 
+/// How wide the subject column is, when the terminal is not the one to say.
+///
+/// The terminal's answer is what is left of the line, which is the right answer
+/// right up until the subject is what you came to read. Then the columns left
+/// of it are the ones in the way, and the line running past the edge -- where
+/// the terminal soft-wraps it, or 'less -S' scrolls it -- is the lesser evil.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SubjectWidth {
+    /// Exactly this many columns, terminal or no terminal.
+    Cols(usize),
+    /// However many the subject is. Nothing is cut.
+    Full,
+}
+
 /// How many terminal lines a subject may take before it is cut.
 ///
 /// One line is the table's shape -- a row is a commit -- so more of it is
@@ -2501,6 +2535,8 @@ struct CommitsArgs {
     union: bool,
     /// Terminal lines a subject may take. Moot off a terminal: nothing is cut.
     wrap: Wrap,
+    /// Columns the subject gets. None lets the terminal decide, as it always has.
+    subjectw: Option<SubjectWidth>,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
@@ -2517,6 +2553,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut no_cherry = false;
     let mut union = false;
     let mut wrap = Wrap::Lines(1);
+    let mut subjectw = None;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -2543,6 +2580,21 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
                 };
             }
             s if s.starts_with("--wrap=") => wrap = parse_wrap(&s["--wrap=".len()..])?,
+            // Unlike --wrap, the count is required: a bare '--subject-width'
+            // names no width, and 'full' is the word for wanting all of it.
+            "--subject-width" | "--subjw" => {
+                let v = it.next().ok_or(SUBJW_MISSING)?;
+                subjectw = Some(parse_subjectw(v)?);
+            }
+            s if s.starts_with("--subject-width=") => {
+                subjectw = Some(parse_subjectw(&s["--subject-width=".len()..])?);
+            }
+            s if s.starts_with("--subjw=") => {
+                subjectw = Some(parse_subjectw(&s["--subjw=".len()..])?);
+            }
+            // A '--subject' would read as the filter --author is: same table,
+            // same shape, and one of them cuts rows. Say which was meant.
+            "--subject" => return Err(SUBJECT_MSG.into()),
             // The flag this replaced: '--all' asked for the shared history back
             // when the rows were the diverged ones. Nothing is cut now, so the
             // question it answered is the default, and the one thing it could
@@ -2609,7 +2661,25 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     }
     Ok(CommitsArgs {
         limit, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, union, wrap,
+        subjectw,
     })
+}
+
+/// Read `--subject-width`'s value: a column count, or 'full' for no cut at all.
+fn parse_subjectw(v: &str) -> Result<SubjectWidth, String> {
+    if v.eq_ignore_ascii_case("full") || v.eq_ignore_ascii_case("all") {
+        return Ok(SubjectWidth::Full);
+    }
+    match v.parse::<usize>() {
+        // One column holds an ellipsis and nothing else: a column that says
+        // only "there was a subject" is not a subject column.
+        Ok(n) if n >= MIN_TEXTW => Ok(SubjectWidth::Cols(n)),
+        Ok(n) if n > 0 => Err(format!(
+            "--subject-width needs {MIN_TEXTW} columns or more: below that, a cut subject says nothing\n\
+             hint: 'commits | grep' and '--md' never cut, however narrow the terminal\n  got: '{n}'"
+        )),
+        _ => Err(format!("{SUBJW_BAD}\n  got: '{v}'")),
+    }
 }
 
 /// Read `--wrap`'s value: a line count, or 'full' for as many as it takes.
@@ -2628,6 +2698,11 @@ const ALL_MSG: &str = "no '--all' for commits: the rows are the whole log now, n
      hint: '--union' adds every other worktree's commits as rows too";
 const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'full', e.g. '--wrap 2'\n\
      hint: a bare '--wrap' is 'full'";
+const SUBJW_MISSING: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
+const SUBJW_BAD: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'\n\
+     hint: 'full' never cuts the subject, however wide it is";
+const SUBJECT_MSG: &str = "no '--subject' for commits: it would read as a filter, and it is a width\n\
+     hint: '--subject-width 80' widens the column; '--author NAME' filters rows";
 const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
      hint: quote it, or the shell reads '>' as a redirect";
 const FROM_DATE_MISSING: &str = "--from-date needs a date, e.g. '--from-date 2026-01-01'";
@@ -2849,7 +2924,7 @@ fn cmd_commits(
     }
 
     let tty = std::io::stdout().is_terminal();
-    render_commits(&rows, &names, &sets, &equiv, color_enabled(tty), term_width(tty), args.wrap);
+    render_commits(&rows, &names, &sets, &equiv, color_enabled(tty), term_width(tty), args.wrap, args.subjectw);
     Ok(())
 }
 
@@ -3294,6 +3369,7 @@ fn render_commits(
     color: bool,
     width: Option<usize>,
     wrap: Wrap,
+    subjectw: Option<SubjectWidth>,
 ) {
     let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
     let marksw: usize = widths.iter().map(|w| w + 2).sum();
@@ -3331,17 +3407,24 @@ fn render_commits(
     // fit beside and what a wrapped line is indented past to line up under it.
     let fixed = shaw + 2 + authw + 2 + datew + marksw + 2;
 
+    // What the subject gets. A width asked for is the width, terminal or not:
+    // an explicit one is an answer, where the terminal's is only a default --
+    // so '--subject-width 100' on an 80-column terminal runs the line past the
+    // edge on purpose, and off a terminal it cuts where nothing was cut before.
+    let textw = match subjectw {
+        Some(SubjectWidth::Cols(n)) => Some(n),
+        Some(SubjectWidth::Full) => None,
+        // Only the tail is budgeted, and only to keep a long subject from
+        // wrapping where it was not asked to; piped output has no terminal to
+        // fit, so it is never cut and never wrapped.
+        None => width.map(|w| w.saturating_sub(fixed).max(MIN_TEXTW)),
+    };
+
     let rows: Vec<(CommitRow, Vec<String>)> = rows
         .iter()
         .map(|r| {
-            let text = match width {
-                // Only the tail is budgeted, and only to keep a long subject
-                // from wrapping where it was not asked to; piped output has no
-                // terminal to fit, so it is never cut and never wrapped.
-                Some(w) => {
-                    let textw = w.saturating_sub(fixed).max(MIN_TEXTW);
-                    wrap_wide(&r.text, textw, wrap.lines())
-                }
+            let text = match textw {
+                Some(tw) => wrap_wide(&r.text, tw, wrap.lines()),
                 None => vec![r.text.clone()],
             };
             let row = CommitRow {
@@ -4648,6 +4731,28 @@ diff --git a/gone.txt b/gone.txt
         // Zero lines is no subject column, and a word is not a count.
         assert!(parse(&["--wrap=0"]).unwrap_err().contains("1 or more"));
         assert!(parse(&["--wrap=two"]).unwrap_err().contains("1 or more"));
+    }
+
+    #[test]
+    fn subject_width_is_a_width_not_a_filter() {
+        let parse = |a: &[&str]| {
+            parse_commits_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        // None is the terminal's answer, which is the default it always was.
+        assert_eq!(parse(&[]).unwrap().subjectw, None);
+        assert_eq!(parse(&["--subject-width", "80"]).unwrap().subjectw, Some(SubjectWidth::Cols(80)));
+        assert_eq!(parse(&["--subject-width=80"]).unwrap().subjectw, Some(SubjectWidth::Cols(80)));
+        assert_eq!(parse(&["--subjw", "80"]).unwrap().subjectw, Some(SubjectWidth::Cols(80)));
+        assert_eq!(parse(&["--subjw=full"]).unwrap().subjectw, Some(SubjectWidth::Full));
+        // The count is required, unlike --wrap's: no width is named by a bare
+        // flag, and 'full' is the word for wanting all of it.
+        assert!(parse(&["--subject-width"]).unwrap_err().contains("needs a column count"));
+        assert!(parse(&["--subjw=wide"]).unwrap_err().contains("needs a column count"));
+        // Below MIN_TEXTW the column says only 'there was a subject'.
+        assert!(parse(&["--subjw=8"]).unwrap_err().contains("columns or more"));
+        assert!(parse(&["--subjw=0"]).unwrap_err().contains("needs a column count"));
+        // '--subject' is the filter it is not: --author is right there.
+        assert!(parse(&["--subject", "fix"]).unwrap_err().contains("--subject-width 80"));
     }
 
     #[test]

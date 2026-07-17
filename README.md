@@ -366,6 +366,46 @@ git-wt 1,2 commits -n 20    # newest 20 rows
 git-wt 1,2,3 commits --all  # shared history too (slow on a big repo)
 ```
 
+### Filtering the rows
+
+Filters narrow which commits are listed; the columns stay whatever your
+worktree list named. They AND together, and `-n` counts what survives them.
+
+```sh
+git-wt 1,2 commits --author nino                    # fuzzy, like list's SEARCH
+git-wt 1,2 commits --from-date 2026-01-01           # that day and after
+git-wt 1,2 commits --from-date 2026-01-01 --to-date 2026-06-30
+git-wt 1,2 commits --date '>=2026-01-01'            # same bound, operator form
+git-wt 1,2 commits --from-id 5568a21 --to-id HEAD   # a span of commits
+```
+
+Two vocabularies, one shape. The `-id` bounds take a **commit** — a sha, a
+branch, a tag, `HEAD~3` — and the `-date` bounds take a **YYYY-MM-DD**:
+
+| Flag | Means |
+|---|---|
+| `--author NAME` | Only NAME's commits; fuzzy subsequence, case-folded (`nes` → `Nino Escalera`) |
+| `--date '>=D'` | Commits on D or after; also `<=` and `=`. Repeat for a range |
+| `--from-date D` | Same as `--date '>=D'`, no quoting needed |
+| `--to-date D` | Same as `--date '<=D'`, no quoting needed |
+| `--from-id C` | Commit C and everything after it |
+| `--to-id C` | Commit C and everything it can reach |
+
+**Both ends include what they name.** `--from-id 5568a21` lists `5568a21`
+itself, and `--from-date 2026-01-01` takes that whole day. That's why there's
+no `>` or `<`: the day either side of a bound is just the inclusive bound next
+door, and a strict comparison would be a second spelling of the same thing —
+costing a character the shell wants for itself.
+
+> **Quote `--date`.** `>` and `<` are shell redirects, so an unquoted
+> `--date >=2026-01-01` writes a file named `=2026-01-01` and git-wt never sees
+> the date. `--from-date`/`--to-date` need no quoting, which is why they exist.
+
+`--date` compares the date the table prints, which is the **author** date.
+git's own `--since`/`--until` filter on *committer* dates and would quietly
+disagree with the column, so git-wt does the comparison itself and rejects
+those two spellings with a pointer to `--from-date`/`--to-date`.
+
 Rows are ordered by date across all branches at once, so a row's neighbors are
 the commits written around the same time, not the rest of its branch.
 
@@ -675,6 +715,15 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2,3 commits` | Same for three worktrees; any number of columns |
 | `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
 | `git-wt 1,2 commits --all` | Include the shared history, not just what diverged |
+| `git-wt 1,2 commits --author nes` | Only commits whose author fuzzy-matches `nes` |
+| `git-wt 1,2 commits --date '>=2026-01-01'` | Commits on that day or after; also `<=`, `=` |
+| `git-wt 1,2 commits --from-date 2026-01-01 --to-date 2026-06-30` | A date range, inclusive, no quoting |
+| `git-wt 1,2 commits --from-id 5568a21` | Commit `5568a21` and everything after it |
+| `git-wt 1,2 commits --to-id HEAD~3` | `HEAD~3` and everything it can reach |
+| `git-wt 1,2 commits --date '>2026-01-01'` | Error — bounds are inclusive; use `>=` or `--from-date` |
+| `git-wt 1,2 commits --from 5568a21` | Error — `--from-id` takes a commit, `--from-date` takes a date |
+| `git-wt 1,2 commits --since 2026-01-01` | Error — git's word; use `--from-date` |
+| `git-wt 1,2 commits --from-id zzz9` | Error `--from-id: no commit 'zzz9'` |
 | `git-wt 1,2 commits` (same history) | `no diverged commits: every branch listed has the same history`, exit 0 |
 | `git-wt 1 commits` | Error — `commits` takes a worktree list |
 | `git-wt 1,1 commits` | Error `worktree #1 listed twice` |

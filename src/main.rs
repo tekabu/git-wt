@@ -99,6 +99,14 @@ DIFF LIVE:
 COMMITS OPTIONS:
     -n, --limit N         Show at most N commits (newest first)
         --all             Every commit, not just the diverged ones
+        --author NAME     Only NAME's commits (fuzzy, like list's SEARCH)
+    -d, --date CMP        Only commits on a date: '=', '>=' or '<=' a
+                          YYYY-MM-DD, e.g. --date '>=2026-01-01'. Repeat
+                          for a range. QUOTE IT: '>' is a shell redirect
+        --from-date DATE  Same as --date '>=DATE', no quoting needed
+        --to-date DATE    Same as --date '<=DATE', no quoting needed
+        --from-id COMMIT  Only COMMIT and what came after it
+        --to-id COMMIT    Only COMMIT and what it can reach
 
 COMMITS:
     A table of the commits the listed worktrees do NOT share: one row per
@@ -110,6 +118,30 @@ COMMITS:
         git-wt 1,2,3 commits         # the table
         git-wt 1,2 commits -n 20     # newest 20 rows only
         git-wt 1,2,3 commits --all   # include the shared history too
+
+COMMITS FILTERS:
+    Filters narrow the rows; the columns stay whatever the worktree list
+    named. They AND together, and -n counts what survives them.
+
+        git-wt 1,2 commits --author nino
+        git-wt 1,2 commits --date '>=2026-01-01' --date '<=2026-06-30'
+        git-wt 1,2 commits --from-date 2026-01-01 --to-date 2026-06-30
+        git-wt 1,2 commits --from-id 5568a21 --to-id HEAD
+
+    Two vocabularies, one shape: '-id' bounds take a commit -- a sha, a
+    branch, a tag, 'HEAD~3' -- and '-date' bounds take a YYYY-MM-DD.
+    Both ends include what they name: '--from-id X' lists X itself, and
+    '--from-date 2026-01-01' takes that whole day. So there is no '>' or
+    '<': the day either side of a bound is the inclusive one next door.
+
+    --date compares the date the table prints, which is the AUTHOR date;
+    git's own --since/--until read committer dates and would disagree
+    with the column. --author is a fuzzy subsequence, case-folded, the
+    same match 'git-wt list SEARCH' uses: 'nes' finds 'Nino Escalera'.
+
+    Quote --date, always. '>' and '<' are redirects, so an unquoted
+    --date >=2026-01-01 writes a file called '=2026-01-01' and git-wt
+    sees no date at all. --from-date/--to-date need no quoting.
 
     Rows stop at the common ancestor, so only what diverged is listed and a
     long shared history costs nothing. --all drops that cut and walks every
@@ -2164,7 +2196,41 @@ struct CommitRow {
     short: String,
     text: String,
     author: String,
+    /// Author date as printed, e.g. `Jan. 1, 2026`.
     date: String,
+    /// The same date as `YYYY-MM-DD`, which `--date` compares against.
+    key: String,
+}
+
+/// How a `--date` bound compares.
+///
+/// Inclusive bounds only: `--from-date`/`--to-date` already say "this day and
+/// after/before", so a strict `>` would be a second way to spell a bound the
+/// tool has, at the cost of a character the shell steals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DateOp {
+    Eq,
+    Ge,
+    Le,
+}
+
+/// One `--date` bound. Several are an AND: `--date '>=A' --date '<B'`.
+#[derive(Debug, PartialEq, Eq)]
+struct DateFilter {
+    op: DateOp,
+    date: String,
+}
+
+impl DateFilter {
+    /// ISO dates sort lexicographically, so a string compare *is* a date
+    /// compare -- no timezone arithmetic, no calendar library.
+    fn admits(&self, key: &str) -> bool {
+        match self.op {
+            DateOp::Eq => key == self.date,
+            DateOp::Ge => key >= self.date.as_str(),
+            DateOp::Le => key <= self.date.as_str(),
+        }
+    }
 }
 
 /// Options for `commits`.
@@ -2172,11 +2238,19 @@ struct CommitRow {
 struct CommitsArgs {
     limit: Option<usize>,
     all: bool,
+    dates: Vec<DateFilter>,
+    from: Option<String>,
+    to: Option<String>,
+    author: Option<String>,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut limit = None;
     let mut all = false;
+    let mut dates = Vec::new();
+    let mut from = None;
+    let mut to = None;
+    let mut author = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -2186,6 +2260,45 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             }
             s if s.starts_with("--limit=") => limit = Some(parse_limit(&s["--limit=".len()..])?),
             "--all" => all = true,
+            "--date" | "-d" => {
+                let v = it.next().ok_or(DATE_MISSING)?;
+                dates.push(parse_date_filter(v)?);
+            }
+            s if s.starts_with("--date=") => dates.push(parse_date_filter(&s["--date=".len()..])?),
+            // The same two bounds --date spells with '>=' and '<=', named to
+            // mirror --from-id/--to-id -- and needing no quoting, where '>' is
+            // a redirect the shell eats before git-wt ever sees it.
+            "--from-date" => {
+                let v = it.next().ok_or(FROM_DATE_MISSING)?;
+                dates.push(DateFilter { op: DateOp::Ge, date: iso_date(v)? });
+            }
+            s if s.starts_with("--from-date=") => {
+                dates.push(DateFilter { op: DateOp::Ge, date: iso_date(&s["--from-date=".len()..])? });
+            }
+            "--to-date" => {
+                let v = it.next().ok_or(TO_DATE_MISSING)?;
+                dates.push(DateFilter { op: DateOp::Le, date: iso_date(v)? });
+            }
+            s if s.starts_with("--to-date=") => {
+                dates.push(DateFilter { op: DateOp::Le, date: iso_date(&s["--to-date=".len()..])? });
+            }
+            "--author" => author = Some(it.next().ok_or(AUTHOR_MISSING)?.clone()),
+            s if s.starts_with("--author=") => author = Some(s["--author=".len()..].to_string()),
+            "--from-id" => from = Some(it.next().ok_or(FROM_MISSING)?.clone()),
+            s if s.starts_with("--from-id=") => from = Some(s["--from-id=".len()..].to_string()),
+            "--to-id" => to = Some(it.next().ok_or(TO_MISSING)?.clone()),
+            s if s.starts_with("--to-id=") => to = Some(s["--to-id=".len()..].to_string()),
+            // A bare --from names neither of the two things it could bound, and
+            // guessing which was meant would be worse than saying so.
+            "--from" | "--to" => {
+                return Err(format!(
+                    "no '{a}' for commits; '{a}-id' takes a commit, '{a}-date' takes a date"
+                ));
+            }
+            // git's words for the same bounds: point at ours rather than let a
+            // habit from 'git log' read as a typo.
+            "--since" => return Err(SINCE_MSG.into()),
+            "--until" => return Err(UNTIL_MSG.into()),
             other => {
                 return Err(format!(
                     "unexpected argument '{other}' for commits\nTry 'git-wt --help'"
@@ -2193,8 +2306,76 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             }
         }
     }
-    Ok(CommitsArgs { limit, all })
+    Ok(CommitsArgs { limit, all, dates, from, to, author })
 }
+
+const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
+     hint: quote it, or the shell reads '>' as a redirect";
+const FROM_DATE_MISSING: &str = "--from-date needs a date, e.g. '--from-date 2026-01-01'";
+const TO_DATE_MISSING: &str = "--to-date needs a date, e.g. '--to-date 2026-06-30'";
+const FROM_MISSING: &str = "--from-id needs a commit, e.g. '--from-id 5568a21'";
+const TO_MISSING: &str = "--to-id needs a commit, e.g. '--to-id HEAD~3'";
+const AUTHOR_MISSING: &str = "--author needs a name, e.g. '--author nino'";
+const SINCE_MSG: &str = "no '--since' for commits; use '--from-date 2026-01-01'";
+const UNTIL_MSG: &str = "no '--until' for commits; use '--to-date 2026-06-30'";
+
+/// Parse `>=2026-01-01`, `<=2026-06-30`, `=2026-01-01`, or a bare date (`=`).
+fn parse_date_filter(s: &str) -> Result<DateFilter, String> {
+    // Two-character operators first, or the bare-'>' arm below would claim
+    // '>=' and reject it as strict.
+    let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
+        (DateOp::Ge, r)
+    } else if let Some(r) = s.strip_prefix("<=") {
+        (DateOp::Le, r)
+    } else if let Some(r) = s.strip_prefix('=') {
+        (DateOp::Eq, r)
+    } else if s.starts_with('>') {
+        return Err(strict_msg('>', ">=", "--from-date"));
+    } else if s.starts_with('<') {
+        return Err(strict_msg('<', "<=", "--to-date"));
+    } else {
+        (DateOp::Eq, s)
+    };
+    Ok(DateFilter { op, date: iso_date(rest.trim())? })
+}
+
+/// A strict bound names a day the inclusive bounds already reach, one day over.
+fn strict_msg(op: char, incl: &str, flag: &str) -> String {
+    format!(
+        "no '{op}' comparison; bounds are inclusive: use '{incl}' (or {flag})\n\
+         hint: a day either side is '{incl}' on the next day"
+    )
+}
+
+/// Validate a `YYYY-MM-DD` date, which is the only shape the compare is sound
+/// for: shorter spellings would compare as prefixes and quietly mean something
+/// else.
+fn iso_date(s: &str) -> Result<String, String> {
+    let bad = || {
+        // An empty value usually means the shell ate an unquoted '>'.
+        if s.is_empty() {
+            format!("--date needs a date after the comparison\nhint: {QUOTE_HINT}")
+        } else {
+            format!("bad date '{s}'; want YYYY-MM-DD, e.g. '>=2026-01-01'")
+        }
+    };
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return Err(bad());
+    }
+    if !b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit()) {
+        return Err(bad());
+    }
+    let num = |r: std::ops::Range<usize>| s[r].parse::<u32>().unwrap_or(0);
+    let (m, d) = (num(5..7), num(8..10));
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return Err(format!("no such date '{s}'"));
+    }
+    Ok(s.to_string())
+}
+
+const QUOTE_HINT: &str =
+    "quote the comparison -- --date '>=2026-01-01' -- or the shell reads '>' as a redirect";
 
 fn parse_limit(s: &str) -> Result<usize, String> {
     match s.parse::<usize>() {
@@ -2242,13 +2423,60 @@ fn cmd_commits(
         octopus_base(root, &refs)
     };
 
-    let rows = commit_rows(root, &refs, base.as_deref(), args.limit)?;
+    // A filter runs here rather than in git, so `-n` has to as well: git's -n
+    // caps the walk, and capping before the filter would leave rows the filter
+    // was going to drop, i.e. fewer than asked for. Unfiltered, git can cap it
+    // and skip the walk it saves.
+    let filtered = !args.dates.is_empty()
+        || args.from.is_some()
+        || args.to.is_some()
+        || args.author.is_some();
+    let git_limit = if filtered { None } else { args.limit };
+    let all_rows = commit_rows(root, &refs, base.as_deref(), git_limit)?;
+    let unfiltered = all_rows.len();
+
+    // Ancestry, not dates: '--from X' means "X and everything after it", so
+    // the rows to drop are the ones strictly older than X. Both bounds resolve
+    // first, so a typo'd ref is an error rather than an empty table.
+    let older = match &args.from {
+        Some(r) => Some(older_than(root, &commit_of(root, r, "--from-id")?)?),
+        None => None,
+    };
+    let within = match &args.to {
+        Some(r) => Some(reachable_from(root, &commit_of(root, r, "--to-id")?)?),
+        None => None,
+    };
+
+    // Fuzzy, and the same fuzzy `list` uses: a subsequence, case-folded, so
+    // '--author nes' finds 'Nino Escalera' and nobody types a full name twice.
+    let needle = args.author.as_ref().map(|a| a.to_lowercase());
+
+    let mut rows: Vec<CommitRow> = all_rows
+        .into_iter()
+        .filter(|r| args.dates.iter().all(|f| f.admits(&r.key)))
+        .filter(|r| older.as_ref().is_none_or(|o| !o.contains(&r.sha)))
+        .filter(|r| within.as_ref().is_none_or(|w| w.contains(&r.sha)))
+        .filter(|r| {
+            needle
+                .as_ref()
+                .is_none_or(|n| is_subseq(&r.author.to_lowercase(), n))
+        })
+        .collect();
+    if let Some(n) = args.limit {
+        rows.truncate(n);
+    }
+
     if rows.is_empty() {
-        let msg = if args.all {
-            "no commits"
+        // A filter that matched nothing is a different story from a history
+        // with nothing in it: say which one happened.
+        let msg = if filtered && unfiltered > 0 {
+            format!("no commits match those filters: {unfiltered} diverged commits, none kept")
+        } else if args.all {
+            "no commits".to_string()
         } else {
             "no diverged commits: every branch listed has the same history\n\
              hint: 'commits --all' lists the shared commits too"
+                .to_string()
         };
         eprintln!("{msg}");
         return Ok(());
@@ -2301,7 +2529,7 @@ fn commit_rows(
         "log",
         "--author-date-order",
         "--date=format:%b. %-d, %Y",
-        "--format=%H%x09%aN%x09%ad%x09%h%x09%s",
+        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%s",
     ];
     if let Some(n) = limit {
         count = format!("-n{n}");
@@ -2317,15 +2545,45 @@ fn commit_rows(
     Ok(out
         .lines()
         .filter_map(|line| {
-            let mut f = line.splitn(5, '\t');
+            let mut f = line.splitn(6, '\t');
             Some(CommitRow {
                 sha: f.next()?.to_string(),
                 author: f.next()?.to_string(),
                 date: f.next()?.to_string(),
+                key: f.next()?.to_string(),
                 short: f.next()?.to_string(),
                 text: f.next()?.to_string(),
             })
         })
+        .collect())
+}
+
+/// Resolve `r` to a commit, or say which flag could not find it.
+fn commit_of(root: &Path, r: &str, flag: &str) -> Result<String, String> {
+    git_stdout(root, &["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("{flag}: no commit '{r}'"))
+}
+
+/// Everything strictly older than `c`: its parents and all their ancestors.
+///
+/// `c^@` is every parent at once, so `c` itself is never in the set -- which is
+/// what makes `--from <c>` include `<c>`. A root commit has no parents and the
+/// set is empty, as it should be: nothing is older than the beginning.
+fn older_than(root: &Path, c: &str) -> Result<HashSet<String>, String> {
+    Ok(git_stdout(root, &["rev-list", &format!("{c}^@")])?
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+/// `c` and everything it can reach, so `--to <c>` includes `<c>`.
+fn reachable_from(root: &Path, c: &str) -> Result<HashSet<String>, String> {
+    Ok(git_stdout(root, &["rev-list", c])?
+        .lines()
+        .map(str::to_string)
         .collect())
 }
 
@@ -2478,6 +2736,7 @@ fn render_commits(
             short: r.short.clone(),
             author: ellipsize(&r.author, authw),
             date: r.date.clone(),
+            key: r.key.clone(),
             text: match width {
                 // Only the tail is budgeted, and only to keep a long subject
                 // from wrapping; piped output has no terminal to fit.
@@ -3645,6 +3904,78 @@ diff --git a/gone.txt b/gone.txt
     }
 
     #[test]
+    fn date_filters_parse_every_comparison() {
+        let f = |s: &str| parse_date_filter(s).unwrap();
+        assert_eq!(f(">=2026-01-01"), DateFilter { op: DateOp::Ge, date: "2026-01-01".into() });
+        assert_eq!(f("<=2026-01-01"), DateFilter { op: DateOp::Le, date: "2026-01-01".into() });
+        assert_eq!(f("=2026-01-01"), DateFilter { op: DateOp::Eq, date: "2026-01-01".into() });
+        // A bare date is the '=' everyone means by it.
+        assert_eq!(f("2026-01-01"), DateFilter { op: DateOp::Eq, date: "2026-01-01".into() });
+
+        // Bounds are inclusive, so a strict comparison is refused rather than
+        // quietly rounded to the inclusive one next door. '>=' must still parse
+        // as '>=': the two-character check has to come first.
+        assert!(parse_date_filter(">2026-01-01").unwrap_err().contains("use '>='"));
+        assert!(parse_date_filter("<2026-01-01").unwrap_err().contains("use '<='"));
+
+        // Only YYYY-MM-DD: a short spelling would compare as a prefix and mean
+        // something other than what it reads as.
+        assert!(parse_date_filter(">=2026-1-1").unwrap_err().contains("want YYYY-MM-DD"));
+        assert!(parse_date_filter(">=2026-01").unwrap_err().contains("want YYYY-MM-DD"));
+        assert!(parse_date_filter("2026-13-01").unwrap_err().contains("no such date"));
+        assert!(parse_date_filter("2026-01-32").unwrap_err().contains("no such date"));
+        // An unquoted '>' is eaten by the shell, so the value arrives empty.
+        assert!(parse_date_filter(">=").unwrap_err().contains("redirect"));
+    }
+
+    #[test]
+    fn date_filters_compare_iso_dates_as_text() {
+        let admits = |s: &str, key: &str| parse_date_filter(s).unwrap().admits(key);
+        // A bound takes its own day, both ends.
+        assert!(admits(">=2026-03-01", "2026-03-01"));
+        assert!(admits("<=2026-03-01", "2026-03-01"));
+        assert!(!admits(">=2026-03-02", "2026-03-01"));
+        assert!(!admits("<=2026-02-28", "2026-03-01"));
+        // Ordering is lexicographic, which for zero-padded ISO is chronological
+        // -- across months and years, where a naive text compare could not be.
+        assert!(admits(">=2026-01-01", "2026-10-01"));
+        assert!(admits("<=2026-12-31", "2026-12-31"));
+        assert!(!admits(">=2026-01-01", "2025-12-31"));
+    }
+
+    #[test]
+    fn commits_args_take_the_filters() {
+        let parse = |args: &[&str]| {
+            let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            parse_commits_args(&v)
+        };
+
+        // Several --date bounds are an AND, which is how a range is spelled.
+        let a = parse(&["--date", ">=2026-01-01", "--date", "<=2026-06-01"]).unwrap();
+        assert_eq!(a.dates.len(), 2);
+        assert_eq!(a.dates[0].op, DateOp::Ge);
+        assert_eq!(a.dates[1].op, DateOp::Le);
+
+        // --from-date/--to-date are those same bounds, needing no quoting.
+        let a = parse(&["--from-date", "2026-01-01", "--to-date=2026-06-01"]).unwrap();
+        assert_eq!(a.dates[0], DateFilter { op: DateOp::Ge, date: "2026-01-01".into() });
+        assert_eq!(a.dates[1], DateFilter { op: DateOp::Le, date: "2026-06-01".into() });
+
+        let a = parse(&["--from-id", "abc123", "--to-id=def456"]).unwrap();
+        assert_eq!(a.from.as_deref(), Some("abc123"));
+        assert_eq!(a.to.as_deref(), Some("def456"));
+        assert_eq!(parse(&["--author=nino"]).unwrap().author.as_deref(), Some("nino"));
+
+        assert!(parse(&["--from-id"]).unwrap_err().contains("--from-id needs a commit"));
+        assert!(parse(&["--from-date", "nope"]).unwrap_err().contains("want YYYY-MM-DD"));
+        // A bare --from could be either bound; it names neither.
+        assert!(parse(&["--from", "x"]).unwrap_err().contains("'--from-id' takes a commit"));
+        // git's spellings point at ours instead of reading as a typo.
+        assert!(parse(&["--since", "2026-01-01"]).unwrap_err().contains("--from-date"));
+        assert!(parse(&["--until", "2026-01-01"]).unwrap_err().contains("--to-date"));
+    }
+
+    #[test]
     fn width_bound_never_under_counts_a_subject() {
         // ASCII is exact.
         assert_eq!(width_bound("abc"), 3);
@@ -3760,6 +4091,26 @@ diff --git a/gone.txt b/gone.txt
         // -n caps the rows, newest first.
         let capped = commit_rows(&tmp, &refs, None, Some(1)).unwrap();
         assert_eq!(capped.len(), 1);
+
+        // --from-id/--to-id include the commit they name. That is the whole
+        // point of the flags, and the easy thing to get wrong: 'X..' excludes
+        // X, so the bound is built from X's *parents* instead.
+        let on_main = rows.iter().find(|r| r.text.ends_with("on-main")).unwrap();
+        let older = older_than(&tmp, &on_main.sha).unwrap();
+        assert!(!older.contains(&on_main.sha), "--from-id must keep its own commit");
+        let within = reachable_from(&tmp, &on_main.sha).unwrap();
+        assert!(within.contains(&on_main.sha), "--to-id must keep its own commit");
+        // 'shared' is on-main's parent: strictly older, and reachable from it.
+        let shared = all.iter().find(|r| r.text.ends_with("shared")).unwrap();
+        assert!(older.contains(&shared.sha));
+        assert!(within.contains(&shared.sha));
+        // The root commit has no parents, so nothing is older than it -- the
+        // case where 'X^' would have failed outright.
+        assert!(older_than(&tmp, &shared.sha).unwrap().is_empty());
+
+        // A commit that does not resolve is named by the flag that wanted it.
+        let err = commit_of(&tmp, "no-such-commit", "--from-id").unwrap_err();
+        assert_eq!(err, "--from-id: no commit 'no-such-commit'");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

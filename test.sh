@@ -424,6 +424,58 @@ else
   report FAIL HAPPY "commits align past an emoji" "$ecmd" "wanted '✓|·', got '$erow'"
 fi
 
+# --- commits filters ---------------------------------------------------------
+# Every commit in the scratch repo is made now, so "today" brackets them all.
+today="$(date +%F)"
+tomorrow="$(date -v+1d +%F 2>/dev/null || date -d tomorrow +%F)"
+yesterday="$(date -v-1d +%F 2>/dev/null || date -d yesterday +%F)"
+
+check "commits --date = today"        exit=0 out="mainside" -- "1,$didx" commits --date "=$today"
+check "commits --date >= today"       exit=0 out="mainside" -- "1,$didx" commits --date ">=$today"
+check "commits --date <= today"       exit=0 out="mainside" -- "1,$didx" commits --date "<=$today"
+check "commits --date bare = '='"     exit=0 out="mainside" -- "1,$didx" commits --date "$today"
+check "commits --from-date today"     exit=0 out="mainside" -- "1,$didx" commits --from-date "$today"
+check "commits --to-date today"       exit=0 out="mainside" -- "1,$didx" commits --to-date "$today"
+# Two bounds are an AND, which is how a range is spelled.
+check "commits date range brackets"   exit=0 out="mainside" -- "1,$didx" commits --from-date "$yesterday" --to-date "$tomorrow"
+# A bound that keeps nothing reports the filter, not an empty history.
+check "commits --from-date tomorrow"  exit=0 err="no commits match those filters" -- "1,$didx" commits --from-date "$tomorrow"
+check "commits --to-date yesterday"   exit=0 err="no commits match those filters" -- "1,$didx" commits --to-date "$yesterday"
+
+# Inclusive bounds only: a strict comparison names a day '>=' already reaches.
+check "commits --date rejects >"      exit=1 err="no '>' comparison" -- "1,$didx" commits --date ">$today"
+check "commits --date rejects <"      exit=1 err="no '<' comparison" -- "1,$didx" commits --date "<$today"
+check "commits --date bad shape"      exit=1 err="want YYYY-MM-DD" -- "1,$didx" commits --date ">=2026-1-1"
+check "commits --date impossible"     exit=1 err="no such date" -- "1,$didx" commits --date "2026-13-01"
+check "commits --date needs a value"  exit=1 err="redirect" -- "1,$didx" commits --date
+# An unquoted '>' is eaten by the shell, so the value arrives bare: say why.
+check "commits --date eaten by shell" exit=1 err="redirect" -- "1,$didx" commits --date ">="
+
+# --from-id/--to-id include the commit they name -- the point of the flags.
+mainsha="$(cd "$APP" && git rev-parse --short HEAD)"
+check "commits --from-id keeps its own" exit=0 out="$mainsha" -- "1,$didx" commits --from-id "$mainsha"
+check "commits --to-id keeps its own"   exit=0 out="$mainsha" -- "1,$didx" commits --to-id "$mainsha"
+# ...and --to-id drops what the named commit cannot reach: login's own branch.
+toid="$("$BIN" "1,$didx" commits --to-id "$mainsha" 2>/dev/null)"
+tcmd="$(fmt_cmd "1,$didx" commits --to-id "$mainsha")"
+case "$toid" in
+  *loginside*) report FAIL HAPPY "commits --to-id bounds the walk" "$tcmd" "loginside is unreachable from main: '$toid'" ;;
+  *)           report PASS HAPPY "commits --to-id bounds the walk" "$tcmd" ;;
+esac
+check "commits --from-id bad commit"  exit=1 err="--from-id: no commit 'zzz9'" -- "1,$didx" commits --from-id zzz9
+check "commits --to-id needs a value" exit=1 err="--to-id needs a commit" -- "1,$didx" commits --to-id
+# A bare --from names neither bound; git's date words point at ours.
+check "commits rejects bare --from"   exit=1 err="'--from-id' takes a commit" -- "1,$didx" commits --from x
+check "commits rejects --since"       exit=1 err="use '--from-date" -- "1,$didx" commits --since 2026-01-01
+check "commits rejects --until"       exit=1 err="use '--to-date" -- "1,$didx" commits --until 2026-01-01
+
+# --author is the same fuzzy subsequence 'list' filters with.
+check "commits --author exact"        exit=0 out="mainside" -- "1,$didx" commits --author Test
+check "commits --author fuzzy"        exit=0 out="mainside" -- "1,$didx" commits --author tst
+check "commits --author case-folds"   exit=0 out="mainside" -- "1,$didx" commits --author TEST
+check "commits --author no match"     exit=0 err="no commits match those filters" -- "1,$didx" commits --author zzzz
+check "commits --author needs a name" exit=1 err="--author needs a name" -- "1,$didx" commits --author
+
 check "commits rejects a dup target" exit=1 err="listed twice" -- "1,1" commits
 check "commits needs two worktrees"  exit=1 err="commits takes a worktree list" -- 1 commits
 check "commits bad index errors"     exit=1 err="no worktree #99" -- "1,99" commits

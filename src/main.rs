@@ -3419,48 +3419,59 @@ fn cmd_commits(
     // Three row-source modes:
     //   --union: every branch contributes rows (full logs, unioned).
     //   --all:   only the first branch contributes rows (its full log).
-    //   default: only the first branch contributes rows, but capped at the
-    //            oldest commit any other branch is missing. This reads as a
-    //            merge-request view of what the first branch has that the
-    //            others do not, from the furthest divergence up to its tip.
+    //   default: the first branch's log, truncated at its earliest divergent
+    //            commit -- a merge-request view of what it has that the others
+    //            do not, from the furthest divergence up to its tip. Shared
+    //            commits above that floor stay in; the floor is found by
+    //            position in the display order, not by ancestry, so a merge
+    //            DAG's side branches cannot leak past it and --topo cuts at its
+    //            own lowest divergent row.
     //
     // The column marks are always computed against each branch's full history,
     // so a shared commit inside the range still shows as present in the other
     // columns.
-    let (row_refs, base_str): (&[String], Option<String>) = if args.union {
-        (&refs, None)
-    } else if args.all {
-        (&refs[..1], None)
+    let row_refs: &[String] = if args.union { &refs } else { &refs[..1] };
+    // The set whose earliest member is the default view's floor: commits the
+    // first branch has that at least one other is missing. `None` under --union
+    // or --all, where the whole log is the rows and nothing is trimmed.
+    let divergent = if args.union || args.all {
+        None
     } else {
-        match divergence_base(root, &refs[0], &refs[1..])? {
-            Some(oldest) => (&refs[..1], inclusive_base(root, &refs[0], &oldest)?),
-            None => {
-                eprintln!("no commits ahead of {}", label(&trees[idxs[0]]));
-                return Ok(());
-            }
+        let d = divergent_set(root, &refs[0], &refs[1..])?;
+        if d.is_empty() {
+            eprintln!("no commits ahead of {}", label(&trees[idxs[0]]));
+            return Ok(());
         }
+        Some(d)
     };
-    let base = base_str.as_deref();
 
     // A filter runs here rather than in git, so `-n` has to as well: git's -n
     // caps the walk, and capping before the filter would leave rows the filter
     // was going to drop, i.e. fewer than asked for. Unfiltered, git can cap it
-    // and skip the walk it saves.
+    // and skip the walk it saves. The default view walks whole too: its floor
+    // can sit past any -n, and letting git cap first would hide it.
     let filtered = !args.dates.is_empty()
         || args.from.is_some()
         || args.to.is_some()
         || args.author.is_some();
-    let git_limit = if filtered { None } else { args.limit };
+    let git_limit = if filtered || divergent.is_some() { None } else { args.limit };
     let order = if args.topo { Order::Topo } else { Order::Date };
     let all_rows = commit_rows(
         root,
         row_refs,
-        base,
+        None,
         git_limit,
         order,
         args.fmt,
         args.no_merges,
     )?;
+    // Default view: cut the ordered log at its lowest divergent row, keeping the
+    // shared commits above it. Positional, so it stops at the same commit in
+    // date or --topo order alike.
+    let all_rows = match &divergent {
+        Some(d) => window_to_divergent(all_rows, d),
+        None => all_rows,
+    };
     let unfiltered = all_rows.len();
 
     // Ancestry, not dates: '--from X' means "X and everything after it", so
@@ -3809,34 +3820,32 @@ fn reachable_from(root: &Path, c: &str) -> Result<HashSet<String>, String> {
 /// For a merge request from target into each source, the missing commits are
 /// `source..target` -- what target would bring. The oldest of all those sets
 /// is where the relevant range of target begins.
-fn divergence_base(root: &Path, target: &str, sources: &[String]) -> Result<Option<String>, String> {
-    if sources.is_empty() {
-        return Ok(None);
+fn divergent_set(root: &Path, target: &str, sources: &[String]) -> Result<HashSet<String>, String> {
+    let mut out = HashSet::new();
+    for src in sources {
+        let range = format!("{src}..{target}");
+        for sha in git_stdout(root, &["rev-list", &range])?.lines() {
+            out.insert(sha.to_string());
+        }
     }
-    let ranges: Vec<String> = sources
-        .iter()
-        .map(|src| format!("{src}..{target}"))
-        .collect();
-    let mut args: Vec<&str> = vec!["rev-list", "--reverse"];
-    args.extend(ranges.iter().map(String::as_str));
-    let out = git_stdout(root, &args)?;
-    Ok(out.lines().next().map(|s| s.to_string()))
+    Ok(out)
 }
 
-/// A base expression that, when excluded from target's walk, leaves `sha` and
-/// its descendants in target visible. Returns None for a root commit, where
-/// there is nothing older to exclude.
-fn inclusive_base(root: &Path, _target: &str, sha: &str) -> Result<Option<String>, String> {
-    let parents = git_stdout(root, &["rev-list", "--parents", "-n", "1", sha])?;
-    let has_parent = parents
-        .lines()
-        .next()
-        .map(|line| line.split_whitespace().count() > 1)
-        .unwrap_or(false);
-    if has_parent {
-        Ok(Some(format!("{sha}^@")))
-    } else {
-        Ok(None)
+/// Cut an ordered log at its lowest divergent row: keep every row from the tip
+/// down to and including the last one in `divergent`, drop the rest.
+///
+/// The floor is a *position* in the rows the walk already produced, so it lands
+/// on the same commit whatever order made them -- date or `--topo`. An ancestry
+/// base (`floor^@` excluded from the walk) cannot do this: on a merge DAG the
+/// side branches merged in above the floor are not ancestors of its parent, so
+/// they survive the exclusion and leak in as rows far below the floor.
+///
+/// Empty out means no row was divergent -- e.g. `--no-merges` dropped the only
+/// commits the others were missing; the caller reports it like an empty log.
+fn window_to_divergent(rows: Vec<CommitRow>, divergent: &HashSet<String>) -> Vec<CommitRow> {
+    match rows.iter().rposition(|r| divergent.contains(&r.sha)) {
+        Some(i) => rows.into_iter().take(i + 1).collect(),
+        None => Vec::new(),
     }
 }
 
@@ -6070,13 +6079,10 @@ diff --git a/gone.txt b/gone.txt
         // from the oldest such commit up to main's tip. Here feat forked at
         // the root, so only 'on-main' is missing from feat; 'shared' is
         // older than the missing commit and is therefore excluded.
-        let base = divergence_base(&tmp, &refs[0], &refs[1..]).unwrap();
-        assert!(base.is_some(), "feat must be missing something from main");
-        let base_str = inclusive_base(&tmp, &refs[0], base.as_ref().unwrap())
-            .unwrap()
-            .unwrap();
-        let rows = commit_rows(&tmp, &refs[..1], Some(&base_str), None, Order::Date, ISO, false,
-        ).unwrap();
+        let divergent = divergent_set(&tmp, &refs[0], &refs[1..]).unwrap();
+        assert!(!divergent.is_empty(), "feat must be missing something from main");
+        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
+        let rows = window_to_divergent(full, &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rows.len(), 1, "{subjects:?}");
         assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
@@ -6090,10 +6096,11 @@ diff --git a/gone.txt b/gone.txt
             assert!(!feat_all.contains(&row.sha), "{}", row.text);
         }
 
-        // divergence_base returns the oldest commit in target that any source
-        // is missing. Here that is 'on-main' itself.
+        // The divergent set is main's commits feat is missing: here just
+        // 'on-main', and it is the floor the slice stops at.
         let on_main_row = rows.iter().find(|r| r.text.ends_with("on-main")).unwrap();
-        assert_eq!(Some(on_main_row.sha.clone()), base);
+        assert!(divergent.contains(&on_main_row.sha));
+        assert_eq!(divergent.len(), 1);
 
 
         // --union: every ref contributes rows, so feat's commit is one too, and
@@ -6180,18 +6187,18 @@ diff --git a/gone.txt b/gone.txt
             "fix".to_string(),
         ];
 
-        // feat and fix both forked at B, so the oldest commit main has that
-        // either of them misses is C. The default slice should include C and D
-        // (commits strictly after B), but not B or A.
-        let base = divergence_base(&tmp, &refs[0], &refs[1..]).unwrap();
-        assert_eq!(base.as_deref().unwrap(), sha_by_subject(&tmp, "main", "C"));
+        // feat and fix both forked at B, so the commits main has that either of
+        // them misses are C and D; the earliest is C. The default slice should
+        // include C and D (commits strictly after B), but not B or A.
+        let divergent = divergent_set(&tmp, &refs[0], &refs[1..]).unwrap();
+        assert!(divergent.contains(sha_by_subject(&tmp, "main", "C").as_str()));
+        assert!(divergent.contains(sha_by_subject(&tmp, "main", "D").as_str()));
+        assert_eq!(divergent.len(), 2);
 
-        let base_str = inclusive_base(&tmp, &refs[0], base.as_ref().unwrap())
-            .unwrap()
-            .unwrap();
-        let rows = commit_rows(
-            &tmp, &refs[..1], Some(&base_str), None, Order::Date, ISO, false,
+        let full = commit_rows(
+            &tmp, &refs[..1], None, None, Order::Date, ISO, false,
         ).unwrap();
+        let rows = window_to_divergent(full, &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(subjects, ["D", "C"], "{subjects:?}");
 
@@ -6201,6 +6208,74 @@ diff --git a/gone.txt b/gone.txt
         ).unwrap();
         let all_subjects: Vec<&str> = all_rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(all_subjects, ["D", "C", "B", "A"], "{all_subjects:?}");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn commits_window_does_not_leak_merge_side_branches() {
+        // The bug positional truncation fixes: on a merge DAG, the floor is a
+        // commit on a side branch merged into the target late. An ancestry base
+        // (`floor^@` excluded) only prunes the floor's own parent line, so a
+        // shared commit on the *other* merge parent -- older than the floor,
+        // and one the source branch also has -- leaks in as a row below it.
+        let tmp = std::env::temp_dir().join(format!(
+            "git-wt-window-leak-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str], when: &str) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", when)
+                .env("GIT_COMMITTER_DATE", when)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+        }
+        let commit = |dir: &std::path::Path, name: &str, when: &str| {
+            std::fs::write(dir.join(format!("{name}.txt")), name).unwrap();
+            git(dir, &["add", "-A"], when);
+            git(dir, &["commit", "--quiet", "-m", name], when);
+        };
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"], "");
+        git(&tmp, &["config", "user.email", "t@test"], "");
+        git(&tmp, &["config", "user.name", "t"], "");
+        // A -> MAINLINE on main; feat forks at MAINLINE (so feat has both).
+        commit(&tmp, "A", "2025-12-20T10:00:00");
+        git(&tmp, &["branch", "other"], "");
+        commit(&tmp, "MAINLINE", "2025-12-21T10:00:00");
+        git(&tmp, &["branch", "feat"], "");
+        // A side branch off A, then merged back into main as the FLOOR merge.
+        // FLOOR's first parent is MAINLINE, its second is SIDE (parent A) --
+        // MAINLINE is not an ancestor of SIDE.
+        git(&tmp, &["checkout", "--quiet", "other"], "");
+        commit(&tmp, "SIDE", "2025-12-22T10:00:00");
+        git(&tmp, &["checkout", "--quiet", "main"], "");
+        git(
+            &tmp,
+            &["merge", "--no-ff", "--quiet", "-m", "FLOOR", "other"],
+            "2025-12-23T10:00:00",
+        );
+
+        let refs = vec!["main".to_string(), "feat".to_string()];
+
+        // main has SIDE and FLOOR that feat is missing; MAINLINE is shared.
+        let divergent = divergent_set(&tmp, &refs[0], &refs[1..]).unwrap();
+        assert!(divergent.contains(sha_by_subject(&tmp, "main", "SIDE").as_str()));
+        assert!(divergent.contains(sha_by_subject(&tmp, "main", "FLOOR").as_str()));
+        assert_eq!(divergent.len(), 2, "MAINLINE is shared, not divergent");
+
+        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
+        let rows = window_to_divergent(full, &divergent);
+        let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+        // FLOOR down to SIDE, and nothing below: MAINLINE must not leak in even
+        // though it is reachable from main outside SIDE's ancestry.
+        assert_eq!(subjects, ["FLOOR", "SIDE"], "{subjects:?}");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

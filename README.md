@@ -391,9 +391,12 @@ The tradeoff is that rows grow with each worktree you name — the same
 `--from-id` on `1,2` and on `1,2,3` will not print the same commits, because the
 third branch brought its own. Anchored, the rows are stable.
 
-Neither mode cuts at the fork point: rows are whole logs, shared history
+`--union` does not cut at the fork point: rows are whole logs, shared history
 included, and a row checked in every column is the answer *everyone has this*
-rather than noise. `-n` is how you keep the table short.
+rather than noise. The default view does cut — it stops at the first branch's
+earliest divergent commit, keeping the shared commits above that floor — and
+`--all` turns the cut off for the first branch's whole log. `-n` keeps any of
+them short.
 
 ### Spelling the date
 
@@ -1004,12 +1007,13 @@ Every form the CLI accepts. Examples assume:
 
 | Command | Effect |
 |---|---|
-| `git-wt 1,2 commits` | Worktree 1's log, with a column saying whether 2 has each commit |
-| `git-wt 1,2,3 commits` | Same rows, one more check column; any number of columns |
+| `git-wt 1,2 commits` | Worktree 1's commits down to its earliest one that 2 is missing, with a column saying whether 2 has each |
+| `git-wt 1,2,3 commits` | Same, cut at the earliest commit *any* other branch is missing; one more check column |
 | `git-wt 2 commits` | Worktree 2 against the worktree you're standing in |
 | `git-wt 2 commits` (from worktree 2) | Error — it would compare 2 with itself |
 | `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
-| `git-wt 1,2 commits --union` | Rows from both branches, not just 1's log (also `--any`) |
+| `git-wt 1,2 commits --union` | Rows from both branches, whole logs, not just 1's range (also `--any`) |
+| `git-wt 1,2 commits --all` | Worktree 1's whole log, no cut at the divergence; other branches stay check columns |
 | `git-wt 1,2,3 commits --topo` | Group each branch's commits instead of interleaving by date |
 | `git-wt 1,2 commits --no-merges` | Drop merge rows; keep the commits they joined |
 | `git-wt 1,2 commits --show-time` | Add the time to the date column, 24-hour |
@@ -1026,7 +1030,6 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits --from 5568a21` | Error — `--from-id` takes a commit, `--from-date` takes a date |
 | `git-wt 1,2 commits --since 2026-01-01` | Error — git's word; use `--from-date` |
 | `git-wt 1,2 commits --from-id zzz9` | Error `--from-id: no commit 'zzz9'` |
-| `git-wt 1,2 commits --all` | Error — `--all` is gone; rows are the whole log now, `--union` adds the other branches' |
 | `git-wt 1,2 commits` (empty branch) | `no commits on <worktree 1>`, exit 0 |
 | `git-wt 1 commits` | Error — `commits` takes a worktree list |
 | `git-wt 1,1 commits` | Error `worktree #1 listed twice` |

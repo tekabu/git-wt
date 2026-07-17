@@ -356,6 +356,11 @@ git-wt 1,2,3 commits --all  # shared history too (slow on a big repo)
 Rows are ordered by date across all branches at once, so a row's neighbors are
 the commits written around the same time, not the rest of its branch.
 
+A subject too long for your terminal is cut with an `…`, never wrapped — the
+marks are the point of the table, and a wrapped row strands them on a line of
+their own. Piped output has no terminal to fit, so it keeps whole subjects and
+`git-wt 1,2 commits | grep oauth` still works.
+
 One caveat, inherited from git: a **cherry-picked or rebased commit is a
 different commit**, so it shows unchecked in the branch it was copied from —
 same patch, new sha. When the question is content rather than identity, that's

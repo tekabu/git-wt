@@ -116,6 +116,10 @@ COMMITS:
     Commits are dated newest-first across all branches at once, so a row's
     neighbors are its contemporaries, not its branch-mates.
 
+    A subject too long for the terminal is cut, not wrapped: the marks are the
+    point of the table, and a wrapped row puts them on a line of their own.
+    Piped output is never cut, so 'commits | grep' still sees whole subjects.
+
     A cherry-picked or rebased commit is a different commit to git, so it
     shows as unchecked in the branch it was copied from -- same patch, new
     sha. Ask '1,2 merged' or '1,2 diff' when the question is content.
@@ -2249,8 +2253,8 @@ fn cmd_commits(
         .collect::<Result<_, _>>()?;
 
     let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
-    let color = color_enabled(std::io::stdout().is_terminal());
-    render_commits(&rows, &names, &sets, color);
+    let tty = std::io::stdout().is_terminal();
+    render_commits(&rows, &names, &sets, color_enabled(tty), term_width(tty));
     Ok(())
 }
 
@@ -2316,19 +2320,77 @@ fn ref_shas(root: &Path, r: &str, base: Option<&str>) -> Result<HashSet<String>,
 
 const CHECK: &str = "✓";
 const MISS: &str = "·";
+/// Below this, a truncated subject says nothing; let the line wrap instead.
+const MIN_TEXTW: usize = 24;
+
+/// The terminal's width, or None when stdout is not one.
+///
+/// No ioctl, so no libc: `tput` reads the same terminfo git's own pager does,
+/// and COLUMNS wins when a shell exports it. A terminal that answers neither
+/// gets the 80 every terminal is at least as wide as.
+fn term_width(is_tty: bool) -> Option<usize> {
+    if !is_tty {
+        return None;
+    }
+    if let Some(n) = std::env::var("COLUMNS").ok().and_then(|v| v.parse().ok()) {
+        return Some(n);
+    }
+    let out = Command::new("tput")
+        .arg("cols")
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok());
+    Some(out.unwrap_or(80))
+}
+
+/// Cut `s` to `max` characters, ending in an ellipsis when anything was lost.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    s.chars().take(keep).chain(std::iter::once('…')).collect()
+}
 
 /// Print the table: the commit text in column 1, then one mark per branch.
 ///
 /// Widths are measured on the plain text and the marks are centered inside
 /// them, so color -- applied last -- never skews the columns.
-fn render_commits(rows: &[CommitRow], names: &[String], sets: &[HashSet<String>], color: bool) {
-    let textw = rows
+///
+/// Subjects are long and the marks are the point, so column 1 is what gives
+/// when `width` is set: a full-width subject would push the marks past the
+/// right edge, and a wrapped row puts them on a line of their own, which is
+/// exactly the table not lining up. Piped output has no width to fit and stays
+/// whole, so `| grep` still sees the real subject.
+fn render_commits(
+    rows: &[CommitRow],
+    names: &[String],
+    sets: &[HashSet<String>],
+    color: bool,
+    width: Option<usize>,
+) {
+    let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
+    let marksw: usize = widths.iter().map(|w| w + 2).sum();
+
+    let mut textw = rows
         .iter()
         .map(|r| r.text.chars().count())
         .chain(std::iter::once("commit".len()))
         .max()
         .unwrap_or(0);
-    let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
+    if let Some(w) = width {
+        textw = textw.min(w.saturating_sub(marksw).max(MIN_TEXTW));
+    }
+    let rows: Vec<CommitRow> = rows
+        .iter()
+        .map(|r| CommitRow {
+            sha: r.sha.clone(),
+            text: ellipsize(&r.text, textw),
+        })
+        .collect();
+    let rows = &rows;
 
     let mut head = format!("{:<textw$}", "commit");
     for (n, w) in names.iter().zip(&widths) {
@@ -3454,6 +3516,28 @@ diff --git a/gone.txt b/gone.txt
         assert!(parse(&["-n", "x"]).unwrap_err().contains("bad count 'x'"));
         assert!(parse(&["-n"]).unwrap_err().contains("needs a count"));
         assert!(parse(&["--stat"]).unwrap_err().contains("unexpected argument"));
+    }
+
+    #[test]
+    fn ellipsize_only_cuts_what_overflows() {
+        assert_eq!(ellipsize("short", 10), "short");
+        // Exactly the budget is not an overflow: nothing is lost, so no marker.
+        assert_eq!(ellipsize("abcde", 5), "abcde");
+        assert_eq!(ellipsize("abcdef", 5), "abcd…");
+        // The marker costs a character, so the result still fits the budget.
+        assert_eq!(ellipsize("abcdef", 5).chars().count(), 5);
+        // Counted in characters, not bytes: a multi-byte subject must not be
+        // cut mid-codepoint, nor counted as if it were wider than it looks.
+        assert_eq!(ellipsize("héllo wörld", 20), "héllo wörld");
+        assert_eq!(ellipsize("héllo wörld", 7), "héllo …");
+        assert_eq!(ellipsize("日本語のコミット", 4), "日本語…");
+    }
+
+    #[test]
+    fn a_piped_table_has_no_width_to_fit() {
+        // Not a terminal: the subject is the payload for `| grep`, so it must
+        // arrive whole however long it is.
+        assert_eq!(term_width(false), None);
     }
 
     #[test]

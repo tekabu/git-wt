@@ -371,6 +371,15 @@ MELD:
         git-wt 1,3 meld      -> meld <dir 1> <dir 3>
         git-wt 2,1,3 meld    -> meld <dir 2> <dir 1> <dir 3>  (3-way)
 
+    With --diff, meld sees only the files that differ between the two refs,
+    extracted into sparse temp directories. Add --3way or --base <ref> to
+    include the merge-base as a third pane.
+
+        git-wt 1,2 meld --diff            # only files that differ
+        git-wt 1,2 meld --diff ...        # only what branch 2 added since fork
+        git-wt 1,2 meld --diff --3way     # + merge-base in the middle pane
+        git-wt 1,2 meld --diff --base main # + explicit base in the middle pane
+
 MERGE WORDS:            (each takes an optional '--': 'abort' == '--abort')
     -c, continue          Conclude a conflicted merge
     -a, abort             Undo a conflicted merge
@@ -686,7 +695,7 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
             cmd_sync(&trees, &[idx], &args)
         }
         // A single target can't be melded, but say so in meld's own terms.
-        "meld" => cmd_meld(&trees, &[idx]),
+        "meld" => cmd_meld(root, &trees, &[idx], &rest[1..]),
         // An option in the action slot is never right, whatever the option is:
         // each action carries its own, after its own verb.
         other if other.starts_with('-') => Err(format!(
@@ -725,12 +734,7 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
     }
 
     match rest.first().map(String::as_str) {
-        Some("meld") => {
-            if rest.len() > 1 {
-                return Err("meld takes no options\nTry 'git-wt --help'".into());
-            }
-            cmd_meld(&trees, &idxs)
-        }
+        Some("meld") => cmd_meld(root, &trees, &idxs, &rest[1..]),
         Some("diff") => cmd_diff(root, &trees, &idxs, &rest[1..]),
         Some("commits") => cmd_commits(root, &trees, &idxs, &rest[1..]),
         // `1,2 merge`: the list reads dest-first, so 2 merges into 1.
@@ -2447,17 +2451,72 @@ fn is_dirty(dir: &Path) -> bool {
 
 /// Open meld on 2-3 worktree directories, in the order given, and wait for it.
 /// meld itself is the arbiter of 2-way vs 3-way, so we only pass the paths.
-fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
+/// Arguments for `meld --diff`.
+#[derive(Debug, Default)]
+struct MeldArgs {
+    /// Filter to only differing files, extracted into temp dirs.
+    diff: bool,
+    /// Range for `--diff`: None means A..B, Some("...") means A...B.
+    range: Option<String>,
+    /// Three-way: include the merge-base of A and B as the middle pane.
+    three_way: bool,
+    /// Explicit base ref (branch, commit, or worktree number).
+    base: Option<String>,
+}
+
+fn parse_meld_args(args: &[String]) -> Result<MeldArgs, String> {
+    let mut out = MeldArgs::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--diff" => out.diff = true,
+            "..." => out.range = Some("...".into()),
+            ".." => {
+                return Err("'..' is the default range for meld --diff; use '...' for the fork view"
+                    .into())
+            }
+            "--3way" => out.three_way = true,
+            "--base" => {
+                out.base = Some(it.next().ok_or("--base needs a ref")?.clone());
+            }
+            s if s.starts_with('-') && s != "-" => {
+                return Err(format!("unknown option '{s}' for meld\nTry 'git-wt --help'"));
+            }
+            other => {
+                return Err(format!(
+                    "meld takes no positional arguments, got '{other}'\nTry 'git-wt --help'"
+                ));
+            }
+        }
+    }
+    if out.three_way && out.base.is_some() {
+        return Err("--3way and --base are alternatives; use one or the other".into());
+    }
+    Ok(out)
+}
+
+fn cmd_meld(
+    root: &Path,
+    trees: &[Worktree],
+    idxs: &[usize],
+    args: &[String],
+) -> Result<(), String> {
+    let parsed = parse_meld_args(args)?;
+
     match idxs.len() {
         2 | 3 => {}
         1 => return Err("meld needs 2 or 3 worktrees, e.g. 'git-wt 1,2 meld'".into()),
         n => return Err(format!("meld takes at most 3 worktrees, got {n}")),
     }
 
-    // meld would silently show a directory against itself; that is never meant.
-    for (i, a) in idxs.iter().enumerate() {
-        if idxs[i + 1..].contains(a) {
-            return Err(format!("worktree #{} listed twice", a + 1));
+    // --diff compares refs, so a self-comparison is a clean no-op rather than an
+    // error. For full-directory meld, showing a directory against itself is never
+    // meant, so the duplicate check stays there.
+    if !parsed.diff {
+        for (i, a) in idxs.iter().enumerate() {
+            if idxs[i + 1..].contains(a) {
+                return Err(format!("worktree #{} listed twice", a + 1));
+            }
         }
     }
 
@@ -2468,6 +2527,14 @@ fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
              Fedora 'dnf install meld'"
                 .into(),
         );
+    }
+
+    if parsed.diff {
+        if idxs.len() != 2 {
+            return Err("'--diff' takes exactly 2 worktrees; use meld without --diff for 3-way"
+                .into());
+        }
+        return cmd_meld_filtered(root, trees, idxs[0], idxs[1], &parsed);
     }
 
     let paths: Vec<&Path> = idxs.iter().map(|&i| trees[i].path.as_path()).collect();
@@ -2481,6 +2548,165 @@ fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
         .map_err(|e| format!("failed to run meld: {e}"))?;
     if !status.success() {
         return Err("meld exited with an error".into());
+    }
+    Ok(())
+}
+
+/// Meld only the files that differ between two refs, extracted into temp dirs.
+/// Supports 2-way and 3-way (with auto or explicit base).
+fn cmd_meld_filtered(
+    root: &Path,
+    trees: &[Worktree],
+    left_idx: usize,
+    right_idx: usize,
+    args: &MeldArgs,
+) -> Result<(), String> {
+    let left = ref_of(&trees[left_idx])?;
+    let right = ref_of(&trees[right_idx])?;
+
+    let base = if args.three_way {
+        Some(merge_base(root, &left, &right)?)
+    } else {
+        args.base.clone()
+    };
+
+    let mut paths = if let Some(b) = &base {
+        let mut set = changed_paths(root, b, &left)?;
+        set.extend(changed_paths(root, b, &right)?);
+        set
+    } else {
+        let spec = match &args.range {
+            Some(dots) => format!("{left}{dots}{right}"),
+            None => format!("{left} {right}"),
+        };
+        changed_paths_status(root, &spec)?
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    paths.sort();
+    paths.dedup();
+
+    if paths.is_empty() {
+        eprintln!("no files differ between {} and {}", label(&trees[left_idx]), label(&trees[right_idx]));
+        return Ok(());
+    }
+
+    let tmp = temp_meld_dir()?;
+    let dir_left = tmp.join("a");
+    let dir_right = tmp.join("b");
+    extract_files(root, &left, &paths, &dir_left)?;
+    extract_files(root, &right, &paths, &dir_right)?;
+
+    let mut meld_paths: Vec<PathBuf> = vec![dir_left.clone(), dir_right.clone()];
+
+    if let Some(b) = &base {
+        let dir_base = tmp.join("base");
+        extract_files(root, b, &paths, &dir_base)?;
+        // Order: base, left, right (BASE in middle pane).
+        meld_paths = vec![dir_base, dir_left, dir_right];
+    }
+
+    let on = color_enabled(std::io::stderr().is_terminal());
+    let mut labels: Vec<String> = if base.is_some() {
+        vec!["base".into(), label(&trees[left_idx]), label(&trees[right_idx])]
+    } else {
+        vec![label(&trees[left_idx]), label(&trees[right_idx])]
+    };
+    if let Some(b) = &base {
+        // Replace generic "base" label with the actual ref when explicit or auto.
+        labels[0] = b.clone();
+    }
+    eprintln!("{} {}", paint("meld", GREEN, on), labels.join("  ↔  "));
+
+    let status = Command::new("meld")
+        .args(&meld_paths)
+        .status()
+        .map_err(|e| format!("failed to run meld: {e}"))?;
+
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    if !status.success() {
+        return Err("meld exited with an error".into());
+    }
+    Ok(())
+}
+
+/// Merge base of two refs.
+fn merge_base(root: &Path, a: &str, b: &str) -> Result<String, String> {
+    git_stdout(root, &["merge-base", a, b]).map(|s| s.trim().to_string())
+}
+
+/// Run `git diff --name-status` and return the paths with their status.
+/// `spec` is either "A B" or "A...B".
+fn changed_paths_status(root: &Path, spec: &str) -> Result<Vec<(String, char)>, String> {
+    let parts: Vec<&str> = spec.split_whitespace().collect();
+    let out = if parts.len() == 1 && parts[0].contains("...") {
+        git_stdout(root, &["diff", "--name-status", parts[0]])?
+    } else {
+        let mut argv = vec!["diff", "--name-status"];
+        argv.extend(parts);
+        git_stdout(root, &argv)?
+    };
+    parse_name_status(&out)
+}
+
+/// Convenience wrapper returning only the distinct paths from a two-ref spec.
+fn changed_paths(root: &Path, a: &str, b: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for (p, _) in changed_paths_status(root, &format!("{a} {b}"))? {
+        out.push(p);
+    }
+    Ok(out)
+}
+
+fn parse_name_status(out: &str) -> Result<Vec<(String, char)>, String> {
+    let mut v = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Status is the first character; path is the rest, possibly tab-separated.
+        let status = line.chars().next().unwrap_or('?');
+        let path = line[1..].trim_start().to_string();
+        if path.is_empty() {
+            return Err(format!("malformed --name-status line: '{line}'"));
+        }
+        v.push((path, status));
+    }
+    Ok(v)
+}
+
+/// Create a unique temp directory for this meld invocation.
+fn temp_meld_dir() -> Result<PathBuf, String> {
+    let pid = std::process::id();
+    let base = std::env::temp_dir();
+    for n in 0..1000 {
+        let candidate = base.join(format!("git-wt-meld-{pid}-{n}"));
+        if std::fs::create_dir(&candidate).is_ok() {
+            return Ok(candidate);
+        }
+    }
+    Err("could not create a temporary directory for meld".into())
+}
+
+/// Extract the given paths from a ref into a directory. Paths that do not exist
+/// in the ref are silently skipped, which naturally represents adds and deletes.
+fn extract_files(root: &Path, r#ref: &str, paths: &[String], dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("failed to create temp dir: {e}"))?;
+    for p in paths {
+        let Ok(content) = git_bytes(root, &["show", &format!("{}:{}", r#ref, p)]) else {
+            continue;
+        };
+        let target = dir.join(p);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("failed to create {parent:?}: {e}"))?;
+        }
+        std::fs::write(&target, content)
+            .map_err(|e| format!("failed to write {target:?}: {e}"))?;
     }
     Ok(())
 }
@@ -4614,6 +4840,18 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("failed to run git: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// Like `git_stdout` but preserves bytes (for binary files).
+fn git_bytes(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = git_cmd(dir, args)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if out.status.success() {
+        Ok(out.stdout)
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }

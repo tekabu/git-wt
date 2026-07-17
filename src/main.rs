@@ -424,21 +424,21 @@ MERGE:
     'ours'/'theirs' are git's -X strategy options, so they settle only the
     hunks that actually collide -- the rest of both sides still merges. They
     are applied while the merge is computed, so they cannot join a merge that
-    has already stopped: git-wt offers to abort and redo it instead.\
+    has already stopped: git-wt offers to abort and redo it instead.
 
-MERGED:\
-    Ask whether one branch is already contained in another.\
-\
-        git-wt 1,2 merged             # is 2's branch in 1's branch?\
-        git-wt 1 merged feat/x        # is feat/x in worktree 1's branch?\
-        git-wt 1 merged               # is worktree 1's branch in the current branch?\
-        git-wt 1 merged --others      # list every worktree against worktree 1\
-        git-wt 1 merged --others -p   # include the path column\
-\
-    The normal forms answer yes/no, exiting 0 for \"already merged\" and nonzero\
-    for \"ahead\". The `--others` form prints a table with a `merged` column and\
-    a `merged-at` column showing when the source branch was last merged into the\
-    selected branch. `merged-at` is '-' for fast-forward merges and for branches\
+MERGED:
+    Ask whether one branch is already contained in another.
+
+        git-wt 1,2 merged             # is 2's branch in 1's branch?
+        git-wt 1 merged feat/x        # is feat/x in worktree 1's branch?
+        git-wt 1 merged               # is worktree 1's branch in the current branch?
+        git-wt 1 merged --others      # list every worktree against worktree 1
+        git-wt 1 merged --others -p   # include the path column
+
+    The normal forms answer yes/no, exiting 0 for \"already merged\" and nonzero
+    for \"ahead\". The `--others` form prints a table with a `merged` column and
+    a `merged-at` column showing when the source branch was last merged into the
+    selected branch. `merged-at` is '-' for fast-forward merges and for branches
     that are not yet merged.
 
 ADD:

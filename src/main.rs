@@ -4214,6 +4214,7 @@ fn render_commits(
                     );
                     println!("{}", paint(&file_line, DIM, color));
                 }
+                println!();
             }
         }
     }

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Install git-wt FROM SOURCE (requires Rust/`cargo`).
 #
-#   ./install.sh                 # build + install via `cargo install`
-#   ./install.sh --alias wt      # also add a `wt` shell function that cd's
-#                                #   into the worktree (name is yours to pick)
+#   ./install-mac.sh             # build + install, adds default `wt` alias
+#   ./install-mac.sh --alias xy  # use `xy` instead of `wt` for the shell fn
+#   ./install-mac.sh --no-alias  # install the binary only, no shell function
 #
 # No toolchain? Use the one-file installer that build.sh produces
 # (dist/git-wt-<version>-<os>-<arch>.install.sh) — see the README.
@@ -15,11 +15,12 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-alias_name=""
+alias_name="wt"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --alias)   alias_name="${2:-}"; shift 2 ;;
-    --alias=*) alias_name="${1#--alias=}"; shift ;;
+    --alias)    alias_name="${2:-}"; shift 2 ;;
+    --alias=*)  alias_name="${1#--alias=}"; shift ;;
+    --no-alias) alias_name=""; shift ;;
     *) echo "error: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
@@ -61,3 +62,7 @@ fi
 # shellcheck source=_alias.sh
 . "$here/_alias.sh"
 gitwt_write_alias "$alias_name"
+
+# Load the alias function into the caller's shell right now, so `wt` works
+# without opening a new terminal or re-sourcing the rc by hand.
+eval "$(sed -n '/# >>> git-wt alias >>>/,/# <<< git-wt alias <<</p' "/Users/$USER/.zshrc")"

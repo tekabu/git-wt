@@ -361,6 +361,14 @@ rm -f "$CODE/myapp-feature-login/uncommitted.txt"
 # Same divergence the diff cases built: 'mainside' on main, 'loginside' on
 # feature/login, 'init' shared by both. That makes every cell predictable --
 # one commit per column, and a shared one that must not appear at all.
+# A single target reads like 'merged' does: N against the worktree you are
+# standing in. The suite runs from $APP, which is worktree 1.
+check "commits single target"        exit=0 out="loginside" -- "$didx" commits
+check "commits single names both"    exit=0 out="feature/login" -- "$didx" commits
+check "commits single takes flags"   exit=0 out="mainside" -- "$didx" commits --author Test
+# Standing in the one you named, the table would compare it with itself.
+check "commits single self errors"   exit=1 err="standing in" -- 1 commits
+
 check "commits heads the columns"    exit=0 out="feature/login" -- "1,$didx" commits
 check "commits lists both sides"     exit=0 out="mainside" -- "1,$didx" commits
 check "commits lists the other side" exit=0 out="loginside" -- "1,$didx" commits
@@ -489,7 +497,6 @@ check "commits --author no match"     exit=0 err="no commits match those filters
 check "commits --author needs a name" exit=1 err="--author needs a name" -- "1,$didx" commits --author
 
 check "commits rejects a dup target" exit=1 err="listed twice" -- "1,1" commits
-check "commits needs two worktrees"  exit=1 err="commits takes a worktree list" -- 1 commits
 check "commits bad index errors"     exit=1 err="no worktree #99" -- "1,99" commits
 check "commits rejects git flags"    exit=1 err="unexpected argument '--stat' for commits" -- "1,$didx" commits --stat
 check "commits -n needs a count"     exit=1 err="-n needs a count" -- "1,$didx" commits -n

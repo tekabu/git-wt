@@ -327,8 +327,13 @@ takes two paths, and there is no three-path form). For three, use `meld`.
 Which branch has which commit, for any number of worktrees at once:
 
 ```sh
-git-wt 1,2,3 commits
+git-wt 1,2,3 commits    # name every column
+git-wt 2 commits        # worktree 2 against the one you're standing in
 ```
+
+A single target reads the way `merged` does: the worktree you're in becomes the
+other column, so `git-wt 2 commits` is `git-wt <here>,2 commits`. Naming the
+one you're standing in is an error rather than a column of guaranteed checks.
 
 ```
 commit   author  date            main  feat/login  bugfix-123  subject
@@ -401,6 +406,29 @@ itself, and `--from-date 2026-01-01` takes that whole day. That's why there's
 no `>` or `<`: the day either side of a bound is just the inclusive bound next
 door, and a strict comparison would be a second spelling of the same thing —
 costing a character the shell wants for itself.
+
+### How many branches can it compare?
+
+No cap — unlike `diff` (exactly two) and `meld` (two or three), `commits` takes
+as many columns as you name. Comparing all six of your worktrees at once is a
+supported thing to type.
+
+Your **terminal** is the real limit. Each column costs its branch name plus two
+spaces, and the fixed columns (sha, author, date) take about 35 more. Once a
+row no longer fits, the subject wraps to the next line — the marks never do,
+since they sit to its left. So a too-wide table degrades into a shaggy right
+edge rather than a broken grid.
+
+Rough guide at 100 columns, with names about 10 characters:
+
+| Columns | Fits at 100 cols? |
+|---|---|
+| 2–3 branches | Comfortably, with room for the subject |
+| 4–5 branches | Yes; the subject gets short |
+| 6+ branches | The subject wraps — use `--col`-style narrowing: name fewer worktrees, or widen the terminal |
+
+Cost in git calls is linear and cheap: one `git log` for the rows, plus one
+`rev-list` per column.
 
 > **Quote `--date`.** `>` and `<` are shell redirects, so an unquoted
 > `--date >=2026-01-01` writes a file named `=2026-01-01` and git-wt never sees
@@ -737,6 +765,8 @@ Every form the CLI accepts. Examples assume:
 |---|---|
 | `git-wt 1,2 commits` | Table of the commits 1 and 2 do not share |
 | `git-wt 1,2,3 commits` | Same for three worktrees; any number of columns |
+| `git-wt 2 commits` | Worktree 2 against the worktree you're standing in |
+| `git-wt 2 commits` (from worktree 2) | Error — it would compare 2 with itself |
 | `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
 | `git-wt 1,2 commits --all` | Include the shared history, not just what diverged |
 | `git-wt 1,2,3 commits --topo` | Group each branch's commits instead of interleaving by date |

@@ -35,6 +35,7 @@ USAGE:
     git-wt <N> merged            Is N's branch already in the current branch?
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<M>[,...] commits Table: which commit is on which branch
+    git-wt <N> commits           Same, N against the worktree you are in
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
     git-wt version
@@ -117,8 +118,19 @@ COMMITS:
     compares exactly two, and by content rather than by commit.
 
         git-wt 1,2,3 commits         # the table
+        git-wt 2 commits             # worktree 2 vs the one you stand in
         git-wt 1,2 commits -n 20     # newest 20 rows only
         git-wt 1,2,3 commits --all   # include the shared history too
+
+    A single target reads the way 'merged' does: the worktree you are in
+    is the other column, so 'git-wt 2 commits' == 'git-wt <here>,2
+    commits'. Standing in the one you named is an error, not a column of
+    guaranteed checks.
+
+    Any number of worktrees can be columns -- there is no cap, unlike
+    diff's two or meld's three. The terminal is the real limit: each
+    column costs its branch name plus two, and once the row no longer
+    fits, the subject wraps. The marks never do: they are left of it.
 
 COMMITS FILTERS:
     Filters narrow the rows; the columns stay whatever the worktree list
@@ -393,11 +405,24 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
         "diff" => Err(format!(
             "diff takes a worktree list: 'git-wt {n},<M> diff'"
         )),
-        // One worktree has nothing to compare against: a table of one column
-        // is just 'git log'.
-        "commits" => Err(format!(
-            "commits takes a worktree list: 'git-wt {n},<M> commits'"
-        )),
+        // The same reading 'merged' gives a single target: N against the
+        // worktree you are standing in. A one-column table would just be
+        // 'git log', so the second column is the one you are already in.
+        "commits" => {
+            let Some(here) = here_index(&trees) else {
+                return Err(format!(
+                    "not inside a worktree, so there is no second branch to compare \
+                     against\nhint: 'git-wt {n},<M> commits' names both"
+                ));
+            };
+            if here == idx {
+                return Err(format!(
+                    "worktree #{n} is the one you are standing in, so the table would \
+                     compare it with itself\nhint: 'git-wt {n},<M> commits' names both"
+                ));
+            }
+            cmd_commits(root, &trees, &[here, idx], &rest[1..])
+        }
         "merge" => {
             let args = parse_merge_args(&rest[1..])?;
             if let MergeOp::Start(src) = &args.op {
@@ -2603,6 +2628,20 @@ fn commit_rows(
             })
         })
         .collect())
+}
+
+/// The worktree the shell is standing in, if any.
+///
+/// The deepest match wins: `add --dirname` can put one worktree inside
+/// another's tree, and the innermost is the one you are actually in.
+fn here_index(trees: &[Worktree]) -> Option<usize> {
+    let cwd = canon(&std::env::current_dir().ok()?);
+    trees
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| cwd.starts_with(canon(&w.path)))
+        .max_by_key(|(_, w)| canon(&w.path).components().count())
+        .map(|(i, _)| i)
 }
 
 /// Resolve `r` to a commit, or say which flag could not find it.

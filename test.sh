@@ -711,11 +711,21 @@ check "--live dashed form works"     exit=0 out="shared.txt" -- "1,$lidx" diff -
 check "hunks works without live"     exit=0 out="committed state" -- "1,$didx" diff hunks
 
 # --- meld -------------------------------------------------------------------
-# A stub 'meld' on PATH echoes its argv, so we can assert on the paths AND the
-# order without a GUI. Real meld is never launched.
+# A stub 'meld' on PATH echoes its argv and lists the files inside each
+# directory it receives, so we can assert on both the pane order and the
+# extracted contents. Real meld is never launched.
 FAKEBIN="$ROOT/fakebin"
 mkdir -p "$FAKEBIN"
-printf '#!/bin/sh\necho "$@"\n' > "$FAKEBIN/meld"
+cat > "$FAKEBIN/meld" <<'EOF'
+#!/bin/sh
+echo "ARGV: $@"
+for d in "$@"; do
+  if [ -d "$d" ]; then
+    echo "DIR: $d"
+    find "$d" -type f | sort
+  fi
+done
+EOF
 chmod +x "$FAKEBIN/meld"
 PATH="$FAKEBIN:$PATH"
 
@@ -727,14 +737,21 @@ lpath="$("$BIN" "$lidx" path 2>/dev/null)"
 rpath="$("$BIN" "$ridx" path 2>/dev/null)"
 mpath="$("$BIN" 1 path 2>/dev/null)"
 
-check "meld 2 trees passes both dirs" exit=0 out="$mpath $lpath" -- "1,$lidx" meld
-check "meld 3 trees, listed order"    exit=0 out="$lpath $mpath $rpath" -- "$lidx,1,$ridx" meld
+check "meld 2 trees passes both dirs" exit=0 out="ARGV: $mpath $lpath" -- "1,$lidx" meld
+check "meld 3 trees, listed order"    exit=0 out="ARGV: $lpath $mpath $rpath" -- "$lidx,1,$ridx" meld
 check "meld one tree errors"          exit=1 err="meld needs 2 or 3 worktrees" -- 1 meld
 check "meld over 3 errors"            exit=1 err="at most 3 worktrees, got 4" -- 1,2,3,4 meld
 check "meld dup tree errors"          exit=1 err="worktree #1 listed twice" -- 1,1 meld
 check "meld bad index errors"         exit=1 err="no worktree #99" -- 1,99 meld
 check "meld non-numeric list errors"  exit=1 err="bad worktree list '1,x'" -- 1,x meld
-check "meld takes no options"         exit=1 err="meld takes no options" -- 1,2 meld -x
+check "meld takes no options"         exit=1 err="unknown option '-x'" -- 1,2 meld -x
+check "meld --diff needs 2 trees"     exit=1 err="takes exactly 2 worktrees" -- 1,2,3 meld --diff
+check "meld --diff ... range works"   exit=0 out="onlylogin.txt" -- "1,$didx" meld --diff ...
+check "meld --diff ... omits main"    exit=0 err="" -- "1,$didx" meld --diff ...
+check "meld --diff 2-way works"       exit=0 out="onlymain.txt" -- "1,$didx" meld --diff
+check "meld --diff 2-way has shared"  exit=0 out="shared.txt" -- "1,$didx" meld --diff
+check "meld --diff empty diff"        exit=0 err="no files differ" -- "1,1" meld --diff
+check "meld --3way and --base clash"  exit=1 err="alternatives" -- 1,2 meld --diff --3way --base main
 check "list needs an action"          exit=1 err="needs an action" -- 1,2
 check "list rejects single-tree verb" exit=1 err="'remove' takes a single worktree" -- 1,2 remove
 

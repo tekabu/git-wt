@@ -394,6 +394,18 @@ fi
 oidx="$("$BIN" list | awk '$2=="feature/logout"{print $1}')"
 check "commits takes three worktrees" exit=0 out="feature/logout" -- "1,$didx,$oidx" commits
 
+# --topo reorders; it never drops or invents rows. Same set, same count.
+check "commits --topo keeps the rows" exit=0 out="mainside" -- "1,$didx" commits --topo
+check "commits --topo-order spelling" exit=0 out="loginside" -- "1,$didx" commits --topo-order
+dcount="$("$BIN" "1,$didx" commits 2>/dev/null | grep -cE 'mainside|loginside')"
+tcount="$("$BIN" "1,$didx" commits --topo 2>/dev/null | grep -cE 'mainside|loginside')"
+tcmd="$(fmt_cmd "1,$didx" commits --topo)"
+if [ "$dcount" = "$tcount" ]; then
+  report PASS HAPPY "commits --topo same row set" "$tcmd  # $tcount rows either way"
+else
+  report FAIL HAPPY "commits --topo same row set" "$tcmd" "date order had $dcount rows, topo had $tcount"
+fi
+
 # Which row survives a cap is not asserted: the suite's commits land in the same
 # second, so --date-order ties and settles it by ref order. The count is the
 # contract -- '-n 1' means one row, whichever it is.

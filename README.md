@@ -412,7 +412,26 @@ disagree with the column, so git-wt does the comparison itself and rejects
 those two spellings with a pointer to `--from-date`/`--to-date`.
 
 Rows are ordered by date across all branches at once, so a row's neighbors are
-the commits written around the same time, not the rest of its branch.
+the commits written around the same time, not the rest of its branch. That
+answers "what happened when". `--topo` answers the other question — "what did
+each branch do" — by keeping each branch's line of history in one block:
+
+```sh
+git-wt 1,2,3 commits --topo
+```
+
+```
+default (by date)                    --topo
+feat-07  ·  ✓                        feat-07  ·  ✓
+main-06  ✓  ·                        feat-05  ·  ✓
+feat-05  ·  ✓                        feat-03  ·  ✓
+main-04  ✓  ·                        main-06  ✓  ·
+feat-03  ·  ✓                        main-04  ✓  ·
+main-02  ✓  ·                        main-02  ✓  ·
+```
+
+Both keep ancestry intact — neither can show a parent above its child — so
+`--topo` is a matter of which story you want to read, never of correctness.
 
 A subject too long for your terminal is cut with an `…`, never wrapped — the
 marks are the point of the table, and a wrapped row strands them on a line of
@@ -720,6 +739,7 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2,3 commits` | Same for three worktrees; any number of columns |
 | `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
 | `git-wt 1,2 commits --all` | Include the shared history, not just what diverged |
+| `git-wt 1,2,3 commits --topo` | Group each branch's commits instead of interleaving by date |
 | `git-wt 1,2 commits --author nes` | Only commits whose author fuzzy-matches `nes` |
 | `git-wt 1,2 commits --date '>=2026-01-01'` | Commits on that day or after; also `<=`, `=` |
 | `git-wt 1,2 commits --from-date 2026-01-01 --to-date 2026-06-30` | A date range, inclusive, no quoting |

@@ -99,6 +99,7 @@ DIFF LIVE:
 COMMITS OPTIONS:
     -n, --limit N         Show at most N commits (newest first)
         --all             Every commit, not just the diverged ones
+        --topo            Group each branch's commits, don't interleave
         --author NAME     Only NAME's commits (fuzzy, like list's SEARCH)
     -d, --date CMP        Only commits on a date: '=', '>=' or '<=' a
                           YYYY-MM-DD, e.g. --date '>=2026-01-01'. Repeat
@@ -146,8 +147,19 @@ COMMITS FILTERS:
     Rows stop at the common ancestor, so only what diverged is listed and a
     long shared history costs nothing. --all drops that cut and walks every
     commit, which on a big repo is slow and mostly checks in every column.
-    Commits are dated newest-first across all branches at once, so a row's
-    neighbors are its contemporaries, not its branch-mates.
+    Rows are ancestry-first: no parent is ever listed above its child, so
+    reading down the table is reading the real history. Dates only order
+    commits that do not descend from each other -- which is why a commit
+    authored before its own parent (a rebase, a cherry-pick, a bad clock)
+    reads as out of order against the date column. The story is right; the
+    clock is not.
+
+    Within that, two readings. By default the rows are newest-first across
+    every branch at once, so a row's neighbors are its contemporaries --
+    what happened when. '--topo' keeps each branch's line of history in one
+    block instead -- what each branch did.
+
+        git-wt 1,2,3 commits --topo
 
     The subject comes last because it is the only free-form cell: an emoji is
     two terminal columns wide but one character, so a padded subject column
@@ -2189,6 +2201,30 @@ fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
     Ok(())
 }
 
+/// Which of the two readings of "the story" the rows are in.
+///
+/// Both keep ancestry: git shows no parent before its children either way, so
+/// neither can misreport what came from what. They differ in what fills the
+/// gaps between unrelated commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Order {
+    /// By author date, so a row's neighbors are its contemporaries and the
+    /// branches interleave: "what happened when".
+    Date,
+    /// By topology, so each branch's line of history stays in one block:
+    /// "what did each branch do".
+    Topo,
+}
+
+impl Order {
+    fn flag(self) -> &'static str {
+        match self {
+            Order::Date => "--author-date-order",
+            Order::Topo => "--topo-order",
+        }
+    }
+}
+
 /// One table row: a commit, its short name, who wrote it when, and its subject.
 struct CommitRow {
     /// Full sha, for the set lookups; never printed.
@@ -2242,6 +2278,7 @@ struct CommitsArgs {
     from: Option<String>,
     to: Option<String>,
     author: Option<String>,
+    topo: bool,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
@@ -2251,6 +2288,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut from = None;
     let mut to = None;
     let mut author = None;
+    let mut topo = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -2260,6 +2298,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             }
             s if s.starts_with("--limit=") => limit = Some(parse_limit(&s["--limit=".len()..])?),
             "--all" => all = true,
+            "--topo" | "--topo-order" => topo = true,
             "--date" | "-d" => {
                 let v = it.next().ok_or(DATE_MISSING)?;
                 dates.push(parse_date_filter(v)?);
@@ -2306,7 +2345,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             }
         }
     }
-    Ok(CommitsArgs { limit, all, dates, from, to, author })
+    Ok(CommitsArgs { limit, all, dates, from, to, author, topo })
 }
 
 const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
@@ -2432,7 +2471,8 @@ fn cmd_commits(
         || args.to.is_some()
         || args.author.is_some();
     let git_limit = if filtered { None } else { args.limit };
-    let all_rows = commit_rows(root, &refs, base.as_deref(), git_limit)?;
+    let order = if args.topo { Order::Topo } else { Order::Date };
+    let all_rows = commit_rows(root, &refs, base.as_deref(), git_limit, order)?;
     let unfiltered = all_rows.len();
 
     // Ancestry, not dates: '--from X' means "X and everything after it", so
@@ -2529,11 +2569,12 @@ fn commit_rows(
     refs: &[String],
     base: Option<&str>,
     limit: Option<usize>,
+    order: Order,
 ) -> Result<Vec<CommitRow>, String> {
     let count;
     let mut args = vec![
         "log",
-        "--author-date-order",
+        order.flag(),
         "--date=format:%b. %-d, %Y",
         "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%s",
     ];
@@ -3971,6 +4012,9 @@ diff --git a/gone.txt b/gone.txt
         assert_eq!(a.from.as_deref(), Some("abc123"));
         assert_eq!(a.to.as_deref(), Some("def456"));
         assert_eq!(parse(&["--author=nino"]).unwrap().author.as_deref(), Some("nino"));
+        assert!(!parse(&[]).unwrap().topo);
+        assert!(parse(&["--topo"]).unwrap().topo);
+        assert!(parse(&["--topo-order"]).unwrap().topo);
 
         assert!(parse(&["--from-id"]).unwrap_err().contains("--from-id needs a commit"));
         assert!(parse(&["--from-date", "nope"]).unwrap_err().contains("want YYYY-MM-DD"));
@@ -4060,7 +4104,7 @@ diff --git a/gone.txt b/gone.txt
         let base = octopus_base(&tmp, &refs).expect("branches share a root commit");
 
         // The fork point is excluded, so only the two diverged commits are rows.
-        let rows = commit_rows(&tmp, &refs, Some(&base), None).unwrap();
+        let rows = commit_rows(&tmp, &refs, Some(&base), None, Order::Date).unwrap();
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rows.len(), 2, "{subjects:?}");
         // Each field is parsed off its own tab, so nothing can shift into the
@@ -4088,14 +4132,14 @@ diff --git a/gone.txt b/gone.txt
         }
 
         // Without the cut, the shared commit is back and checked on both.
-        let all = commit_rows(&tmp, &refs, None, None).unwrap();
+        let all = commit_rows(&tmp, &refs, None, None, Order::Date).unwrap();
         assert_eq!(all.len(), 3);
         let shared = all.iter().find(|r| r.text.ends_with("shared")).unwrap();
         assert!(ref_shas(&tmp, "main", None).unwrap().contains(&shared.sha));
         assert!(ref_shas(&tmp, "feat", None).unwrap().contains(&shared.sha));
 
         // -n caps the rows, newest first.
-        let capped = commit_rows(&tmp, &refs, None, Some(1)).unwrap();
+        let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date).unwrap();
         assert_eq!(capped.len(), 1);
 
         // --from-id/--to-id include the commit they name. That is the whole
@@ -4117,6 +4161,65 @@ diff --git a/gone.txt b/gone.txt
         // A commit that does not resolve is named by the flag that wanted it.
         let err = commit_of(&tmp, "no-such-commit", "--from-id").unwrap_err();
         assert_eq!(err, "--from-id: no commit 'no-such-commit'");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn topo_groups_the_branches_that_date_order_interleaves() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-topo-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str], when: &str) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", when)
+                .env("GIT_COMMITTER_DATE", when)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+        }
+        let commit = |name: &str, when: &str| {
+            git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", name], when);
+        };
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"], "");
+        git(&tmp, &["config", "user.email", "t@test"], "");
+        git(&tmp, &["config", "user.name", "t"], "");
+
+        // Two branches whose commits alternate in time: main in the even
+        // months, feat in the odd ones. The orders disagree maximally here.
+        commit("base", "2026-01-01T10:00:00");
+        git(&tmp, &["branch", "feat"], "");
+        commit("main-02", "2026-02-01T10:00:00");
+        commit("main-04", "2026-04-01T10:00:00");
+        git(&tmp, &["checkout", "--quiet", "feat"], "");
+        commit("feat-03", "2026-03-01T10:00:00");
+        commit("feat-05", "2026-05-01T10:00:00");
+
+        let refs = vec!["main".to_string(), "feat".to_string()];
+        let subjects = |o: Order| -> Vec<String> {
+            commit_rows(&tmp, &refs, None, None, o)
+                .unwrap()
+                .iter()
+                .map(|r| r.text.clone())
+                .collect()
+        };
+
+        // By date: strictly newest-first, so the branches interleave and a
+        // row's neighbors are the commits written around the same time.
+        assert_eq!(
+            subjects(Order::Date),
+            ["feat-05", "main-04", "feat-03", "main-02", "base"]
+        );
+        // By topology: each branch's line stays in one block, so the table
+        // reads as one branch's story then the other's.
+        assert_eq!(
+            subjects(Order::Topo),
+            ["feat-05", "feat-03", "main-04", "main-02", "base"]
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -4148,7 +4251,7 @@ diff --git a/gone.txt b/gone.txt
         git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "child"], "2026-01-01T10:00:00");
 
         let refs = vec!["main".to_string()];
-        let rows = commit_rows(&tmp, &refs, None, None).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date).unwrap();
         let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
 
         // Ancestry wins: the child is listed above the parent it descends from,

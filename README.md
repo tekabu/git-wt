@@ -345,9 +345,14 @@ oauth fix?" is one glance instead of three `merged` calls.
 
 Authors come from `%aN`, so a `.mailmap` is honored and a contributor who has
 committed under two names or addresses shows up as one. Dates are *author*
-dates — when the work was written, not when it landed here — and the rows sort
-by the same clock, so a rebased commit never appears out of order against its
-own printed date.
+dates — when the work was written, not when it landed here.
+
+**Ancestry outranks the dates.** A parent is never listed above its child, no
+matter what the two dates say, so the history you read down the table is the
+real one. The date only orders commits that don't descend from each other. A
+consequence worth knowing: if a commit was authored before its own parent —
+a rebase, a cherry-pick, or just a laptop with a wrong clock — the date column
+will look out of order at that row. It isn't; the story is.
 
 The subject sits last for a reason worth knowing: it is the only free-form cell,
 and an emoji like 🚀 occupies two terminal columns while being a single

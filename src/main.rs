@@ -2513,11 +2513,17 @@ fn octopus_base(root: &Path, refs: &[String]) -> Option<String> {
 /// read as. `%aN` respects .mailmap, so a contributor who has committed under
 /// two names is one name here.
 ///
-/// Author dates throughout, and `--author-date-order` to match: the column
-/// says when the work was written, so the rows must sort by the same clock or
-/// a rebased commit lands out of order against its own printed date. Commit
-/// dates would answer "when did this land here", which is not what a table
-/// about who-wrote-what is asking.
+/// Author dates throughout, and `--author-date-order` to match the column the
+/// table prints; commit dates answer "when did this land here", which is not
+/// what a table about who-wrote-what is asking.
+///
+/// The order is ancestry first: git shows no parent before its children
+/// whatever the timestamps claim, and the date only sequences commits that do
+/// not descend from each other. So a commit authored before its own parent --
+/// rebased, cherry-picked, or written on a machine with a bad clock -- reads as
+/// out of order against its date column while the history stays true. That is
+/// the right trade: a table whose rows contradicted the history would be
+/// lying, where one whose dates jump is merely reporting a wrong clock.
 fn commit_rows(
     root: &Path,
     refs: &[String],
@@ -4111,6 +4117,47 @@ diff --git a/gone.txt b/gone.txt
         // A commit that does not resolve is named by the flag that wanted it.
         let err = commit_of(&tmp, "no-such-commit", "--from-id").unwrap_err();
         assert_eq!(err, "--from-id: no commit 'no-such-commit'");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn rows_follow_ancestry_even_when_the_dates_disagree() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-order-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str], when: &str) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", when)
+                .env("GIT_COMMITTER_DATE", when)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"], "");
+        git(&tmp, &["config", "user.email", "t@test"], "");
+        git(&tmp, &["config", "user.name", "t"], "");
+
+        // The parent is authored in May, its child in January: a rebase, a
+        // cherry-pick, or a bad clock all produce exactly this.
+        git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "parent"], "2026-05-01T10:00:00");
+        git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "child"], "2026-01-01T10:00:00");
+
+        let refs = vec!["main".to_string()];
+        let rows = commit_rows(&tmp, &refs, None, None).unwrap();
+        let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+
+        // Ancestry wins: the child is listed above the parent it descends from,
+        // so reading down the table is reading real history. The date column
+        // ascends across that pair, which is the wrong clock showing through --
+        // not the rows lying about what came from what.
+        assert_eq!(seen, ["child", "parent"], "a parent must never precede its child");
+        assert_eq!(rows[0].key, "2026-01-01");
+        assert_eq!(rows[1].key, "2026-05-01");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

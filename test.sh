@@ -364,6 +364,8 @@ rm -f "$CODE/myapp-feature-login/uncommitted.txt"
 check "commits heads the columns"    exit=0 out="feature/login" -- "1,$didx" commits
 check "commits lists both sides"     exit=0 out="mainside" -- "1,$didx" commits
 check "commits lists the other side" exit=0 out="loginside" -- "1,$didx" commits
+check "commits heads the author col" exit=0 out="author" -- "1,$didx" commits
+check "commits names the author"     exit=0 out="Test" -- "1,$didx" commits
 
 # The cut is the point: a shared history would check in every column and say
 # nothing, so it is excluded until --all asks for it.

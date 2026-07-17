@@ -102,7 +102,8 @@ COMMITS OPTIONS:
 
 COMMITS:
     A table of the commits the listed worktrees do NOT share: one row per
-    commit, one column per worktree, a check where that branch contains it.
+    commit, its author, then one column per worktree with a check where that
+    branch contains it.
     Answers 'who has what' for 3+ branches at once, which diff cannot: diff
     compares exactly two, and by content rather than by commit.
 
@@ -119,6 +120,7 @@ COMMITS:
     A subject too long for the terminal is cut, not wrapped: the marks are the
     point of the table, and a wrapped row puts them on a line of their own.
     Piped output is never cut, so 'commits | grep' still sees whole subjects.
+    The author is .mailmap-aware, so one contributor is one name.
 
     A cherry-picked or rebased commit is a different commit to git, so it
     shows as unchecked in the branch it was copied from -- same patch, new
@@ -2152,10 +2154,12 @@ fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
     Ok(())
 }
 
-/// One table row: a commit, and the text `--oneline` would print for it.
+/// One table row: a commit, the text `--oneline` would print for it, and who
+/// wrote it.
 struct CommitRow {
     sha: String,
     text: String,
+    author: String,
 }
 
 /// Options for `commits`.
@@ -2273,7 +2277,8 @@ fn octopus_base(root: &Path, refs: &[String]) -> Option<String> {
 ///
 /// `%H` drives the set lookups and `%h %s` is what the row prints -- the same
 /// text `git log --oneline` shows, which is the format the rows are meant to
-/// read as.
+/// read as. `%aN` respects .mailmap, so a contributor who has committed under
+/// two names is one name here.
 fn commit_rows(
     root: &Path,
     refs: &[String],
@@ -2281,7 +2286,7 @@ fn commit_rows(
     limit: Option<usize>,
 ) -> Result<Vec<CommitRow>, String> {
     let count;
-    let mut args = vec!["log", "--date-order", "--format=%H%x09%h %s"];
+    let mut args = vec!["log", "--date-order", "--format=%H%x09%aN%x09%h %s"];
     if let Some(n) = limit {
         count = format!("-n{n}");
         args.push(&count);
@@ -2296,10 +2301,11 @@ fn commit_rows(
     Ok(out
         .lines()
         .filter_map(|line| {
-            let (sha, text) = line.split_once('\t')?;
+            let mut f = line.splitn(3, '\t');
             Some(CommitRow {
-                sha: sha.to_string(),
-                text: text.to_string(),
+                sha: f.next()?.to_string(),
+                author: f.next()?.to_string(),
+                text: f.next()?.to_string(),
             })
         })
         .collect())
@@ -2322,6 +2328,8 @@ const CHECK: &str = "✓";
 const MISS: &str = "·";
 /// Below this, a truncated subject says nothing; let the line wrap instead.
 const MIN_TEXTW: usize = 24;
+/// Enough for a full name; past it, the subject has the better claim.
+const AUTHOR_MAX: usize = 16;
 
 /// The terminal's width, or None when stdout is not one.
 ///
@@ -2374,6 +2382,19 @@ fn render_commits(
     let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
     let marksw: usize = widths.iter().map(|w| w + 2).sum();
 
+    // The author column is sized to its longest name, but a name is not worth
+    // unbounded width when the subject is competing for the same line; on a
+    // terminal it caps, and a piped table keeps every name whole.
+    let mut authw = rows
+        .iter()
+        .map(|r| r.author.chars().count())
+        .chain(std::iter::once("author".len()))
+        .max()
+        .unwrap_or(0);
+    if width.is_some() {
+        authw = authw.min(AUTHOR_MAX);
+    }
+
     let mut textw = rows
         .iter()
         .map(|r| r.text.chars().count())
@@ -2381,18 +2402,19 @@ fn render_commits(
         .max()
         .unwrap_or(0);
     if let Some(w) = width {
-        textw = textw.min(w.saturating_sub(marksw).max(MIN_TEXTW));
+        textw = textw.min(w.saturating_sub(marksw + authw + 2).max(MIN_TEXTW));
     }
     let rows: Vec<CommitRow> = rows
         .iter()
         .map(|r| CommitRow {
             sha: r.sha.clone(),
             text: ellipsize(&r.text, textw),
+            author: ellipsize(&r.author, authw),
         })
         .collect();
     let rows = &rows;
 
-    let mut head = format!("{:<textw$}", "commit");
+    let mut head = format!("{:<textw$}  {:<authw$}", "commit", "author");
     for (n, w) in names.iter().zip(&widths) {
         head.push_str("  ");
         head.push_str(&format!("{n:<w$}"));
@@ -2400,7 +2422,9 @@ fn render_commits(
     println!("{}", paint(head.trim_end(), DIM, color));
 
     for row in rows {
-        let mut line = format!("{:<textw$}", row.text);
+        let mut line = format!("{:<textw$}  ", row.text);
+        // Dim, so the marks and subjects stay the two things the eye lands on.
+        line.push_str(&paint(&format!("{:<authw$}", row.author), DIM, color));
         for (set, w) in sets.iter().zip(&widths) {
             let hit = set.contains(&row.sha);
             let (mark, code) = if hit { (CHECK, GREEN) } else { (MISS, DIM) };
@@ -3574,6 +3598,9 @@ diff --git a/gone.txt b/gone.txt
         let rows = commit_rows(&tmp, &refs, Some(&base), None).unwrap();
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rows.len(), 2, "{subjects:?}");
+        // The author is parsed off its own field, so a subject with no tab in
+        // it cannot shift into the wrong column.
+        assert!(rows.iter().all(|r| r.author == "t"), "{:?}", rows[0].author);
         assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
         assert!(subjects.iter().any(|t| t.ends_with("on-feat")), "{subjects:?}");
         assert!(!subjects.iter().any(|t| t.ends_with("shared")), "{subjects:?}");

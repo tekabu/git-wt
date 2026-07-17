@@ -331,17 +331,21 @@ git-wt 1,2,3 commits
 ```
 
 ```
-commit                                        main  feat/login  bugfix-123
-a1b2c3d fix token expiry                        ·        ✓           ✓
-9f8e7d6 add oauth scopes                        ·        ✓           ·
-4c5d6e7 bump serde                              ✓        ✓           ✓
+commit                              author  main  feat/login  bugfix-123
+a1b2c3d fix token expiry            Nino      ·        ✓           ✓
+9f8e7d6 add oauth scopes            Jhon      ·        ✓           ·
+4c5d6e7 bump serde                  Nino      ✓        ✓           ✓
 ```
 
-One row per commit — the same text `git log --oneline` prints — and one column
-per worktree, checked where that branch contains it. This is the question
-`diff` cannot answer: `diff` compares exactly two branches, and compares their
-*content*. `commits` compares any number, by *commit*, so "who already has the
-oauth fix?" is one glance instead of three `merged` calls.
+One row per commit — the same text `git log --oneline` prints — then its
+author, then one column per worktree, checked where that branch contains it.
+This is the question `diff` cannot answer: `diff` compares exactly two
+branches, and compares their *content*. `commits` compares any number, by
+*commit*, so "who already has the oauth fix?" is one glance instead of three
+`merged` calls.
+
+Authors come from `%aN`, so a `.mailmap` is honored and a contributor who has
+committed under two names or addresses shows up as one.
 
 Rows stop at the branches' common ancestor, so only the diverged commits are
 listed — the shared history would be a check in every column, saying nothing,
@@ -358,7 +362,8 @@ the commits written around the same time, not the rest of its branch.
 
 A subject too long for your terminal is cut with an `…`, never wrapped — the
 marks are the point of the table, and a wrapped row strands them on a line of
-their own. Piped output has no terminal to fit, so it keeps whole subjects and
+their own. Long author names cap at 16 characters for the same reason. Piped
+output has no terminal to fit, so it keeps whole subjects and names, and
 `git-wt 1,2 commits | grep oauth` still works.
 
 One caveat, inherited from git: a **cherry-picked or rebased commit is a

@@ -101,10 +101,8 @@ DIFF LIVE:
 
 COMMITS OPTIONS:
     -n, --limit N         Show at most N commits (newest first)
-        --all             Every commit, not just the diverged ones
-        --anchor          Rows are the first worktree's whole log; the other
-                          columns only say who else has each one
-                          (alias: --first-only)
+        --union           Rows from every worktree listed, not just the
+                          first one's log (alias: --any)
         --no-merges       Drop merge commits; keep the work they joined
         --no-cherry       Skip the patch comparison behind '≈' (faster)
         --topo            Group each branch's commits, don't interleave
@@ -123,28 +121,32 @@ COMMITS OPTIONS:
         --to-id COMMIT    Only COMMIT and what it can reach
 
 COMMITS:
-    A table of the commits the listed worktrees do NOT share: one row per
-    commit -- sha, author, date -- then one column per worktree with a check
-    where that branch contains it, and the subject last.
+    The first worktree's log, counter-checked against the rest. The rows are
+    exactly 'git log --oneline <first worktree's branch>' -- one row per
+    commit, sha, author, date -- then one column per worktree with a check
+    where that branch has it too, and the subject last.
     Answers 'who has what' for 3+ branches at once, which diff cannot: diff
     compares exactly two, and by content rather than by commit.
 
-        git-wt 1,2,3 commits         # the table
+        git-wt 1,2,3 commits         # 1's log, checked against 2 and 3
         git-wt 2 commits             # worktree 2 vs the one you stand in
         git-wt 1,2 commits -n 20     # newest 20 rows only
-        git-wt 1,2,3 commits --all   # include the shared history too
-        git-wt 1,2,3 commits --anchor    # 1's log, checked against 2 and 3
+        git-wt 1,2,3 commits --union # every branch's commits as rows
         git-wt 1,2 commits --no-merges   # only the commits someone wrote
 
-    '--anchor' turns the table one-sided. The rows stop being the union of
-    the branches and become exactly 'git log --oneline <first>' -- every
-    commit that branch has, shared history included -- and the remaining
-    columns answer one question per row: does this one have it too. A
-    commit only worktree 2 carries is then no row at all, where the
-    default gives it one with a '·' under 1. Read it as 'what of mine has
-    landed elsewhere'; the default reads as 'who is out of sync with who'.
-    '--all' says nothing new next to it: an anchored table is already the
-    whole log of the branch it is anchored to.
+    The table is one-sided on purpose: naming another worktree adds a
+    column, never a row, so the rows do not move when you add one. A commit
+    only worktree 2 carries is no row at all -- it is worktree 2's business
+    until it lands. Read it as 'what of mine has landed elsewhere'.
+
+    '--union' asks the other question -- 'who is out of sync with who' --
+    and every worktree listed contributes rows: the table becomes the union
+    of their logs, and a commit missing from the first one gets a row with
+    a '·' under it. Rows then grow with each worktree you name.
+
+    Neither cuts at the fork point: the rows are whole logs, shared history
+    included, and a row checked in every column is the answer 'everyone has
+    this'. '-n' is how you keep the table short.
 
     '--no-merges' drops merge commits: they carry no work of their own,
     and on a branch that merges often they are most of the table. The
@@ -226,9 +228,6 @@ COMMITS DATES:
     --date >=2026-01-01 writes a file called '=2026-01-01' and git-wt
     sees no date at all. --from-date/--to-date need no quoting.
 
-    Rows stop at the common ancestor, so only what diverged is listed and a
-    long shared history costs nothing. --all drops that cut and walks every
-    commit, which on a big repo is slow and mostly checks in every column.
     Rows are ancestry-first: no parent is ever listed above its child, so
     reading down the table is reading the real history. Dates only order
     commits that do not descend from each other -- which is why a commit
@@ -236,10 +235,10 @@ COMMITS DATES:
     reads as out of order against the date column. The story is right; the
     clock is not.
 
-    Within that, two readings. By default the rows are newest-first across
-    every branch at once, so a row's neighbors are its contemporaries --
-    what happened when. '--topo' keeps each branch's line of history in one
-    block instead -- what each branch did. Neither depends on --show-time:
+    Within that, two readings. By default the rows are newest-first, so a
+    row's neighbors are its contemporaries -- what happened when. '--topo'
+    keeps each line of history in one block instead -- what each branch did,
+    which is what --union tables are usually read for. Neither depends on --show-time:
     the order always reads the full timestamp, and --show-time only prints
     what it read. '--reverse' puts the newest last, after the -n cap, so
     the rows are the same ones read bottom-up.
@@ -2447,7 +2446,6 @@ impl DateFilter {
 #[derive(Debug)]
 struct CommitsArgs {
     limit: Option<usize>,
-    all: bool,
     dates: Vec<DateFilter>,
     from: Option<String>,
     to: Option<String>,
@@ -2459,13 +2457,12 @@ struct CommitsArgs {
     md: Option<Option<String>>,
     reverse: bool,
     no_cherry: bool,
-    /// Rows come from the first worktree alone: its whole log, nothing else.
-    anchor: bool,
+    /// Rows come from every worktree at once, not the first one's log alone.
+    union: bool,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut limit = None;
-    let mut all = false;
     let mut dates = Vec::new();
     let mut from = None;
     let mut to = None;
@@ -2476,7 +2473,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut md = None;
     let mut reverse = false;
     let mut no_cherry = false;
-    let mut anchor = false;
+    let mut union = false;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -2485,12 +2482,17 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
                 limit = Some(parse_limit(v)?);
             }
             s if s.starts_with("--limit=") => limit = Some(parse_limit(&s["--limit=".len()..])?),
-            "--all" => all = true,
             "--topo" | "--topo-order" => topo = true,
             "--no-merges" => no_merges = true,
             "--reverse" | "--oldest-first" => reverse = true,
             "--no-cherry" => no_cherry = true,
-            "--anchor" | "--first-only" => anchor = true,
+            "--union" | "--any" => union = true,
+            // The flag this replaced: '--all' asked for the shared history back
+            // when the rows were the diverged ones. Nothing is cut now, so the
+            // question it answered is the default, and the one thing it could
+            // still mean -- rows from every branch, not just the first -- is
+            // what --union is called.
+            "--all" => return Err(ALL_MSG.into()),
             "--show-time" => fmt.time = true,
             "--date-human" => fmt.human = true,
             // The path is optional, so the next word is only it when it is not
@@ -2550,10 +2552,12 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
         }
     }
     Ok(CommitsArgs {
-        limit, all, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, anchor,
+        limit, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, union,
     })
 }
 
+const ALL_MSG: &str = "no '--all' for commits: the rows are the whole log now, nothing is cut\n\
+     hint: '--union' adds every other worktree's commits as rows too";
 const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
      hint: quote it, or the shell reads '>' as a redirect";
 const FROM_DATE_MISSING: &str = "--from-date needs a date, e.g. '--from-date 2026-01-01'";
@@ -2658,25 +2662,17 @@ fn cmd_commits(
         .map(|&i| ref_of(&trees[i]))
         .collect::<Result<_, _>>()?;
 
-    // Cut the walk at the common ancestor so only diverged commits are rows: on
-    // a repo with any history at all, the shared past is most of it and every
-    // column would be checked. Unrelated histories have no base to cut at, so
-    // the walk covers everything -- which is also what --all asks for.
+    // The rows are the first worktree's log, whole: 'git log --oneline <its
+    // branch>' and nothing else. The other worktrees are columns, not sources
+    // of rows -- a commit only worktree 2 carries is not a row, it is an
+    // absence from the marks on 2's column. --union asks the other question,
+    // "who has what across all of these", and every branch contributes rows.
     //
-    // --anchor asks the other question: not "what do these branches not share"
-    // but "what is on the first one, and who else has it". Its rows are that
-    // branch's whole log, so there is nothing to cut -- and the sets, cut the
-    // same way, then answer for the full history of every other column rather
-    // than for their diverged tips.
-    let base = if args.all || args.anchor {
-        None
-    } else {
-        octopus_base(root, &refs)
-    };
-
-    // The rows are one ref's walk under --anchor; a commit only worktree 2 has
-    // is not a row at all, it is an absence from the marks on 2's column.
-    let row_refs: &[String] = if args.anchor { &refs[..1] } else { &refs };
+    // Nothing is cut at the merge-base either way: a table that hid the shared
+    // history answered a question about divergence, and the marks already say
+    // which commits diverged -- a row checked in every column is the answer
+    // "everyone has this", not noise.
+    let row_refs: &[String] = if args.union { &refs } else { &refs[..1] };
 
     // A filter runs here rather than in git, so `-n` has to as well: git's -n
     // caps the walk, and capping before the filter would leave rows the filter
@@ -2691,7 +2687,7 @@ fn cmd_commits(
     let all_rows = commit_rows(
         root,
         row_refs,
-        base.as_deref(),
+        None,
         git_limit,
         order,
         args.fmt,
@@ -2740,26 +2736,22 @@ fn cmd_commits(
         // A filter that matched nothing is a different story from a history
         // with nothing in it: say which one happened.
         let msg = if filtered && unfiltered > 0 {
-            let what = if args.all || args.anchor { "commits" } else { "diverged commits" };
-            format!("no commits match those filters: {unfiltered} {what}, none kept")
-        } else if args.anchor {
-            format!("no commits on {}", label(&trees[idxs[0]]))
-        } else if args.all {
+            format!("no commits match those filters: {unfiltered} commits, none kept")
+        } else if args.union {
             "no commits".to_string()
         } else {
-            "no diverged commits: every branch listed has the same history\n\
-             hint: 'commits --all' lists the shared commits too"
-                .to_string()
+            format!("no commits on {}", label(&trees[idxs[0]]))
         };
         eprintln!("{msg}");
         return Ok(());
     }
 
-    // A row is checked when the ref's own walk contains it, so the sets get the
-    // same cut as the rows do.
+    // A row is checked when the ref's own walk contains it. The walks are whole,
+    // like the rows: the marks answer for a branch's entire history, so a row is
+    // checked wherever that commit really is.
     let sets: Vec<HashSet<String>> = refs
         .iter()
-        .map(|r| ref_shas(root, r, base.as_deref()))
+        .map(|r| ref_shas(root, r, None))
         .collect::<Result<_, _>>()?;
 
     // Patch equivalence is what tells "not merged yet" from "already there,
@@ -2789,17 +2781,6 @@ fn cmd_commits(
     let tty = std::io::stdout().is_terminal();
     render_commits(&rows, &names, &sets, &equiv, color_enabled(tty), term_width(tty));
     Ok(())
-}
-
-/// The commit every listed ref descends from, or None when there is none
-/// (unrelated histories) -- in which case the caller walks the whole history,
-/// since there is nothing shared to trim.
-fn octopus_base(root: &Path, refs: &[String]) -> Option<String> {
-    let mut args = vec!["merge-base", "--octopus"];
-    args.extend(refs.iter().map(String::as_str));
-    let out = git_stdout(root, &args).ok()?;
-    let base = out.trim().to_string();
-    (!base.is_empty()).then_some(base)
 }
 
 /// Rows for the table: every commit reachable from any ref, newest first.
@@ -4370,12 +4351,17 @@ diff --git a/gone.txt b/gone.txt
 
         let a = parse(&[]).unwrap();
         assert_eq!(a.limit, None);
-        assert!(!a.all);
+        // The default is one branch's log; the union is what you ask for.
+        assert!(!a.union);
 
         assert_eq!(parse(&["-n", "20"]).unwrap().limit, Some(20));
         assert_eq!(parse(&["--limit", "20"]).unwrap().limit, Some(20));
         assert_eq!(parse(&["--limit=5"]).unwrap().limit, Some(5));
-        assert!(parse(&["--all"]).unwrap().all);
+        assert!(parse(&["--union"]).unwrap().union);
+        assert!(parse(&["--any"]).unwrap().union);
+        // --all is gone: it asked for the shared history back, and nothing is
+        // cut now. Say so rather than let an old habit read as a typo.
+        assert!(parse(&["--all"]).unwrap_err().contains("--union"));
 
         // A count of zero asks for an empty table, which is never meant.
         assert!(parse(&["-n", "0"]).unwrap_err().contains("show nothing"));
@@ -4603,12 +4589,16 @@ diff --git a/gone.txt b/gone.txt
         commit(&tmp, "on-feat", "2026-09-15T10:00:00");
 
         let refs = vec!["main".to_string(), "feat".to_string()];
-        let base = octopus_base(&tmp, &refs).expect("branches share a root commit");
 
-        // The fork point is excluded, so only the two diverged commits are rows.
-        let rows = commit_rows(&tmp, &refs, Some(&base), None, Order::Date, ISO, false).unwrap();
+        // The default: the first ref's log, whole -- exactly
+        // 'git log --oneline main', shared history included. feat's own commit
+        // is not a row, it is a missing mark on feat's column.
+        let rows = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rows.len(), 2, "{subjects:?}");
+        assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
+        assert!(subjects.iter().any(|t| t.ends_with("shared")), "{subjects:?}");
+        assert!(!subjects.iter().any(|t| t.ends_with("on-feat")), "{subjects:?}");
         // Each field is parsed off its own tab, so nothing can shift into the
         // wrong column. The date is the format the table promises, single-digit
         // days unpadded.
@@ -4617,46 +4607,25 @@ diff --git a/gone.txt b/gone.txt
         // ISO by default: the shape --from-date takes, so a date read off the
         // table pastes straight back into a filter.
         let dates: Vec<&str> = rows.iter().map(|r| r.date.as_str()).collect();
-        assert_eq!(dates, ["2026-09-15", "2026-01-01"], "{dates:?}");
-        // --author-date-order, so the rows descend by the date they print.
-        assert!(rows[0].text.ends_with("on-feat"), "{:?}", rows[0].text);
-        assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
-        assert!(subjects.iter().any(|t| t.ends_with("on-feat")), "{subjects:?}");
-        assert!(!subjects.iter().any(|t| t.ends_with("shared")), "{subjects:?}");
+        assert_eq!(dates, ["2026-01-01", "2025-12-20"], "{dates:?}");
 
-        // Each diverged commit belongs to exactly one branch; the sets get the
-        // same cut, so the shared commit is in neither.
-        let main_set = ref_shas(&tmp, "main", Some(&base)).unwrap();
-        let feat_set = ref_shas(&tmp, "feat", Some(&base)).unwrap();
-        for row in &rows {
-            let on_main = main_set.contains(&row.sha);
-            let on_feat = feat_set.contains(&row.sha);
-            assert!(on_main ^ on_feat, "{} should be on one branch", row.text);
-            assert_eq!(on_main, row.text.ends_with("on-main"), "{}", row.text);
-        }
-
-        // Without the cut, the shared commit is back and checked on both.
-        let all = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false).unwrap();
-        assert_eq!(all.len(), 3);
-        let shared = all.iter().find(|r| r.text.ends_with("shared")).unwrap();
-        assert!(ref_shas(&tmp, "main", None).unwrap().contains(&shared.sha));
-        assert!(ref_shas(&tmp, "feat", None).unwrap().contains(&shared.sha));
-
-        // What --anchor walks: the first ref alone, uncut -- exactly
-        // 'git log --oneline main'. feat's own commit is not a row, it is a
-        // missing mark on feat's column.
-        let anchored = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
-        let subjects: Vec<&str> = anchored.iter().map(|r| r.text.as_str()).collect();
-        assert_eq!(anchored.len(), 2, "{subjects:?}");
-        assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
-        assert!(subjects.iter().any(|t| t.ends_with("shared")), "{subjects:?}");
-        assert!(!subjects.iter().any(|t| t.ends_with("on-feat")), "{subjects:?}");
-        // The sets are uncut too, so the columns answer for the whole history:
-        // feat has the shared commit and not the one that is only on main.
+        // The sets are whole too, so the columns answer for a branch's entire
+        // history: feat has the shared commit and not the one only main has.
         let feat_all = ref_shas(&tmp, "feat", None).unwrap();
-        for row in &anchored {
+        for row in &rows {
             assert_eq!(feat_all.contains(&row.sha), row.text.ends_with("shared"), "{}", row.text);
         }
+
+        // --union: every ref contributes rows, so feat's commit is one too, and
+        // the shared commit is checked on both.
+        let union = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false).unwrap();
+        let subjects: Vec<&str> = union.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(union.len(), 3, "{subjects:?}");
+        // --author-date-order, so the rows descend by the date they print.
+        assert!(union[0].text.ends_with("on-feat"), "{:?}", union[0].text);
+        let shared = union.iter().find(|r| r.text.ends_with("shared")).unwrap();
+        assert!(ref_shas(&tmp, "main", None).unwrap().contains(&shared.sha));
+        assert!(feat_all.contains(&shared.sha));
 
         // -n caps the rows, newest first.
         let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date, ISO, false).unwrap();
@@ -4671,7 +4640,7 @@ diff --git a/gone.txt b/gone.txt
         let within = reachable_from(&tmp, &on_main.sha).unwrap();
         assert!(within.contains(&on_main.sha), "--to-id must keep its own commit");
         // 'shared' is on-main's parent: strictly older, and reachable from it.
-        let shared = all.iter().find(|r| r.text.ends_with("shared")).unwrap();
+        let shared = union.iter().find(|r| r.text.ends_with("shared")).unwrap();
         assert!(older.contains(&shared.sha));
         assert!(within.contains(&shared.sha));
         // The root commit has no parents, so nothing is older than it -- the

@@ -362,16 +362,25 @@ rm -f "$CODE/myapp-feature-login/uncommitted.txt"
 # feature/login, 'init' shared by both. That makes every cell predictable --
 # one commit per column, and a shared one that must not appear at all.
 # A single target reads like 'merged' does: N against the worktree you are
-# standing in. The suite runs from $APP, which is worktree 1.
-check "commits single target"        exit=0 out="loginside" -- "$didx" commits
+# standing in. The suite runs from $APP, which is worktree 1 -- so the rows are
+# main's log and login is the check column.
+check "commits single target"        exit=0 out="mainside" -- "$didx" commits
 check "commits single names both"    exit=0 out="feature/login" -- "$didx" commits
 check "commits single takes flags"   exit=0 out="mainside" -- "$didx" commits --author Test
 # Standing in the one you named, the table would compare it with itself.
 check "commits single self errors"   exit=1 err="standing in" -- 1 commits
 
 check "commits heads the columns"    exit=0 out="feature/login" -- "1,$didx" commits
-check "commits lists both sides"     exit=0 out="mainside" -- "1,$didx" commits
-check "commits lists the other side" exit=0 out="loginside" -- "1,$didx" commits
+check "commits lists its own side"   exit=0 out="mainside" -- "1,$didx" commits
+# login's own commit is not a row by default: naming a worktree adds a column.
+lonly="$("$BIN" "1,$didx" commits 2>/dev/null)"
+lcmd="$(fmt_cmd "1,$didx" commits)"
+case "$lonly" in
+  *loginside*) report FAIL HAPPY "commits anchors on the first" "$lcmd" "'loginside' is not main's: '$lonly'" ;;
+  *)           report PASS HAPPY "commits anchors on the first" "$lcmd" ;;
+esac
+check "commits --union adds the rest" exit=0 out="loginside" -- "1,$didx" commits --union
+check "commits --any spells --union"  exit=0 out="loginside" -- "1,$didx" commits --any
 check "commits heads the author col" exit=0 out="author" -- "1,$didx" commits
 check "commits names the author"     exit=0 out="Test" -- "1,$didx" commits
 check "commits heads the subject col" exit=0 out="subject" -- "1,$didx" commits
@@ -385,15 +394,12 @@ check "commits human + time"         exit=0 out=", $(date +%Y) " -- "1,$didx" co
 # A date read off the table pastes back into a filter unchanged.
 check "commits ISO round-trips"      exit=0 out="mainside" -- "1,$didx" commits --from-date "$(date +%F)"
 
-# The cut is the point: a shared history would check in every column and say
-# nothing, so it is excluded until --all asks for it.
-shared="$("$BIN" "1,$didx" commits 2>/dev/null)"
-scmd="$(fmt_cmd "1,$didx" commits)"
-case "$shared" in
-  *init*) report FAIL HAPPY "commits cuts shared history" "$scmd" "'init' still listed: '$shared'" ;;
-  *)      report PASS HAPPY "commits cuts shared history" "$scmd" ;;
-esac
-check "commits --all adds shared"    exit=0 out="init" -- "1,$didx" commits --all
+# Nothing is cut at the fork: the rows are the whole log, so the shared commit
+# is a row -- checked in every column, which is the answer 'everyone has this'.
+check "commits keeps shared history" exit=0 out="init" -- "1,$didx" commits
+# The flag that used to ask for it is gone, and says where the question went.
+check "commits --all is gone"        exit=1 err="no '--all' for commits" -- "1,$didx" commits --all
+check "commits --all points at union" exit=1 err="--union" -- "1,$didx" commits --all
 
 # A row is checked only where the branch really has the commit. The subject is
 # the last field now, so login's mark -- the last column -- is the one before
@@ -412,10 +418,10 @@ check "commits takes three worktrees" exit=0 out="feature/logout" -- "1,$didx,$o
 
 # --topo reorders; it never drops or invents rows. Same set, same count.
 check "commits --topo keeps the rows" exit=0 out="mainside" -- "1,$didx" commits --topo
-check "commits --topo-order spelling" exit=0 out="loginside" -- "1,$didx" commits --topo-order
-dcount="$("$BIN" "1,$didx" commits 2>/dev/null | grep -cE 'mainside|loginside')"
-tcount="$("$BIN" "1,$didx" commits --topo 2>/dev/null | grep -cE 'mainside|loginside')"
-tcmd="$(fmt_cmd "1,$didx" commits --topo)"
+check "commits --topo-order spelling" exit=0 out="loginside" -- "1,$didx" commits --union --topo-order
+dcount="$("$BIN" "1,$didx" commits --union 2>/dev/null | grep -cE 'mainside|loginside')"
+tcount="$("$BIN" "1,$didx" commits --union --topo 2>/dev/null | grep -cE 'mainside|loginside')"
+tcmd="$(fmt_cmd "1,$didx" commits --union --topo)"
 if [ "$dcount" = "$tcount" ]; then
   report PASS HAPPY "commits --topo same row set" "$tcmd  # $tcount rows either way"
 else
@@ -484,8 +490,8 @@ mainsha="$(cd "$APP" && git rev-parse --short HEAD)"
 check "commits --from-id keeps its own" exit=0 out="$mainsha" -- "1,$didx" commits --from-id "$mainsha"
 check "commits --to-id keeps its own"   exit=0 out="$mainsha" -- "1,$didx" commits --to-id "$mainsha"
 # ...and --to-id drops what the named commit cannot reach: login's own branch.
-toid="$("$BIN" "1,$didx" commits --to-id "$mainsha" 2>/dev/null)"
-tcmd="$(fmt_cmd "1,$didx" commits --to-id "$mainsha")"
+toid="$("$BIN" "1,$didx" commits --union --to-id "$mainsha" 2>/dev/null)"
+tcmd="$(fmt_cmd "1,$didx" commits --union --to-id "$mainsha")"
 case "$toid" in
   *loginside*) report FAIL HAPPY "commits --to-id bounds the walk" "$tcmd" "loginside is unreachable from main: '$toid'" ;;
   *)           report PASS HAPPY "commits --to-id bounds the walk" "$tcmd" ;;
@@ -570,25 +576,26 @@ psha="$(cd "$CODE/myapp-feature-login" && git rev-parse HEAD)"
 ( cd "$APP" && git cherry-pick "$psha" >/dev/null 2>&1 )
 # LC_ALL=C, or sort collates '✓' and '≈' as equal -- they are symbols, which a
 # UTF-8 locale ignores when comparing -- and -u folds the two rows into one.
-crow="$("$BIN" "1,$didx" commits 2>/dev/null | awk '/cherrypicked-work/{print $(NF-2)"|"$(NF-1)}' | LC_ALL=C sort -u | tr '\n' ' ')"
-ccmd="$(fmt_cmd "1,$didx" commits)"
+# --union, or login's original is not a row and only main's copy can be seen.
+crow="$("$BIN" "1,$didx" commits --union 2>/dev/null | awk '/cherrypicked-work/{print $(NF-2)"|"$(NF-1)}' | LC_ALL=C sort -u | tr '\n' ' ')"
+ccmd="$(fmt_cmd "1,$didx" commits --union)"
 # Two rows now carry that patch: main's copy (✓ ≈) and login's original (≈ ✓).
 if [ "$crow" = "≈|✓ ✓|≈ " ]; then
   report PASS HAPPY "commits marks a cherry-pick" "$ccmd  # ≈ = same patch, other sha"
 else
   report FAIL HAPPY "commits marks a cherry-pick" "$ccmd" "wanted '≈|✓ ✓|≈ ', got '$crow'"
 fi
-check "commits --no-cherry drops ≈"   exit=0 err="" -- "1,$didx" commits --no-cherry
-nc="$("$BIN" "1,$didx" commits --no-cherry 2>/dev/null | grep -c "≈")"
-nccmd="$(fmt_cmd "1,$didx" commits --no-cherry)"
+check "commits --no-cherry drops ≈"   exit=0 err="" -- "1,$didx" commits --union --no-cherry
+nc="$("$BIN" "1,$didx" commits --union --no-cherry 2>/dev/null | grep -c "≈")"
+nccmd="$(fmt_cmd "1,$didx" commits --union --no-cherry)"
 if [ "$nc" = 0 ]; then
   report PASS HAPPY "commits --no-cherry is plain" "$nccmd  # no ≈ without the walk"
 else
   report FAIL HAPPY "commits --no-cherry is plain" "$nccmd" "$nc rows still marked ≈"
 fi
 # '≈' must mean something: work nobody picked still reads as absent.
-lrow="$("$BIN" "1,$didx" commits 2>/dev/null | awk '/loginside/{print $(NF-1)}')"
-lcmd="$(fmt_cmd "1,$didx" commits)"
+lrow="$("$BIN" "1,$didx" commits --union 2>/dev/null | awk '/loginside/{print $(NF-1)}')"
+lcmd="$(fmt_cmd "1,$didx" commits --union)"
 if [ "$lrow" = "✓" ]; then
   report PASS HAPPY "commits leaves unpicked work" "$lcmd  # loginside: not on main, not ≈"
 else

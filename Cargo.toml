@@ -1,6 +1,6 @@
 [package]
 name = "git-wt"
-version = "1.2.7"
+version = "1.2.8"
 edition = "2021"
 description = "Create git worktrees in sibling directories named <repo>-<branch>"
 

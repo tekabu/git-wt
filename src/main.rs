@@ -21,9 +21,9 @@ USAGE:
     git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path]
                                  List, optional fuzzy filter; --col picks/orders
                                  columns (1=id, 2=branch, 3=dir, 4=status,
-                                 5=last-commit, 6=merged). --show-path (-p) adds the
-                                 dir column, which a terminal leaves out; --long shows
-                                 id/branch/dir/status/last; --short is a one-line
+                                 5=last-commit, 6=merged, 7=merged-ref, 8=merged-at).
+                                 --show-path (-p) adds the dir column, which a terminal
+                                 leaves out; --long shows id/branch/dir/status/last; --short
                                  id+branch+status summary.
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
@@ -35,6 +35,7 @@ USAGE:
     git-wt <N>,<M> merged        Is M's branch already in N's branch?
     git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
     git-wt <N> merged            Is N's branch already in the current branch?
+    git-wt <N> merged --others   List all worktrees; show which are merged into N
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<M>[,...] commits Table: which commit is on which branch
     git-wt <N> commits           Same, N against the worktree you are in
@@ -423,7 +424,22 @@ MERGE:
     'ours'/'theirs' are git's -X strategy options, so they settle only the
     hunks that actually collide -- the rest of both sides still merges. They
     are applied while the merge is computed, so they cannot join a merge that
-    has already stopped: git-wt offers to abort and redo it instead.
+    has already stopped: git-wt offers to abort and redo it instead.\
+
+MERGED:\
+    Ask whether one branch is already contained in another.\
+\
+        git-wt 1,2 merged             # is 2's branch in 1's branch?\
+        git-wt 1 merged feat/x        # is feat/x in worktree 1's branch?\
+        git-wt 1 merged               # is worktree 1's branch in the current branch?\
+        git-wt 1 merged --others      # list every worktree against worktree 1\
+        git-wt 1 merged --others -p   # include the path column\
+\
+    The normal forms answer yes/no, exiting 0 for \"already merged\" and nonzero\
+    for \"ahead\". The `--others` form prints a table with a `merged` column and\
+    a `merged-at` column showing when the source branch was last merged into the\
+    selected branch. `merged-at` is '-' for fast-forward merges and for branches\
+    that are not yet merged.
 
 ADD:
     The worktree directory is a sibling of the repo root, named
@@ -646,6 +662,22 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
         }
         "merged" => {
             let args = &rest[1..];
+            // `--others` asks for a table, not a yes/no answer.
+            if args.iter().any(|a| a == "--others") {
+                let show_path = show_path_from_rest(args);
+                let extra: Vec<&str> = args
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|a| *a != "--others" && *a != "-p" && *a != "--show-path")
+                    .collect();
+                if !extra.is_empty() {
+                    return Err(format!(
+                        "--others takes no arguments (got '{}')\nTry 'git-wt --help'",
+                        extra.join("', '")
+                    ));
+                }
+                return cmd_merged_others(root, &trees, idx, show_path);
+            }
             if args.len() > 1 {
                 return Err("too many arguments\nTry 'git-wt --help'".into());
             }
@@ -843,6 +875,11 @@ fn check_index(n: usize, len: usize) -> Result<usize, String> {
 // Commands
 // ---------------------------------------------------------------------------
 
+/// True when a slice of arguments contains `-p` or `--show-path`.
+fn show_path_from_rest(args: &[String]) -> bool {
+    args.iter().any(|a| a == "-p" || a == "--show-path")
+}
+
 /// Parse `list` arguments (an optional SEARCH plus `--col`) then list. Shared
 /// by `list`/`ls`, the no-args default, and a bare leading `--col`.
 fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
@@ -914,7 +951,8 @@ fn cmd_list(
     let color = color_enabled(stdout_tty);
     let explicit = cols.is_some();
 
-    // Columns to show, in order: 1=id, 2=branch, 3=dir, 4=status, 5=last.
+    // Columns to show, in order: 1=id, 2=branch, 3=dir, 4=status, 5=last-commit,
+    // 6=merged-into-current, 7=merged-into-ref, 8=merged-at.
     // Without --col: Short is a compact summary, Long shows everything, and
     // Normal enriches only on a TTY so a piped `git-wt list` keeps the plain
     // id/branch/dir contract.
@@ -936,17 +974,25 @@ fn cmd_list(
     let need_status = color || cols.contains(&4);
     let need_last = cols.contains(&5);
     let need_merged = cols.contains(&6);
+    let need_merged_ref = cols.contains(&7);
+    let need_merged_at = cols.contains(&8);
     let header = !explicit && stdout_tty && mode != ListMode::Short;
 
     // Right-align the index to the widest possible so filtered output lines up.
     let numw = trees.len().to_string().len();
 
     // The branch we are standing in; column 6 asks whether each row's branch is
-    // already contained in it.
-    let here = if need_merged { current_ref() } else { String::new() };
+    // already contained in it. Columns 7/8 use the same reference in normal list
+    // mode; the `--others` command overrides the reference explicitly.
+    let here = if need_merged || need_merged_ref || need_merged_at {
+        current_ref()
+    } else {
+        String::new()
+    };
+    let merged_ref = here.clone();
 
     // Per-row metadata, fetched once (read-only git calls).
-    let meta: Vec<(Status, String, String)> = rows
+    let meta: Vec<(Status, String, String, String, String)> = rows
         .iter()
         .map(|(_, w)| {
             let st = if need_status && !w.bare {
@@ -960,7 +1006,12 @@ fn cmd_list(
             } else {
                 String::new()
             };
-            (st, last, merged)
+            let (merged_r, merged_a) = if need_merged_ref || need_merged_at {
+                merged_text_at(root, w, &merged_ref)
+            } else {
+                (String::new(), String::new())
+            };
+            (st, last, merged, merged_r, merged_a)
         })
         .collect();
 
@@ -969,7 +1020,7 @@ fn cmd_list(
     let cells: Vec<Vec<String>> = rows
         .iter()
         .zip(&meta)
-        .map(|((i, w), (st, last, merged))| {
+        .map(|((i, w), (st, last, merged, merged_r, merged_a))| {
             cols.iter()
                 .map(|c| match c {
                     1 => format!("{:>numw$}", i + 1, numw = numw),
@@ -977,7 +1028,9 @@ fn cmd_list(
                     3 => w.path.display().to_string(),
                     4 => status_text(*st).to_string(),
                     5 => last.clone(),
-                    _ => merged.clone(),
+                    6 => merged.clone(),
+                    7 => merged_r.clone(),
+                    _ => merged_a.clone(),
                 })
                 .collect()
         })
@@ -1027,7 +1080,7 @@ fn cmd_list(
         println!("{}", paint(&line, DIM, color));
     }
 
-    for (row, (st, _, _)) in cells.iter().zip(&meta) {
+    for (row, (st, _, _, _, _)) in cells.iter().zip(&meta) {
         let line = render_row(row, &cols, &widths, *st, color);
         println!("{line}");
     }
@@ -1041,8 +1094,10 @@ fn col_header(c: usize) -> &'static str {
         2 => "branch",
         3 => "path",
         4 => "status",
-        5 => "last",
-        _ => "merged",
+        5 => "last-commit",
+        6 => "merged",
+        7 => "merged",
+        _ => "merged-at",
     }
 }
 
@@ -1080,8 +1135,9 @@ fn render_row(
 }
 
 /// Parse `--col` value like "1,2,4" into column ids.
-/// 1=id, 2=branch, 3=dir, 4=status, 5=last-commit, 6=merged.
-const COL_HELP: &str = "1=id, 2=branch, 3=dir, 4=status, 5=last, 6=merged";
+/// 1=id, 2=branch, 3=dir, 4=status, 5=last-commit, 6=merged-into-current,
+/// 7=merged-into-ref, 8=merged-at.
+const COL_HELP: &str = "1=id, 2=branch, 3=dir, 4=status, 5=last-commit, 6=merged, 7=merged-ref, 8=merged-at";
 
 fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
     let mut v = Vec::new();
@@ -1093,7 +1149,7 @@ fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
         let n: usize = p
             .parse()
             .map_err(|_| format!("bad column '{p}' (use {COL_HELP})"))?;
-        if n < 1 || n > 6 {
+        if n < 1 || n > 8 {
             return Err(format!("no column {n} (use {COL_HELP})"));
         }
         v.push(n);
@@ -1203,12 +1259,17 @@ fn merged_text(root: &Path, w: &Worktree, here: &str) -> String {
     let Some(src) = w.branch.as_deref() else {
         return "-".into();
     };
-    match git_cmd(root, &["merge-base", "--is-ancestor", src, here])
+    merged_status_text(root, src, here)
+}
+
+/// Merge status text for a source branch relative to a destination branch.
+fn merged_status_text(root: &Path, src: &str, dest: &str) -> String {
+    match git_cmd(root, &["merge-base", "--is-ancestor", src, dest])
         .output()
     {
         Ok(out) => match out.status.code() {
             Some(0) => "merged".into(),
-            Some(1) => match ahead_count(root, src, here) {
+            Some(1) => match ahead_count(root, src, dest) {
                 Ok(n) => format!("ahead {n}"),
                 Err(_) => "ahead".into(),
             },
@@ -1216,6 +1277,45 @@ fn merged_text(root: &Path, w: &Worktree, here: &str) -> String {
         },
         Err(_) => "-".into(),
     }
+}
+
+/// Merge status text and, if merged, the relative time of the most recent merge
+/// commit on `dest` that made `src` reachable. `-` for not-merged, bare,
+/// fast-forward, or failures.
+fn merged_text_at(root: &Path, w: &Worktree, dest: &str) -> (String, String) {
+    let Some(src) = w.branch.as_deref() else {
+        return ("-".into(), "-".into());
+    };
+    if src == dest {
+        return ("self".into(), "-".into());
+    }
+    let status = merged_status_text(root, src, dest);
+    let at = if status == "merged" {
+        last_merge_date(root, src, dest)
+    } else {
+        "-".into()
+    };
+    (status, at)
+}
+
+/// Relative time of the most recent merge commit on `dest` after `src`.
+/// Returns "-" when no merge commit is found (e.g. fast-forward).
+fn last_merge_date(root: &Path, src: &str, dest: &str) -> String {
+    git_stdout(
+        root,
+        &[
+            "log",
+            "-1",
+            "--ancestry-path",
+            "--merges",
+            "--format=%ar",
+            &format!("{src}..{dest}"),
+        ],
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| "-".into())
 }
 
 /// Case-insensitive subsequence match over "<label> <path>".
@@ -1737,6 +1837,129 @@ fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> Result<(), S
 // ---------------------------------------------------------------------------
 // Merged: git-wt <N> merged [<M|BRANCH>] | git-wt <N>,<M> merged
 // ---------------------------------------------------------------------------
+
+/// List every worktree and whether its branch is already merged into the
+/// selected worktree's branch, plus when it was merged there.
+fn cmd_merged_others(
+    root: &Path,
+    trees: &[Worktree],
+    idx: usize,
+    show_path: bool,
+) -> Result<(), String> {
+    let dest = ref_of(&trees[idx])?;
+    cmd_list_with_ref(root, &dest, show_path)
+}
+
+/// Shared implementation for the "list relative to a reference branch" view.
+/// Used by `cmd_merged_others`; columns 7/8 are the merged-into-ref data.
+fn cmd_list_with_ref(root: &Path, merged_ref: &str, show_path: bool) -> Result<(), String> {
+    let trees = worktrees(root)?;
+    let rows: Vec<(usize, &Worktree)> = trees.iter().enumerate().collect();
+
+    let stdout_tty = std::io::stdout().is_terminal();
+    let color = color_enabled(stdout_tty);
+
+    let cols: Vec<usize> = if stdout_tty {
+        if show_path {
+            vec![1, 2, 3, 4, 5, 7, 8]
+        } else {
+            vec![1, 2, 4, 5, 7, 8]
+        }
+    } else {
+        vec![1, 2, 3, 7, 8]
+    };
+
+    let need_status = color || cols.contains(&4);
+    let need_last = cols.contains(&5);
+    let need_merged_ref = cols.contains(&7);
+    let need_merged_at = cols.contains(&8);
+    let header = stdout_tty;
+
+    let numw = trees.len().to_string().len();
+
+    let meta: Vec<(Status, String, String, String)> = rows
+        .iter()
+        .map(|(_, w)| {
+            let st = if need_status && !w.bare {
+                worktree_status(&w.path)
+            } else {
+                Status::Unknown
+            };
+            let last = if need_last { last_commit(&w.path) } else { String::new() };
+            let (merged_r, merged_a) = if need_merged_ref || need_merged_at {
+                merged_text_at(root, w, merged_ref)
+            } else {
+                (String::new(), String::new())
+            };
+            (st, last, merged_r, merged_a)
+        })
+        .collect();
+
+    let cells: Vec<Vec<String>> = rows
+        .iter()
+        .zip(&meta)
+        .map(|((i, w), (st, last, merged_r, merged_a))| {
+            cols.iter()
+                .map(|c| match c {
+                    1 => format!("{:>numw$}", i + 1, numw = numw),
+                    2 => label(w),
+                    3 => w.path.display().to_string(),
+                    4 => status_text(*st).to_string(),
+                    5 => last.clone(),
+                    7 => merged_r.clone(),
+                    _ => merged_a.clone(),
+                })
+                .collect()
+        })
+        .collect();
+
+    let header_cells: Vec<String> = cols.iter().map(|c| col_header(*c).to_string()).collect();
+    let mut cells = cells;
+
+    let mut widths = vec![0usize; cols.len()];
+    for row in cells.iter().chain(header.then_some(&header_cells)) {
+        for (k, cell) in row.iter().enumerate() {
+            widths[k] = widths[k].max(cell.chars().count());
+        }
+    }
+
+    if let (Some(term), Some(k)) = (term_width(stdout_tty), cols.iter().position(|c| *c == 2)) {
+        let gaps = 2 * (cols.len() - 1);
+        let others: usize = widths
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != k)
+            .map(|(_, w)| w)
+            .sum();
+        let budget = term.saturating_sub(gaps + others);
+        if budget < widths[k] {
+            let cap = budget.max(BRANCH_MIN);
+            for row in cells.iter_mut() {
+                row[k] = ellipsize(&row[k], cap);
+            }
+            widths[k] = cells.iter().map(|r| r[k].chars().count()).max().unwrap_or(0);
+            if header {
+                widths[k] = widths[k].max(header_cells[k].chars().count());
+            }
+        }
+    }
+
+    if header {
+        let line = render_row(&header_cells,
+            &cols,
+            &widths,
+            Status::Unknown,
+            false,
+        );
+        println!("{}", paint(&line, DIM, color));
+    }
+
+    for (row, (st, _, _, _)) in cells.iter().zip(&meta) {
+        let line = render_row(row, &cols, &widths, *st, color);
+        println!("{line}");
+    }
+    Ok(())
+}
 
 /// Report whether `src` is already an ancestor of `dest`.
 ///
@@ -4973,7 +5196,15 @@ mod tests {
     fn parse_cols_accepts_status_last_and_merged() {
         assert_eq!(parse_cols("1,4,5").unwrap(), vec![1, 4, 5]);
         assert_eq!(parse_cols("1,2,6").unwrap(), vec![1, 2, 6]);
-        assert!(parse_cols("7").is_err());
+        assert_eq!(parse_cols("1,7,8").unwrap(), vec![1, 7, 8]);
+        assert!(parse_cols("9").is_err());
+    }
+
+    #[test]
+    fn col_header_uses_last_commit_name() {
+        assert_eq!(col_header(5), "last-commit");
+        assert_eq!(col_header(7), "merged");
+        assert_eq!(col_header(8), "merged-at");
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! Grammar is target-first for existing worktrees (`git-wt <N> <action>`) with
 //! an explicit `add` verb for creation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -108,6 +108,8 @@ COMMITS OPTIONS:
                           first one's log (alias: --any)
         --no-merges       Drop merge commits; keep the work they joined
         --no-cherry       Skip the patch comparison behind '≈' (faster)
+        --pick-id         Add a 'pick' column: the sha the '≈' copy of the
+                          commit carries elsewhere
         --topo            Group each branch's commits, don't interleave
         --reverse         Newest last (alias: --oldest-first)
     -w, --wrap [N]        Let a long subject take N terminal lines, not
@@ -309,6 +311,12 @@ MARKS:
     A picked commit shows twice, once per sha: the original row is '≈' in
     the branch that took it, the copy's row is '≈' in the branch it came
     from. Both are true -- they are two commits carrying one patch.
+
+    '--pick-id' names the other sha: a 'pick' column after 'commit', holding
+    the sha the same patch was committed under elsewhere. It is the row's
+    other half -- the sha to hand 'git show', or to check a pick landed
+    where you meant it to. Rows with no copy leave it blank, and a patch
+    carried under three shas names the first of the others.
 
 SYNC OPTIONS:        (fetch/pull/push; any other git flag is an error, not a passthrough)
     -a, --all             Every worktree, not the ones a list named
@@ -2871,6 +2879,8 @@ struct CommitsArgs {
     md: Option<Option<String>>,
     reverse: bool,
     no_cherry: bool,
+    /// Print the sha the '≈' copy of each row carries elsewhere.
+    pick: bool,
     /// Rows come from every worktree at once, not the first one's log alone.
     union: bool,
     /// Terminal lines a subject may take. Moot off a terminal: nothing is cut.
@@ -2891,6 +2901,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut md = None;
     let mut reverse = false;
     let mut no_cherry = false;
+    let mut pick = false;
     let mut union = false;
     let mut wrap = Wrap::Lines(1);
     let mut subjectw = None;
@@ -2906,6 +2917,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             "--no-merges" => no_merges = true,
             "--reverse" | "--oldest-first" => reverse = true,
             "--no-cherry" => no_cherry = true,
+            "--pick-id" => pick = true,
             "--union" | "--any" => union = true,
             // The count is optional, and only a count or 'full' is read as
             // one: '--wrap --topo' asks for the whole subject, not for a
@@ -2999,9 +3011,17 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             }
         }
     }
+    // The one asks for exactly what the other switches off: rather than let a
+    // '--pick-id' quietly print nothing, say which flag to drop.
+    if pick && no_cherry {
+        return Err(
+            "--pick-id needs the patch comparison that --no-cherry skips: drop one of them"
+                .to_string(),
+        );
+    }
     Ok(CommitsArgs {
-        limit, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, union, wrap,
-        subjectw,
+        limit, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, pick, union,
+        wrap, subjectw,
     })
 }
 
@@ -3250,6 +3270,10 @@ fn cmd_commits(
         equivalents(root, &refs)
     };
 
+    // Which sha the '≈' is pointing at, asked only when the column will print
+    // it: it is a second patch-id walk over the same divergence.
+    let picks = args.pick.then(|| pick_ids(root, &refs));
+
     let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
 
     if let Some(path) = &args.md {
@@ -3260,11 +3284,11 @@ fn cmd_commits(
             if rest.is_empty() { "" } else { " " },
             rest.join(" ")
         );
-        return write_md(Path::new(&file), &rows, &names, &sets, &equiv, &cmd);
+        return write_md(Path::new(&file), &rows, &names, &sets, &equiv, picks.as_ref(), &cmd);
     }
 
     let tty = std::io::stdout().is_terminal();
-    render_commits(&rows, &names, &sets, &equiv, color_enabled(tty), term_width(tty), args.wrap, args.subjectw);
+    render_commits(&rows, &names, &sets, &equiv, picks.as_ref(), color_enabled(tty), term_width(tty), args.wrap, args.subjectw);
     Ok(())
 }
 
@@ -3410,6 +3434,94 @@ fn equivalents(root: &Path, refs: &[String]) -> Vec<HashSet<String>> {
     out
 }
 
+/// Per commit, another sha carrying the same patch: the other half of an `≈`.
+///
+/// `git cherry` answers whether a copy exists, never which one it is, so the
+/// naming is done here: patch-id every commit the refs do not share, group the
+/// shas by patch, and a group of more than one is a patch someone picked. Each
+/// sha in it names the first of its others -- a patch under three shas has no
+/// single answer, and the first is at least a real one.
+///
+/// The walk is bounded at the refs' common merge-base, since a commit every ref
+/// reaches by sha is not a pick to anyone; that is the same divergence `git
+/// cherry` bounds each pair by, done once for all of them. Unrelated histories
+/// have no such base and no shared work either, so the map comes back empty and
+/// the marks keep their `≈` unexplained.
+fn pick_ids(root: &Path, refs: &[String]) -> HashMap<String, String> {
+    let mut base_args = vec!["merge-base", "--octopus"];
+    base_args.extend(refs.iter().map(String::as_str));
+    let base = match git_stdout(root, &base_args) {
+        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return HashMap::new(),
+    };
+
+    // Merges carry no patch of their own, and `git cherry` skips them too.
+    let mut args = vec!["rev-list", "--no-merges"];
+    args.extend(refs.iter().map(String::as_str));
+    args.push("--not");
+    args.push(&base);
+    let Some(pairs) = patch_ids(root, &args) else {
+        return HashMap::new();
+    };
+
+    let mut by_patch: HashMap<String, Vec<String>> = HashMap::new();
+    for (patch, sha) in pairs {
+        by_patch.entry(patch).or_default().push(sha);
+    }
+    let mut out = HashMap::new();
+    for shas in by_patch.values() {
+        for sha in shas {
+            if let Some(other) = shas.iter().find(|s| *s != sha) {
+                out.insert(sha.clone(), other.clone());
+            }
+        }
+    }
+    out
+}
+
+/// `(patch-id, commit)` for every commit `rev_args` lists.
+///
+/// `rev-list | diff-tree --stdin -p | patch-id` is the pipeline `git cherry`
+/// runs internally, and the reason for the pipe rather than three `output()`
+/// calls: the patch text between the stages is the whole diff of the range,
+/// which is worth streaming rather than holding.
+///
+/// A stage that cannot start, or a git too old for `--stable`, gives `None`:
+/// the pick column goes blank, which is what it says for an unpicked commit
+/// anyway. Root commits produce no patch and are simply absent.
+fn patch_ids(root: &Path, rev_args: &[&str]) -> Option<Vec<(String, String)>> {
+    let mut rev = git_cmd(root, rev_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut diff = git_cmd(root, &["diff-tree", "--stdin", "-p"])
+        .stdin(Stdio::from(rev.stdout.take()?))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let out = git_cmd(root, &["patch-id", "--stable"])
+        .stdin(Stdio::from(diff.stdout.take()?))
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let _ = rev.wait();
+    let _ = diff.wait();
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let (patch, sha) = l.split_once(' ')?;
+                Some((patch.to_string(), sha.trim().to_string()))
+            })
+            .collect(),
+    )
+}
+
 /// Every commit sha reachable from `r`, cut at `base` the same way the rows are.
 fn ref_shas(root: &Path, r: &str, base: Option<&str>) -> Result<HashSet<String>, String> {
     let mut args = vec!["rev-list", r];
@@ -3428,6 +3540,17 @@ const MISS: &str = "·";
 /// Not this commit, but this patch: a cherry-pick or a rebase's copy.
 const EQUIV: &str = "≈";
 const ELLIPSIS: char = '…';
+
+/// The header over `--pick-id`'s shas.
+const PICK_HEAD: &str = "pick";
+
+/// A full sha cut to `n`, the way git abbreviates one.
+///
+/// No uniqueness check: git's own `--short` picks a length for the repo, and
+/// this borrows it rather than second-guessing it per sha.
+fn abbrev(sha: &str, n: usize) -> String {
+    sha.chars().take(n).collect()
+}
 
 /// The narrowest `list` will cut the branch column to, however tight the
 /// terminal gets. Wide enough to hold the header and a name's distinguishing
@@ -3596,6 +3719,7 @@ fn write_md(
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
+    picks: Option<&HashMap<String, String>>,
     cmd: &str,
 ) -> Result<(), String> {
     let mut out = String::new();
@@ -3608,22 +3732,47 @@ fn write_md(
     out.push_str(&format!("- Commits: {}\n", rows.len()));
     // The glyphs are the whole content of the table; a reader who was not at
     // the terminal has nowhere else to learn them.
-    out.push_str("- Legend: `✓` has the commit · `≈` has the same patch under another sha · `·` has neither\n\n");
+    out.push_str("- Legend: `✓` has the commit · `≈` has the same patch under another sha · `·` has neither\n");
+    if picks.is_some() {
+        out.push_str("- `pick`: the sha that other copy of the patch was committed under\n");
+    }
+    out.push('\n');
 
-    out.push_str("| commit | author | date |");
+    out.push_str("| commit |");
+    if picks.is_some() {
+        out.push_str(&format!(" {PICK_HEAD} |"));
+    }
+    out.push_str(" author | date |");
     for n in names {
         out.push_str(&format!(" {} |", md_cell(n)));
     }
-    out.push_str(" subject |\n|---|---|---|");
+    out.push_str(" subject |\n|---|");
+    if picks.is_some() {
+        out.push_str("---|");
+    }
+    out.push_str("---|---|");
     for _ in names {
         out.push_str(":-:|");
     }
     out.push_str("---|\n");
 
+    // The shas the rows print, so a picked sha is one the table itself names.
+    let shaw = rows
+        .iter()
+        .map(|r| r.short.chars().count())
+        .max()
+        .unwrap_or(0);
+
     for row in rows {
+        out.push_str(&format!("| `{}` |", md_cell(&row.short)));
+        if let Some(p) = picks {
+            match p.get(&row.sha) {
+                Some(s) => out.push_str(&format!(" `{}` |", md_cell(&abbrev(s, shaw)))),
+                None => out.push_str("  |"),
+            }
+        }
         out.push_str(&format!(
-            "| `{}` | {} | {} |",
-            md_cell(&row.short),
+            " {} | {} |",
             md_cell(&row.author),
             md_cell(&row.date)
         ));
@@ -3706,6 +3855,7 @@ fn render_commits(
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
+    picks: Option<&HashMap<String, String>>,
     color: bool,
     width: Option<usize>,
     wrap: Wrap,
@@ -3720,6 +3870,12 @@ fn render_commits(
         .chain(std::iter::once("commit".len()))
         .max()
         .unwrap_or(0);
+
+    // A picked sha is abbreviated to the same length the rows' own shas are, so
+    // the two columns read as the one kind of thing they are -- and so a sha
+    // named here is a sha you can find in the commit column of another row.
+    let pickw = picks.map(|_| shaw.max(PICK_HEAD.len()));
+    let pickcol = pickw.map_or(0, |w| w + 2);
 
     // The author column is sized to its longest name, but a name is not worth
     // unbounded width when the subject is competing for the same line; on a
@@ -3745,7 +3901,7 @@ fn render_commits(
 
     // Everything left of the subject, which is both what the subject has to
     // fit beside and what a wrapped line is indented past to line up under it.
-    let fixed = shaw + 2 + authw + 2 + datew + marksw + 2;
+    let fixed = shaw + 2 + pickcol + authw + 2 + datew + marksw + 2;
 
     // What the subject gets. A width asked for is the width, terminal or not:
     // an explicit one is an answer, where the terminal's is only a default --
@@ -3784,10 +3940,11 @@ fn render_commits(
     // an unpadded day makes 'Jan. 1, 2026' a character shorter than
     // 'Sep. 15, 2026'; left-aligned, that ragged edge is the first thing you
     // see. ISO is one width, so the alignment is moot there -- and free.
-    let mut head = format!(
-        "{:<shaw$}  {:<authw$}  {:>datew$}",
-        "commit", "author", "date"
-    );
+    let mut head = format!("{:<shaw$}  ", "commit");
+    if let Some(w) = pickw {
+        head.push_str(&format!("{PICK_HEAD:<w$}  "));
+    }
+    head.push_str(&format!("{:<authw$}  {:>datew$}", "author", "date"));
     for (n, w) in names.iter().zip(&widths) {
         head.push_str("  ");
         head.push_str(&format!("{n:<w$}"));
@@ -3797,6 +3954,17 @@ fn render_commits(
 
     for (row, text) in rows {
         let mut line = format!("{:<shaw$}  ", row.short);
+        if let Some(w) = pickw {
+            // Blank, not '·': the column names a sha or it has nothing to say,
+            // where the marks' '·' is an answer about a branch.
+            let cell = picks
+                .and_then(|p| p.get(&row.sha))
+                .map(|s| abbrev(s, shaw))
+                .unwrap_or_default();
+            // Yellow, like the '≈' it explains.
+            line.push_str(&paint(&format!("{cell:<w$}"), YELLOW, color));
+            line.push_str("  ");
+        }
         // Dim, so the marks and the subject stay what the eye lands on.
         let meta = format!("{:<authw$}  {:>datew$}", row.author, row.date);
         line.push_str(&paint(&meta, DIM, color));
@@ -5044,6 +5212,13 @@ diff --git a/gone.txt b/gone.txt
         assert!(parse(&["-n", "x"]).unwrap_err().contains("bad count 'x'"));
         assert!(parse(&["-n"]).unwrap_err().contains("needs a count"));
         assert!(parse(&["--stat"]).unwrap_err().contains("unexpected argument"));
+
+        // The pick column is asked for, never assumed: it costs a second
+        // patch-id walk.
+        assert!(!parse(&[]).unwrap().pick);
+        assert!(parse(&["--pick-id"]).unwrap().pick);
+        // And it cannot be asked for and switched off at once.
+        assert!(parse(&["--pick-id", "--no-cherry"]).unwrap_err().contains("drop one of them"));
     }
 
     #[test]
@@ -5616,6 +5791,22 @@ diff --git a/gone.txt b/gone.txt
         // commit reads as absent again.
         let none = vec![HashSet::new(); refs.len()];
         assert_eq!(Mark::of(&feat_fix, &sets[main_col], &none[main_col]), Mark::Missing);
+
+        // --pick-id's column: each copy of the fix names the other's sha, and
+        // the work nobody picked names nothing.
+        let picks = pick_ids(&tmp, &refs);
+        assert_eq!(picks.get(&main_fix), Some(&feat_fix));
+        assert_eq!(picks.get(&feat_fix), Some(&main_fix));
+        assert_eq!(picks.get(&feat_only), None);
+        // Every '≈' the marks report is a sha the column can name: the two
+        // answers come from one patch comparison and must not disagree.
+        for (col, r) in refs.iter().enumerate() {
+            for sha in ref_shas(&tmp, r, None).unwrap() {
+                if mark(&sha, col) == Mark::Equivalent {
+                    assert!(picks.contains_key(&sha), "no pick for '≈' {sha}");
+                }
+            }
+        }
 
         std::fs::remove_dir_all(&tmp).ok();
     }

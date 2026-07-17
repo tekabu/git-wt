@@ -102,6 +102,9 @@ COMMITS OPTIONS:
         --all             Every commit, not just the diverged ones
         --no-merges       Drop merge commits; keep the work they joined
         --topo            Group each branch's commits, don't interleave
+        --reverse         Newest last (alias: --oldest-first)
+        --md [FILE]       Write a markdown table instead of printing one
+                          (default: commits_<date>_<time>.md in the cwd)
         --show-time       Add the time to the date column, 24-hour
         --date-human      'Jan. 31, 2026' instead of '2026-01-31'
         --author NAME     Only NAME's commits (fuzzy, like list's SEARCH)
@@ -169,6 +172,24 @@ COMMITS FILTERS:
     day, even though the column only shows the day. '--show-time' prints
     that time, 24-hour, which is what tells a busy day's rows apart.
 
+COMMITS MD:
+    '--md' writes the table to a markdown file rather than the terminal.
+    The file records the command that made it, so a report pasted into an
+    issue says how to reproduce itself.
+
+        git-wt 1,2 commits --md              -> commits_<date>_<time>.md
+        git-wt 1,2 commits --md report.md    -> that path, overwritten
+        git-wt 1,2 commits --no-merges --md  # filters apply as usual
+
+    The default name is stamped to the second, so a re-run never eats the
+    last report; a name you pass is yours, and is overwritten. The path is
+    optional, so a flag may follow '--md' -- it is read as a flag, never
+    as a filename.
+
+    Subjects are whole in a file: there is no right edge to run out of, so
+    nothing is truncated. A '|' in a subject is escaped rather than left
+    to end the cell and shift the columns after it.
+
 COMMITS DATES:
     The date column is ISO, the same shape the filters take, so a date
     read off the table pastes straight back into --from-date. It also
@@ -201,7 +222,10 @@ COMMITS DATES:
     Within that, two readings. By default the rows are newest-first across
     every branch at once, so a row's neighbors are its contemporaries --
     what happened when. '--topo' keeps each branch's line of history in one
-    block instead -- what each branch did.
+    block instead -- what each branch did. Neither depends on --show-time:
+    the order always reads the full timestamp, and --show-time only prints
+    what it read. '--reverse' puts the newest last, after the -n cap, so
+    the rows are the same ones read bottom-up.
 
         git-wt 1,2,3 commits --topo
 
@@ -2364,6 +2388,9 @@ struct CommitsArgs {
     topo: bool,
     no_merges: bool,
     fmt: DateFmt,
+    /// `Some(None)` is `--md` with no path: a timestamped name in the cwd.
+    md: Option<Option<String>>,
+    reverse: bool,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
@@ -2376,7 +2403,9 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut topo = false;
     let mut no_merges = false;
     let mut fmt = DateFmt { human: false, time: false };
-    let mut it = args.iter();
+    let mut md = None;
+    let mut reverse = false;
+    let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
             "-n" | "--limit" => {
@@ -2387,8 +2416,19 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             "--all" => all = true,
             "--topo" | "--topo-order" => topo = true,
             "--no-merges" => no_merges = true,
+            "--reverse" | "--oldest-first" => reverse = true,
             "--show-time" => fmt.time = true,
             "--date-human" => fmt.human = true,
+            // The path is optional, so the next word is only it when it is not
+            // another flag: 'commits --md --topo' asks for the default name.
+            "--md" => {
+                let path = match it.peek() {
+                    Some(v) if !v.starts_with('-') => Some((*it.next().unwrap()).clone()),
+                    _ => None,
+                };
+                md = Some(path);
+            }
+            s if s.starts_with("--md=") => md = Some(Some(s["--md=".len()..].to_string())),
             "--date" | "-d" => {
                 let v = it.next().ok_or(DATE_MISSING)?;
                 dates.push(parse_date_filter(v)?);
@@ -2435,7 +2475,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             }
         }
     }
-    Ok(CommitsArgs { limit, all, dates, from, to, author, topo, no_merges, fmt })
+    Ok(CommitsArgs { limit, all, dates, from, to, author, topo, no_merges, fmt, md, reverse })
 }
 
 const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
@@ -2603,6 +2643,12 @@ fn cmd_commits(
     if let Some(n) = args.limit {
         rows.truncate(n);
     }
+    // After the cap, not before: '-n 10 --reverse' is the same ten commits as
+    // '-n 10', read bottom-up. Reversing first would cap the oldest ten
+    // instead, which is a different question nobody asked.
+    if args.reverse {
+        rows.reverse();
+    }
 
     if rows.is_empty() {
         // A filter that matched nothing is a different story from a history
@@ -2628,6 +2674,18 @@ fn cmd_commits(
         .collect::<Result<_, _>>()?;
 
     let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
+
+    if let Some(path) = &args.md {
+        let file = path.clone().unwrap_or_else(md_filename);
+        let cmd = format!(
+            "git-wt {} commits{}{}",
+            idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
+            if rest.is_empty() { "" } else { " " },
+            rest.join(" ")
+        );
+        return write_md(Path::new(&file), &rows, &names, &sets, &cmd);
+    }
+
     let tty = std::io::stdout().is_terminal();
     render_commits(&rows, &names, &sets, color_enabled(tty), term_width(tty));
     Ok(())
@@ -2846,6 +2904,88 @@ fn ellipsize_wide(s: &str, max: usize) -> String {
     }
     out.push(ELLIPSIS);
     out
+}
+
+/// `commits_2026-07-17_14-30-05.md`: ISO, so the names sort the way the dates
+/// do, and stamped to the second so a re-run never silently eats the last one.
+///
+/// The stamp comes from `date`, for the same reason the terminal width comes
+/// from `tput`: turning a unix timestamp into the user's local calendar needs
+/// a timezone database this crate has no dependency for.
+fn md_filename() -> String {
+    let stamp = Command::new("date")
+        .arg("+%Y-%m-%d_%H-%M-%S")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            // No `date`: seconds since the epoch still sorts and still differs
+            // from the last run, which is all the name owes anyone.
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_else(|_| "report".into())
+        });
+    format!("commits_{stamp}.md")
+}
+
+/// Escape a cell so its content cannot be read as table syntax.
+///
+/// A `|` in a commit subject would end the cell and shift every column after
+/// it -- the markdown twin of the emoji-width bug, and this one silently
+/// invents columns rather than merely misaligning them.
+fn md_cell(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('|', "\\|")
+}
+
+/// Write the table as a markdown file, and say where it went.
+///
+/// Subjects are never truncated here: a file has no right edge to run out of,
+/// so the terminal's budget would only lose information the reader asked for.
+fn write_md(
+    path: &Path,
+    rows: &[CommitRow],
+    names: &[String],
+    sets: &[HashSet<String>],
+    cmd: &str,
+) -> Result<(), String> {
+    let mut out = String::new();
+    out.push_str("# git-wt commits\n\n");
+    out.push_str(&format!("- Command: `{}`\n", md_cell(cmd)));
+    out.push_str(&format!("- Worktrees: {}\n", names.iter()
+        .map(|n| format!("`{}`", md_cell(n)))
+        .collect::<Vec<_>>()
+        .join(", ")));
+    out.push_str(&format!("- Commits: {}\n\n", rows.len()));
+
+    out.push_str("| commit | author | date |");
+    for n in names {
+        out.push_str(&format!(" {} |", md_cell(n)));
+    }
+    out.push_str(" subject |\n|---|---|---|");
+    for _ in names {
+        out.push_str(":-:|");
+    }
+    out.push_str("---|\n");
+
+    for row in rows {
+        out.push_str(&format!(
+            "| `{}` | {} | {} |",
+            md_cell(&row.short),
+            md_cell(&row.author),
+            md_cell(&row.date)
+        ));
+        for set in sets {
+            out.push_str(if set.contains(&row.sha) { " ✓ |" } else { " · |" });
+        }
+        out.push_str(&format!(" {} |\n", md_cell(&row.text)));
+    }
+
+    std::fs::write(path, out).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    eprintln!("Wrote {} ({} commits)", path.display(), rows.len());
+    Ok(())
 }
 
 /// Print the table: sha, author, date, a mark per branch, then the subject.
@@ -4155,6 +4295,20 @@ diff --git a/gone.txt b/gone.txt
         // bound, nor collide with --date's value parsing.
         assert!(parse(&["--date-human"]).unwrap().dates.is_empty());
 
+        assert!(!parse(&[]).unwrap().reverse);
+        assert!(parse(&["--reverse"]).unwrap().reverse);
+        assert!(parse(&["--oldest-first"]).unwrap().reverse);
+
+        // --md's path is optional, so the flag after it must not be eaten:
+        // 'commits --md --topo' asks for the default name AND topo order.
+        assert_eq!(parse(&[]).unwrap().md, None);
+        assert_eq!(parse(&["--md"]).unwrap().md, Some(None));
+        assert_eq!(parse(&["--md", "out.md"]).unwrap().md, Some(Some("out.md".into())));
+        assert_eq!(parse(&["--md=out.md"]).unwrap().md, Some(Some("out.md".into())));
+        let a = parse(&["--md", "--topo"]).unwrap();
+        assert_eq!(a.md, Some(None), "--topo is a flag, not a filename");
+        assert!(a.topo, "--topo must still take effect");
+
         assert!(parse(&["--from-id"]).unwrap_err().contains("--from-id needs a commit"));
         assert!(parse(&["--from-date", "nope"]).unwrap_err().contains("want YYYY-MM-DD"));
         // A bare --from could be either bound; it names neither.
@@ -4162,6 +4316,31 @@ diff --git a/gone.txt b/gone.txt
         // git's spellings point at ours instead of reading as a typo.
         assert!(parse(&["--since", "2026-01-01"]).unwrap_err().contains("--from-date"));
         assert!(parse(&["--until", "2026-01-01"]).unwrap_err().contains("--to-date"));
+    }
+
+    #[test]
+    fn md_cells_cannot_invent_columns() {
+        assert_eq!(md_cell("plain subject"), "plain subject");
+        // A '|' would end the cell and shift every column after it -- the
+        // markdown twin of the emoji-width bug, and a silent one.
+        assert_eq!(md_cell("fix: a|pipe"), "fix: a\\|pipe");
+        assert_eq!(md_cell("a|b|c"), "a\\|b\\|c");
+        // The backslash goes first, or escaping the pipe would leave a stray
+        // '\' that eats the escape we just added.
+        assert_eq!(md_cell("back\\slash"), "back\\\\slash");
+        assert_eq!(md_cell("both\\|here"), "both\\\\\\|here");
+        // Emoji and CJK pass through: a file has no columns to misalign.
+        assert_eq!(md_cell("🚀 ship 日本語"), "🚀 ship 日本語");
+    }
+
+    #[test]
+    fn md_filename_is_stamped_and_sorts() {
+        let name = md_filename();
+        assert!(name.starts_with("commits_"), "{name}");
+        assert!(name.ends_with(".md"), "{name}");
+        // No path separator: it lands in the cwd, and cannot be read as a
+        // directory that may not exist.
+        assert!(!name.contains('/'), "{name}");
     }
 
     #[test]

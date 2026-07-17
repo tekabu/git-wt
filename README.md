@@ -393,6 +393,48 @@ git-wt 1,2 commits --date-human --show-time # Jan. 31, 2026 14:30:05
 since it isn't what `--from-date` accepts. What `--date` compares never changes
 shape, whatever the column is spelled as — the two are independent.
 
+### Writing a report
+
+```sh
+git-wt 1,2 commits --md              # -> commits_2026-07-17_14-30-05.md
+git-wt 1,2 commits --md report.md    # -> that path
+git-wt 1,2,3 commits --no-merges --md   # filters apply as usual
+```
+
+`--md` writes the table as markdown instead of printing it. The file records
+the command that produced it, so a report pasted into an issue says how to
+reproduce itself:
+
+```markdown
+# git-wt commits
+
+- Command: `git-wt 1,4 commits -n 3 --md`
+- Worktrees: `main`, `live-diff`
+- Commits: 3
+
+| commit | author | date | main | live-diff | subject |
+|---|---|:-:|:-:|---|
+| `b1eb4c5` | Nino | 2026-07-17 | ✓ | · | build: bump version to 1.2.4 |
+```
+
+The default name is stamped to the second, so a re-run never eats the last
+report; a name you pass is yours, and is overwritten. The path is optional, so
+a flag may follow `--md` — `commits --md --topo` writes the default name *and*
+groups by branch, rather than saving to a file called `--topo`.
+
+Subjects are whole in a file — no right edge to run out of, so nothing is
+truncated — and a `|` in a subject is escaped rather than left to end the cell
+and shift every column after it.
+
+### Newest last
+
+```sh
+git-wt 1,2 commits --reverse        # alias: --oldest-first
+```
+
+Applied after the `-n` cap, so `-n 10 --reverse` is the same ten commits as
+`-n 10`, read bottom-up — not the ten *oldest*.
+
 ### Dropping merge commits
 
 ```sh
@@ -821,6 +863,9 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits --no-merges` | Drop merge rows; keep the commits they joined |
 | `git-wt 1,2 commits --show-time` | Add the time to the date column, 24-hour |
 | `git-wt 1,2 commits --date-human` | `Jan. 31, 2026` instead of the default `2026-01-31` |
+| `git-wt 1,2 commits --reverse` | Newest last (also `--oldest-first`) |
+| `git-wt 1,2 commits --md` | Write `commits_<date>_<time>.md` in the current directory |
+| `git-wt 1,2 commits --md report.md` | Write that path, overwriting it |
 | `git-wt 1,2 commits --author nes` | Only commits whose author fuzzy-matches `nes` |
 | `git-wt 1,2 commits --date '>=2026-01-01'` | Commits on that day or after; also `<=`, `=` |
 | `git-wt 1,2 commits --from-date 2026-01-01 --to-date 2026-06-30` | A date range, inclusive, no quoting |

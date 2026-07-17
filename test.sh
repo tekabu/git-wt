@@ -517,6 +517,50 @@ fi
 # The work the merge joined must survive: only the merge row goes.
 check "commits --no-merges keeps work" exit=0 out="mainside" -- "1,$didx" commits --no-merges
 
+# --reverse flips the display, and only the display: '-n 2 --reverse' is the
+# same two commits as '-n 2', read bottom-up -- not the two oldest.
+fwd="$("$BIN" "1,$didx" commits -n 2 2>/dev/null | tail -n +2 | awk '{print $1}')"
+rev="$("$BIN" "1,$didx" commits -n 2 --reverse 2>/dev/null | tail -n +2 | awk '{print $1}')"
+rcmd="$(fmt_cmd "1,$didx" commits -n 2 --reverse)"
+want="$(printf '%s\n' "$fwd" | tail -r 2>/dev/null || printf '%s\n' "$fwd" | tac)"
+if [ "$rev" = "$want" ]; then
+  report PASS HAPPY "commits --reverse flips rows" "$rcmd"
+else
+  report FAIL HAPPY "commits --reverse flips rows" "$rcmd" "wanted '$want', got '$rev'"
+fi
+check "commits --oldest-first alias"  exit=0 out="mainside" -- "1,$didx" commits --oldest-first
+
+# --md writes a file and prints nothing on stdout: the table is the file.
+mdout="$ROOT/table.md"
+check "commits --md names the file"  exit=0 err="Wrote $mdout" -- "1,$didx" commits --md "$mdout"
+check "commits --md=PATH spelling"   exit=0 err="Wrote $ROOT/eq.md" -- "1,$didx" commits --md="$ROOT/eq.md"
+mdcmd="$(fmt_cmd "1,$didx" commits --md "$mdout")"
+if [ -f "$mdout" ] && grep -q '^| commit | author | date |' "$mdout" && grep -q 'mainside' "$mdout"; then
+  report PASS HAPPY "commits --md writes a table" "$mdcmd"
+else
+  report FAIL HAPPY "commits --md writes a table" "$mdcmd" "no markdown table in $mdout"
+fi
+# A '|' in a subject must not become a column break.
+( cd "$APP" && git commit -q --allow-empty -m "md: a|piped|subject" )
+"$BIN" "1,$didx" commits --md "$ROOT/pipes.md" >/dev/null 2>&1
+pcmd="$(fmt_cmd "1,$didx" commits --md "$ROOT/pipes.md")"
+if grep -q 'a\\|piped\\|subject' "$ROOT/pipes.md"; then
+  report PASS HAPPY "commits --md escapes pipes" "$pcmd"
+else
+  report FAIL HAPPY "commits --md escapes pipes" "$pcmd" "pipe left unescaped: $(grep piped "$ROOT/pipes.md")"
+fi
+# The path is optional: a flag after --md is a flag, not a filename. The
+# default name lands in the cwd, so this has to run somewhere inside the repo.
+( cd "$APP" && "$BIN" "1,$didx" commits --md --topo >/dev/null 2>&1 )
+dcmd="$(fmt_cmd "1,$didx" commits --md --topo)"
+if ls "$APP"/commits_*.md >/dev/null 2>&1; then
+  report PASS HAPPY "commits --md default name" "$dcmd  # commits_<stamp>.md"
+else
+  report FAIL HAPPY "commits --md default name" "$dcmd" "no commits_<stamp>.md written"
+fi
+rm -f "$APP"/commits_*.md
+check "commits --md bad dir errors"  exit=1 err="cannot write" -- "1,$didx" commits --md /nope/nope/x.md
+
 # --author is the same fuzzy subsequence 'list' filters with.
 check "commits --author exact"        exit=0 out="mainside" -- "1,$didx" commits --author Test
 check "commits --author fuzzy"        exit=0 out="mainside" -- "1,$didx" commits --author tst

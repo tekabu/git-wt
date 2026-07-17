@@ -375,7 +375,15 @@ check "commits lists the other side" exit=0 out="loginside" -- "1,$didx" commits
 check "commits heads the author col" exit=0 out="author" -- "1,$didx" commits
 check "commits names the author"     exit=0 out="Test" -- "1,$didx" commits
 check "commits heads the subject col" exit=0 out="subject" -- "1,$didx" commits
-check "commits dates the rows"       exit=0 out=", $(date +%Y)" -- "1,$didx" commits
+# ISO by default: what the table prints is what --from-date takes.
+check "commits dates the rows"       exit=0 out="$(date +%F)" -- "1,$didx" commits
+check "commits --date-human"         exit=0 out=", $(date +%Y)" -- "1,$didx" commits --date-human
+# 24-hour h:m:s, appended to whichever day spelling is in play.
+check "commits --show-time"          exit=0 out="$(date +%F) " -- "1,$didx" commits --show-time
+check "commits --show-time is 24h"   exit=0 out=":" -- "1,$didx" commits --show-time
+check "commits human + time"         exit=0 out=", $(date +%Y) " -- "1,$didx" commits --date-human --show-time
+# A date read off the table pastes back into a filter unchanged.
+check "commits ISO round-trips"      exit=0 out="mainside" -- "1,$didx" commits --from-date "$(date +%F)"
 
 # The cut is the point: a shared history would check in every column and say
 # nothing, so it is excluded until --all asks for it.
@@ -488,6 +496,26 @@ check "commits --to-id needs a value" exit=1 err="--to-id needs a commit" -- "1,
 check "commits rejects bare --from"   exit=1 err="'--from-id' takes a commit" -- "1,$didx" commits --from x
 check "commits rejects --since"       exit=1 err="use '--from-date" -- "1,$didx" commits --since 2026-01-01
 check "commits rejects --until"       exit=1 err="use '--to-date" -- "1,$didx" commits --until 2026-01-01
+
+# --no-merges drops the bookkeeping rows and keeps the work. Needs a merge with
+# something to merge: a branch main already contains is "Already up to date"
+# and --no-ff writes no commit at all.
+( cd "$APP" \
+  && git checkout -q -b nm-src \
+  && git commit -q --allow-empty -m "nm-work" \
+  && git checkout -q main \
+  && git merge --no-ff -q -m "merge-for-nomerges" nm-src )
+check "commits shows merge rows"     exit=0 out="merge-for-nomerges" -- "1,$didx" commits
+check "commits --no-merges drops it" exit=0 err="" -- "1,$didx" commits --no-merges
+nm="$("$BIN" "1,$didx" commits --no-merges 2>/dev/null | grep -c "merge-for-nomerges")"
+nmc="$(fmt_cmd "1,$didx" commits --no-merges)"
+if [ "$nm" = 0 ]; then
+  report PASS HAPPY "commits --no-merges hides merges" "$nmc"
+else
+  report FAIL HAPPY "commits --no-merges hides merges" "$nmc" "merge row survived --no-merges"
+fi
+# The work the merge joined must survive: only the merge row goes.
+check "commits --no-merges keeps work" exit=0 out="mainside" -- "1,$didx" commits --no-merges
 
 # --author is the same fuzzy subsequence 'list' filters with.
 check "commits --author exact"        exit=0 out="mainside" -- "1,$didx" commits --author Test

@@ -100,7 +100,10 @@ DIFF LIVE:
 COMMITS OPTIONS:
     -n, --limit N         Show at most N commits (newest first)
         --all             Every commit, not just the diverged ones
+        --no-merges       Drop merge commits; keep the work they joined
         --topo            Group each branch's commits, don't interleave
+        --show-time       Add the time to the date column, 24-hour
+        --date-human      'Jan. 31, 2026' instead of '2026-01-31'
         --author NAME     Only NAME's commits (fuzzy, like list's SEARCH)
     -d, --date CMP        Only commits on a date: '=', '>=' or '<=' a
                           YYYY-MM-DD, e.g. --date '>=2026-01-01'. Repeat
@@ -121,6 +124,12 @@ COMMITS:
         git-wt 2 commits             # worktree 2 vs the one you stand in
         git-wt 1,2 commits -n 20     # newest 20 rows only
         git-wt 1,2,3 commits --all   # include the shared history too
+        git-wt 1,2 commits --no-merges   # only the commits someone wrote
+
+    '--no-merges' drops merge commits: they carry no work of their own,
+    and on a branch that merges often they are most of the table. The
+    commits a merge joined all stay -- only the merge's own row goes,
+    and the marks are untouched either way.
 
     A single target reads the way 'merged' does: the worktree you are in
     is the other column, so 'git-wt 2 commits' == 'git-wt <here>,2
@@ -157,7 +166,23 @@ COMMITS FILTERS:
     a commit written at 23:30 +0800 belongs to the day it was there, not
     to yours -- so a bound never contradicts the printed column. Rows are
     still ordered by the full timestamp: same-day commits sort by time of
-    day, even though the column only shows the day.
+    day, even though the column only shows the day. '--show-time' prints
+    that time, 24-hour, which is what tells a busy day's rows apart.
+
+COMMITS DATES:
+    The date column is ISO, the same shape the filters take, so a date
+    read off the table pastes straight back into --from-date. It also
+    sorts, greps, and is one width on every row.
+
+        git-wt 1,2 commits                     -> 2026-01-31
+        git-wt 1,2 commits --show-time         -> 2026-01-31 14:30:05
+        git-wt 1,2 commits --date-human        -> Jan. 31, 2026
+        git-wt 1,2 commits --date-human --show-time
+                                               -> Jan. 31, 2026 14:30:05
+
+    --date-human is easier to read a date out of, at the cost of the
+    round-trip: it is not what --from-date accepts. What --date compares
+    never changes shape whatever the column is spelled as.
 
     Quote --date, always. '>' and '<' are redirects, so an unquoted
     --date >=2026-01-01 writes a file called '=2026-01-01' and git-wt
@@ -2257,6 +2282,32 @@ impl Order {
     }
 }
 
+/// How the date column is spelled.
+///
+/// ISO by default: it is the shape the filters take, so what you read is what
+/// you can paste back into `--from-date`. It also sorts and greps, and is the
+/// same width on every row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DateFmt {
+    /// `Jan. 31, 2026` instead of `2026-01-31`.
+    human: bool,
+    /// Append the time, 24-hour.
+    time: bool,
+}
+
+impl DateFmt {
+    /// The strftime git is asked for. `%-d` drops the day's leading zero, which
+    /// only the human spelling wants; ISO is padded by definition.
+    fn spec(self) -> &'static str {
+        match (self.human, self.time) {
+            (false, false) => "%Y-%m-%d",
+            (false, true) => "%Y-%m-%d %H:%M:%S",
+            (true, false) => "%b. %-d, %Y",
+            (true, true) => "%b. %-d, %Y %H:%M:%S",
+        }
+    }
+}
+
 /// One table row: a commit, its short name, who wrote it when, and its subject.
 struct CommitRow {
     /// Full sha, for the set lookups; never printed.
@@ -2264,7 +2315,7 @@ struct CommitRow {
     short: String,
     text: String,
     author: String,
-    /// Author date as printed, e.g. `Jan. 1, 2026`.
+    /// Author date as printed: `2026-01-31`, or whatever `DateFmt` asked for.
     date: String,
     /// The same date as `YYYY-MM-DD`, which `--date` compares against.
     key: String,
@@ -2311,6 +2362,8 @@ struct CommitsArgs {
     to: Option<String>,
     author: Option<String>,
     topo: bool,
+    no_merges: bool,
+    fmt: DateFmt,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
@@ -2321,6 +2374,8 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut to = None;
     let mut author = None;
     let mut topo = false;
+    let mut no_merges = false;
+    let mut fmt = DateFmt { human: false, time: false };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -2331,6 +2386,9 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             s if s.starts_with("--limit=") => limit = Some(parse_limit(&s["--limit=".len()..])?),
             "--all" => all = true,
             "--topo" | "--topo-order" => topo = true,
+            "--no-merges" => no_merges = true,
+            "--show-time" => fmt.time = true,
+            "--date-human" => fmt.human = true,
             "--date" | "-d" => {
                 let v = it.next().ok_or(DATE_MISSING)?;
                 dates.push(parse_date_filter(v)?);
@@ -2377,7 +2435,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             }
         }
     }
-    Ok(CommitsArgs { limit, all, dates, from, to, author, topo })
+    Ok(CommitsArgs { limit, all, dates, from, to, author, topo, no_merges, fmt })
 }
 
 const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
@@ -2504,7 +2562,15 @@ fn cmd_commits(
         || args.author.is_some();
     let git_limit = if filtered { None } else { args.limit };
     let order = if args.topo { Order::Topo } else { Order::Date };
-    let all_rows = commit_rows(root, &refs, base.as_deref(), git_limit, order)?;
+    let all_rows = commit_rows(
+        root,
+        &refs,
+        base.as_deref(),
+        git_limit,
+        order,
+        args.fmt,
+        args.no_merges,
+    )?;
     let unfiltered = all_rows.len();
 
     // Ancestry, not dates: '--from X' means "X and everything after it", so
@@ -2602,14 +2668,23 @@ fn commit_rows(
     base: Option<&str>,
     limit: Option<usize>,
     order: Order,
+    fmt: DateFmt,
+    no_merges: bool,
 ) -> Result<Vec<CommitRow>, String> {
     let count;
+    let date_arg = format!("--date=format:{}", fmt.spec());
     let mut args = vec![
         "log",
         order.flag(),
-        "--date=format:%b. %-d, %Y",
+        &date_arg,
         "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%s",
     ];
+    // Merge commits carry no work of their own; dropping them leaves the
+    // commits someone actually wrote. The mark columns are unaffected: a
+    // merge that is not a row is still in every rev-list that reaches it.
+    if no_merges {
+        args.push("--no-merges");
+    }
     if let Some(n) = limit {
         count = format!("-n{n}");
         args.push(&count);
@@ -2843,9 +2918,10 @@ fn render_commits(
         .collect();
     let rows = &rows;
 
-    // The date is right-aligned so the years line up: an unpadded day makes
-    // 'Jan. 1, 2026' a character shorter than 'Sep. 15, 2026', and left-aligned
-    // that ragged edge is the first thing you see in the column.
+    // The date is right-aligned so the years line up under --date-human, where
+    // an unpadded day makes 'Jan. 1, 2026' a character shorter than
+    // 'Sep. 15, 2026'; left-aligned, that ragged edge is the first thing you
+    // see. ISO is one width, so the alignment is moot there -- and free.
     let mut head = format!(
         "{:<shaw$}  {:<authw$}  {:>datew$}",
         "commit", "author", "date"
@@ -3522,6 +3598,9 @@ fn git_quiet(dir: &Path, args: &[&str]) -> bool {
 mod tests {
     use super::*;
 
+    /// The default spelling: what `commits` prints without a format flag.
+    const ISO: DateFmt = DateFmt { human: false, time: false };
+
     #[test]
     fn sanitize_collapses_separators() {
         assert_eq!(sanitize("feature/login"), "feature-login");
@@ -4061,6 +4140,20 @@ diff --git a/gone.txt b/gone.txt
         assert!(!parse(&[]).unwrap().topo);
         assert!(parse(&["--topo"]).unwrap().topo);
         assert!(parse(&["--topo-order"]).unwrap().topo);
+        assert!(!parse(&[]).unwrap().no_merges);
+        assert!(parse(&["--no-merges"]).unwrap().no_merges);
+
+        // ISO, no time, unless asked; the flags are independent.
+        assert_eq!(parse(&[]).unwrap().fmt, DateFmt { human: false, time: false });
+        assert_eq!(parse(&["--show-time"]).unwrap().fmt.spec(), "%Y-%m-%d %H:%M:%S");
+        assert_eq!(parse(&["--date-human"]).unwrap().fmt.spec(), "%b. %-d, %Y");
+        assert_eq!(
+            parse(&["--date-human", "--show-time"]).unwrap().fmt.spec(),
+            "%b. %-d, %Y %H:%M:%S"
+        );
+        // A format flag is not a filter: --date-human must not be read as a
+        // bound, nor collide with --date's value parsing.
+        assert!(parse(&["--date-human"]).unwrap().dates.is_empty());
 
         assert!(parse(&["--from-id"]).unwrap_err().contains("--from-id needs a commit"));
         assert!(parse(&["--from-date", "nope"]).unwrap_err().contains("want YYYY-MM-DD"));
@@ -4150,7 +4243,7 @@ diff --git a/gone.txt b/gone.txt
         let base = octopus_base(&tmp, &refs).expect("branches share a root commit");
 
         // The fork point is excluded, so only the two diverged commits are rows.
-        let rows = commit_rows(&tmp, &refs, Some(&base), None, Order::Date).unwrap();
+        let rows = commit_rows(&tmp, &refs, Some(&base), None, Order::Date, ISO, false).unwrap();
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rows.len(), 2, "{subjects:?}");
         // Each field is parsed off its own tab, so nothing can shift into the
@@ -4158,8 +4251,10 @@ diff --git a/gone.txt b/gone.txt
         // days unpadded.
         assert!(rows.iter().all(|r| r.author == "t"), "{:?}", rows[0].author);
         assert!(rows.iter().all(|r| !r.short.is_empty()));
+        // ISO by default: the shape --from-date takes, so a date read off the
+        // table pastes straight back into a filter.
         let dates: Vec<&str> = rows.iter().map(|r| r.date.as_str()).collect();
-        assert_eq!(dates, ["Sep. 15, 2026", "Jan. 1, 2026"], "{dates:?}");
+        assert_eq!(dates, ["2026-09-15", "2026-01-01"], "{dates:?}");
         // --author-date-order, so the rows descend by the date they print.
         assert!(rows[0].text.ends_with("on-feat"), "{:?}", rows[0].text);
         assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
@@ -4178,14 +4273,14 @@ diff --git a/gone.txt b/gone.txt
         }
 
         // Without the cut, the shared commit is back and checked on both.
-        let all = commit_rows(&tmp, &refs, None, None, Order::Date).unwrap();
+        let all = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false).unwrap();
         assert_eq!(all.len(), 3);
         let shared = all.iter().find(|r| r.text.ends_with("shared")).unwrap();
         assert!(ref_shas(&tmp, "main", None).unwrap().contains(&shared.sha));
         assert!(ref_shas(&tmp, "feat", None).unwrap().contains(&shared.sha));
 
         // -n caps the rows, newest first.
-        let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date).unwrap();
+        let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date, ISO, false).unwrap();
         assert_eq!(capped.len(), 1);
 
         // --from-id/--to-id include the commit they name. That is the whole
@@ -4247,7 +4342,7 @@ diff --git a/gone.txt b/gone.txt
 
         let refs = vec!["main".to_string(), "feat".to_string()];
         let subjects = |o: Order| -> Vec<String> {
-            commit_rows(&tmp, &refs, None, None, o)
+            commit_rows(&tmp, &refs, None, None, o, ISO, false)
                 .unwrap()
                 .iter()
                 .map(|r| r.text.clone())
@@ -4305,19 +4400,94 @@ diff --git a/gone.txt b/gone.txt
         commit("feat-21h", "2026-07-17T21:00:00");
 
         let refs = vec!["main".to_string(), "feat".to_string()];
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false).unwrap();
         let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
 
         // Ordering reads the full timestamp, not the printed day: the branches
-        // interleave by hour even though all four rows show 'Jul. 17, 2026'.
+        // interleave by hour even though all four rows show '2026-07-17'.
         assert_eq!(seen, ["feat-21h", "main-17h", "feat-13h", "main-09h", "base"]);
-        assert!(rows[..4].iter().all(|r| r.date == "Jul. 17, 2026"));
+        assert!(rows[..4].iter().all(|r| r.date == "2026-07-17"));
 
         // The filter key is the day, so one '=' bound takes every hour in it.
         let day = parse_date_filter("=2026-07-17").unwrap();
         assert_eq!(rows.iter().filter(|r| day.admits(&r.key)).count(), 4);
 
+        // --show-time is what tells those four rows apart, 24-hour so they sort
+        // the way they read; the day stays ISO beside it.
+        let timed = DateFmt { human: false, time: true };
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, timed, false).unwrap();
+        let stamps: Vec<&str> = rows[..4].iter().map(|r| r.date.as_str()).collect();
+        assert_eq!(
+            stamps,
+            [
+                "2026-07-17 21:00:00",
+                "2026-07-17 17:00:00",
+                "2026-07-17 13:00:00",
+                "2026-07-17 09:00:00",
+            ]
+        );
+
+        // --date-human is the old spelling, single-digit days unpadded.
+        let human = DateFmt { human: true, time: false };
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, human, false).unwrap();
+        assert_eq!(rows[4].date, "Jul. 1, 2026");
+        // The filter key never changes shape, whatever the column is spelled
+        // as: --date compares ISO no matter what you are looking at.
+        assert_eq!(rows[4].key, "2026-07-01");
+
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn no_merges_drops_only_the_merge_commits() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-merges-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2026-07-17T10:00:00")
+                .env("GIT_COMMITTER_DATE", "2026-07-17T10:00:00")
+                .env("GIT_MERGE_AUTOEDIT", "no")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "base"]);
+        git(&tmp, &["checkout", "--quiet", "-b", "side"]);
+        git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "on-side"]);
+        git(&tmp, &["checkout", "--quiet", "main"]);
+        git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "on-main"]);
+        // A real merge commit: two parents, no work of its own.
+        git(&tmp, &["merge", "--no-ff", "-m", "merge-side", "side"]);
+
+        let refs = vec!["main".to_string()];
+        let rows = |no_merges: bool| -> Vec<String> {
+            commit_rows(&tmp, &refs, None, None, Order::Date, ISO, no_merges)
+                .unwrap()
+                .iter()
+                .map(|r| r.text.clone())
+                .collect()
+        };
+
+        let all = rows(false);
+        assert!(all.contains(&"merge-side".to_string()), "{all:?}");
+        assert_eq!(all.len(), 4);
+
+        // Only the merge goes: the commits it joined are still there, which is
+        // the point -- the work survives, the bookkeeping row does not.
+        let kept = rows(true);
+        assert!(!kept.contains(&"merge-side".to_string()), "{kept:?}");
+        assert_eq!(kept.len(), 3);
+        for c in ["base", "on-side", "on-main"] {
+            assert!(kept.contains(&c.to_string()), "{c} should survive: {kept:?}");
+        }
     }
 
     #[test]
@@ -4347,7 +4517,7 @@ diff --git a/gone.txt b/gone.txt
         git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "child"], "2026-01-01T10:00:00");
 
         let refs = vec!["main".to_string()];
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false).unwrap();
         let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
 
         // Ancestry wins: the child is listed above the parent it descends from,

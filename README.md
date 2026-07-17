@@ -336,10 +336,10 @@ other column, so `git-wt 2 commits` is `git-wt <here>,2 commits`. Naming the
 one you're standing in is an error rather than a column of guaranteed checks.
 
 ```
-commit   author  date            main  feat/login  bugfix-123  subject
-a1b2c3d  Nino    Sep. 15, 2026    ·        ✓           ✓       fix token expiry
-9f8e7d6  Jhon     Apr. 2, 2026    ·        ✓           ·       🚀 add oauth scopes
-4c5d6e7  Nino     Jan. 1, 2026    ✓        ✓           ✓       bump serde
+commit   author  date        main  feat/login  bugfix-123  subject
+a1b2c3d  Nino    2026-09-15   ·        ✓           ✓       fix token expiry
+9f8e7d6  Jhon    2026-04-02   ·        ✓           ·       🚀 add oauth scopes
+4c5d6e7  Nino    2026-01-31   ✓        ✓           ✓       bump serde
 ```
 
 One row per commit — sha, author, date — then one column per worktree, checked
@@ -375,6 +375,34 @@ for it with `--all`, and cap the rows with `-n`:
 git-wt 1,2 commits -n 20    # newest 20 rows
 git-wt 1,2,3 commits --all  # shared history too (slow on a big repo)
 ```
+
+### Spelling the date
+
+The date column is **ISO** by default — the same shape the filters take, so a
+date you read off the table pastes straight back into `--from-date`. It also
+sorts, greps, and is one width on every row.
+
+```sh
+git-wt 1,2 commits                          # 2026-01-31
+git-wt 1,2 commits --show-time              # 2026-01-31 14:30:05
+git-wt 1,2 commits --date-human             # Jan. 31, 2026
+git-wt 1,2 commits --date-human --show-time # Jan. 31, 2026 14:30:05
+```
+
+`--date-human` is easier to read a date *out* of; the cost is the round-trip,
+since it isn't what `--from-date` accepts. What `--date` compares never changes
+shape, whatever the column is spelled as — the two are independent.
+
+### Dropping merge commits
+
+```sh
+git-wt 1,2 commits --no-merges
+```
+
+Merge commits carry no work of their own, and on a branch that merges often
+they're most of the table. `--no-merges` drops those rows and keeps every
+commit they joined — only the merge's own row goes, and the marks are untouched
+either way.
 
 ### Filtering the rows
 
@@ -441,14 +469,15 @@ those two spellings with a pointer to `--from-date`/`--to-date`.
 
 **Days and times.** The column shows a day, but the rows are ordered by the
 full timestamp — commits from one day sort by time of day, so a busy afternoon
-reads in the order it happened even though every row says `Jul. 17, 2026`:
+reads in the order it happened even though every row says `2026-07-17`. Add
+`--show-time` when you need to see why:
 
 ```
-commit    author         date           uat  main  subject
-4ddb114   kinlie         Jul. 17, 2026   ✓    ·    ...21:00
-c8eed92   jhoriz.aquino  Jul. 17, 2026   ·    ✓    ...17:00
-4bcb71a   kinlie         Jul. 17, 2026   ✓    ·    ...13:00
-241a891   nino           Jul. 17, 2026   ·    ✓    ...09:00
+commit    author         date                 uat  main  subject
+4ddb114   kinlie         2026-07-17 21:00:00   ✓    ·    ...
+c8eed92   jhoriz.aquino  2026-07-17 17:00:00   ·    ✓    ...
+4bcb71a   kinlie         2026-07-17 13:00:00   ✓    ·    ...
+241a891   nino           2026-07-17 09:00:00   ·    ✓    ...
 ```
 
 Date *bounds*, by contrast, are whole days: `--date '=2026-07-17'` takes every
@@ -789,6 +818,9 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
 | `git-wt 1,2 commits --all` | Include the shared history, not just what diverged |
 | `git-wt 1,2,3 commits --topo` | Group each branch's commits instead of interleaving by date |
+| `git-wt 1,2 commits --no-merges` | Drop merge rows; keep the commits they joined |
+| `git-wt 1,2 commits --show-time` | Add the time to the date column, 24-hour |
+| `git-wt 1,2 commits --date-human` | `Jan. 31, 2026` instead of the default `2026-01-31` |
 | `git-wt 1,2 commits --author nes` | Only commits whose author fuzzy-matches `nes` |
 | `git-wt 1,2 commits --date '>=2026-01-01'` | Commits on that day or after; also `<=`, `=` |
 | `git-wt 1,2 commits --from-date 2026-01-01 --to-date 2026-06-30` | A date range, inclusive, no quoting |

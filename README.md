@@ -45,6 +45,7 @@ Replace branch switching with separate folders next door.
 | Jump back to another task | `wt 1` | Your terminal moves to that task’s folder |
 | Peek at a branch without disturbing your current work | `git-wt add bugfix/123 --stay` | The folder is created; you stay where you are |
 | Fold one task's work into another | `wt 1,2 merge` | Task 2's branch is merged into task 1's, without leaving your shell |
+| See which tasks have which commits | `wt 1,2,3 commits` | A table: one row per commit, a check under every task that has it |
 | Clean up a finished task | `wt 1 remove` | The extra folder disappears; the branch stays in Git |
 
 No more stashing, no more “wait, which branch was I on?”, no more half-finished
@@ -121,6 +122,7 @@ git-wt <N>,<M> merged        Is M's branch already in N's branch?
 git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
 git-wt <N> merged            Is N's branch already in the current branch?
 git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
+git-wt <N>,<M>[,...] commits Table: which commit is on which branch
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
 git-wt version
@@ -319,6 +321,45 @@ question, so combining them is an error rather than a silently ignored word.
 Two blind spots, both shared with plain git: ignored-but-differing files stay
 invisible, and `live` compares exactly two worktrees (`git diff --no-index`
 takes two paths, and there is no three-path form). For three, use `meld`.
+
+## Commits
+
+Which branch has which commit, for any number of worktrees at once:
+
+```sh
+git-wt 1,2,3 commits
+```
+
+```
+commit                                        main  feat/login  bugfix-123
+a1b2c3d fix token expiry                        ·        ✓           ✓
+9f8e7d6 add oauth scopes                        ·        ✓           ·
+4c5d6e7 bump serde                              ✓        ✓           ✓
+```
+
+One row per commit — the same text `git log --oneline` prints — and one column
+per worktree, checked where that branch contains it. This is the question
+`diff` cannot answer: `diff` compares exactly two branches, and compares their
+*content*. `commits` compares any number, by *commit*, so "who already has the
+oauth fix?" is one glance instead of three `merged` calls.
+
+Rows stop at the branches' common ancestor, so only the diverged commits are
+listed — the shared history would be a check in every column, saying nothing,
+and skipping it is what keeps the table fast on a repo with real history. Ask
+for it with `--all`, and cap the rows with `-n`:
+
+```sh
+git-wt 1,2 commits -n 20    # newest 20 rows
+git-wt 1,2,3 commits --all  # shared history too (slow on a big repo)
+```
+
+Rows are ordered by date across all branches at once, so a row's neighbors are
+the commits written around the same time, not the rest of its branch.
+
+One caveat, inherited from git: a **cherry-picked or rebased commit is a
+different commit**, so it shows unchecked in the branch it was copied from —
+same patch, new sha. When the question is content rather than identity, that's
+what `1,2 diff` and `1,2 merged` are for.
 
 ## Meld
 
@@ -602,6 +643,20 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 diff -w` | Error — unknown flag, with the `git diff` command to run instead |
 | `git-wt 1,2,3 diff` | Error — `diff` takes exactly two worktrees; `meld` compares three |
 
+### Commits — `git-wt <N>,<M>[,...] commits`
+
+| Command | Effect |
+|---|---|
+| `git-wt 1,2 commits` | Table of the commits 1 and 2 do not share |
+| `git-wt 1,2,3 commits` | Same for three worktrees; any number of columns |
+| `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
+| `git-wt 1,2 commits --all` | Include the shared history, not just what diverged |
+| `git-wt 1,2 commits` (same history) | `no diverged commits: every branch listed has the same history`, exit 0 |
+| `git-wt 1 commits` | Error — `commits` takes a worktree list |
+| `git-wt 1,1 commits` | Error `worktree #1 listed twice` |
+| `git-wt 1,2 commits -n 0` | Error `-n 0 would show nothing` |
+| `git-wt 1,2 commits --stat` | Error — unknown argument; `commits` takes no git flags |
+
 ### Multi-target — `git-wt <N>,<N>[,<N>] meld`
 
 | Command | Effect |
@@ -664,7 +719,7 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt` outside a repo | `not inside a git repository` |
 | `git-wt 0` | `no worktree #0` |
 | `git-wt 99` | `no worktree #99; there are N (see 'git-wt list')` |
-| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, diff, merge, meld, merged)` |
+| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, diff, commits, merge, meld, merged)` |
 | `git-wt 1 switch path` | `too many arguments` |
 | `git-wt 1 -n x` | `'-n' is an option, not an action; options follow the action, e.g. 'git-wt 1 remove -f' or 'git-wt 1,2 diff --stat'` |
 | `git-wt 1 remove` on main/bare | `refusing to remove the main worktree` |

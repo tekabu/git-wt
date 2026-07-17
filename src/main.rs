@@ -6,6 +6,7 @@
 //! Grammar is target-first for existing worktrees (`git-wt <N> <action>`) with
 //! an explicit `add` verb for creation.
 
+use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -33,6 +34,7 @@ USAGE:
     git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
     git-wt <N> merged            Is N's branch already in the current branch?
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
+    git-wt <N>,<M>[,...] commits Table: which commit is on which branch
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
     git-wt version
@@ -93,6 +95,30 @@ DIFF LIVE:
     'live' takes no range: '..'/'...' compare commits, which is the opposite
     question. --name-only/--name-status/--stat/-- PATH... all still apply.
     'hunks' works without 'live' too; its line numbers are the '+' side (M).
+
+COMMITS OPTIONS:
+    -n, --limit N         Show at most N commits (newest first)
+        --all             Every commit, not just the diverged ones
+
+COMMITS:
+    A table of the commits the listed worktrees do NOT share: one row per
+    commit, one column per worktree, a check where that branch contains it.
+    Answers 'who has what' for 3+ branches at once, which diff cannot: diff
+    compares exactly two, and by content rather than by commit.
+
+        git-wt 1,2,3 commits         # the table
+        git-wt 1,2 commits -n 20     # newest 20 rows only
+        git-wt 1,2,3 commits --all   # include the shared history too
+
+    Rows stop at the common ancestor, so only what diverged is listed and a
+    long shared history costs nothing. --all drops that cut and walks every
+    commit, which on a big repo is slow and mostly checks in every column.
+    Commits are dated newest-first across all branches at once, so a row's
+    neighbors are its contemporaries, not its branch-mates.
+
+    A cherry-picked or rebased commit is a different commit to git, so it
+    shows as unchecked in the branch it was copied from -- same patch, new
+    sha. Ask '1,2 merged' or '1,2 diff' when the question is content.
 
 MELD:
     Opens meld on the worktree directories, in the order you list them, and
@@ -260,6 +286,7 @@ fn unknown_command_msg(tok: &str) -> String {
         "remove" | "rm" => format!("unknown command '{tok}'; use 'git-wt 1 remove'"),
         "merge" => "unknown command 'merge'; use 'git-wt 1,2 merge'".into(),
         "merged" => "unknown command 'merged'; use 'git-wt 1 merged' or 'git-wt 1,2 merged'".into(),
+        "commits" => "unknown command 'commits'; use 'git-wt 1,2 commits'".into(),
         _ if branch_like(tok) => format!("unknown command '{tok}'; did you mean 'add {tok}'?"),
         _ => format!("unknown command '{tok}'"),
     }
@@ -312,6 +339,11 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
         // worktree-wins rule for digit branch names.
         "diff" => Err(format!(
             "diff takes a worktree list: 'git-wt {n},<M> diff'"
+        )),
+        // One worktree has nothing to compare against: a table of one column
+        // is just 'git log'.
+        "commits" => Err(format!(
+            "commits takes a worktree list: 'git-wt {n},<M> commits'"
         )),
         "merge" => {
             let args = parse_merge_args(&rest[1..])?;
@@ -376,7 +408,7 @@ fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<(), String>
              e.g. 'git-wt {n} remove -f' or 'git-wt {n},2 diff --stat'"
         )),
         other => Err(format!(
-            "unknown action '{other}' (switch, path, remove, diff, merge, meld, merged)"
+            "unknown action '{other}' (switch, path, remove, diff, commits, merge, meld, merged)"
         )),
     }
 }
@@ -413,6 +445,7 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
             cmd_meld(&trees, &idxs)
         }
         Some("diff") => cmd_diff(root, &trees, &idxs, &rest[1..]),
+        Some("commits") => cmd_commits(root, &trees, &idxs, &rest[1..]),
         // `1,2 merge`: the list reads dest-first, so 2 merges into 1.
         Some("merge") => {
             // The list already names the source, so a resume word contradicts
@@ -461,7 +494,8 @@ fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), St
         }
         // A list only makes sense for actions that take more than one worktree.
         Some(other) => Err(format!(
-            "'{other}' takes a single worktree; only 'diff', 'meld', 'merge' and 'merged' take a list"
+            "'{other}' takes a single worktree; only 'commits', 'diff', 'meld', 'merge' and \
+             'merged' take a list"
         )),
         None => Err("a worktree list needs an action, e.g. 'git-wt 1,2 diff'".into()),
     }
@@ -2114,6 +2148,211 @@ fn cmd_meld(trees: &[Worktree], idxs: &[usize]) -> Result<(), String> {
     Ok(())
 }
 
+/// One table row: a commit, and the text `--oneline` would print for it.
+struct CommitRow {
+    sha: String,
+    text: String,
+}
+
+/// Options for `commits`.
+#[derive(Debug)]
+struct CommitsArgs {
+    limit: Option<usize>,
+    all: bool,
+}
+
+fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
+    let mut limit = None;
+    let mut all = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-n" | "--limit" => {
+                let v = it.next().ok_or("-n needs a count, e.g. '-n 20'")?;
+                limit = Some(parse_limit(v)?);
+            }
+            s if s.starts_with("--limit=") => limit = Some(parse_limit(&s["--limit=".len()..])?),
+            "--all" => all = true,
+            other => {
+                return Err(format!(
+                    "unexpected argument '{other}' for commits\nTry 'git-wt --help'"
+                ));
+            }
+        }
+    }
+    Ok(CommitsArgs { limit, all })
+}
+
+fn parse_limit(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(0) => Err("-n 0 would show nothing".into()),
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!("bad count '{s}'; want a number, e.g. '-n 20'")),
+    }
+}
+
+/// Print a commit-by-branch table for the listed worktrees.
+///
+/// Refs, not directories, and commits rather than content: this is the question
+/// `diff` cannot answer once there are three branches in play -- not "how do
+/// these differ" but "which of them has this commit". Rows come from one `git
+/// log` over every ref at once, so they are interleaved by date; columns come
+/// from one `rev-list` per ref, as sha sets to test each row against.
+fn cmd_commits(
+    root: &Path,
+    trees: &[Worktree],
+    idxs: &[usize],
+    rest: &[String],
+) -> Result<(), String> {
+    if idxs.len() < 2 {
+        return Err("commits needs 2 or more worktrees, e.g. 'git-wt 1,2,3 commits'".into());
+    }
+    for (i, a) in idxs.iter().enumerate() {
+        if idxs[i + 1..].contains(a) {
+            return Err(format!("worktree #{} listed twice", a + 1));
+        }
+    }
+    let args = parse_commits_args(rest)?;
+
+    let refs: Vec<String> = idxs
+        .iter()
+        .map(|&i| ref_of(&trees[i]))
+        .collect::<Result<_, _>>()?;
+
+    // Cut the walk at the common ancestor so only diverged commits are rows: on
+    // a repo with any history at all, the shared past is most of it and every
+    // column would be checked. Unrelated histories have no base to cut at, so
+    // the walk covers everything -- which is also what --all asks for.
+    let base = if args.all {
+        None
+    } else {
+        octopus_base(root, &refs)
+    };
+
+    let rows = commit_rows(root, &refs, base.as_deref(), args.limit)?;
+    if rows.is_empty() {
+        let msg = if args.all {
+            "no commits"
+        } else {
+            "no diverged commits: every branch listed has the same history\n\
+             hint: 'commits --all' lists the shared commits too"
+        };
+        eprintln!("{msg}");
+        return Ok(());
+    }
+
+    // A row is checked when the ref's own walk contains it, so the sets get the
+    // same cut as the rows do.
+    let sets: Vec<HashSet<String>> = refs
+        .iter()
+        .map(|r| ref_shas(root, r, base.as_deref()))
+        .collect::<Result<_, _>>()?;
+
+    let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
+    let color = color_enabled(std::io::stdout().is_terminal());
+    render_commits(&rows, &names, &sets, color);
+    Ok(())
+}
+
+/// The commit every listed ref descends from, or None when there is none
+/// (unrelated histories) -- in which case the caller walks the whole history,
+/// since there is nothing shared to trim.
+fn octopus_base(root: &Path, refs: &[String]) -> Option<String> {
+    let mut args = vec!["merge-base", "--octopus"];
+    args.extend(refs.iter().map(String::as_str));
+    let out = git_stdout(root, &args).ok()?;
+    let base = out.trim().to_string();
+    (!base.is_empty()).then_some(base)
+}
+
+/// Rows for the table: every commit reachable from any ref, newest first.
+///
+/// `%H` drives the set lookups and `%h %s` is what the row prints -- the same
+/// text `git log --oneline` shows, which is the format the rows are meant to
+/// read as.
+fn commit_rows(
+    root: &Path,
+    refs: &[String],
+    base: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Vec<CommitRow>, String> {
+    let count;
+    let mut args = vec!["log", "--date-order", "--format=%H%x09%h %s"];
+    if let Some(n) = limit {
+        count = format!("-n{n}");
+        args.push(&count);
+    }
+    args.extend(refs.iter().map(String::as_str));
+    if let Some(b) = base {
+        args.push("--not");
+        args.push(b);
+    }
+
+    let out = git_stdout(root, &args)?;
+    Ok(out
+        .lines()
+        .filter_map(|line| {
+            let (sha, text) = line.split_once('\t')?;
+            Some(CommitRow {
+                sha: sha.to_string(),
+                text: text.to_string(),
+            })
+        })
+        .collect())
+}
+
+/// Every commit sha reachable from `r`, cut at `base` the same way the rows are.
+fn ref_shas(root: &Path, r: &str, base: Option<&str>) -> Result<HashSet<String>, String> {
+    let mut args = vec!["rev-list", r];
+    if let Some(b) = base {
+        args.push("--not");
+        args.push(b);
+    }
+    Ok(git_stdout(root, &args)?
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+const CHECK: &str = "✓";
+const MISS: &str = "·";
+
+/// Print the table: the commit text in column 1, then one mark per branch.
+///
+/// Widths are measured on the plain text and the marks are centered inside
+/// them, so color -- applied last -- never skews the columns.
+fn render_commits(rows: &[CommitRow], names: &[String], sets: &[HashSet<String>], color: bool) {
+    let textw = rows
+        .iter()
+        .map(|r| r.text.chars().count())
+        .chain(std::iter::once("commit".len()))
+        .max()
+        .unwrap_or(0);
+    let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
+
+    let mut head = format!("{:<textw$}", "commit");
+    for (n, w) in names.iter().zip(&widths) {
+        head.push_str("  ");
+        head.push_str(&format!("{n:<w$}"));
+    }
+    println!("{}", paint(head.trim_end(), DIM, color));
+
+    for row in rows {
+        let mut line = format!("{:<textw$}", row.text);
+        for (set, w) in sets.iter().zip(&widths) {
+            let hit = set.contains(&row.sha);
+            let (mark, code) = if hit { (CHECK, GREEN) } else { (MISS, DIM) };
+            // Center the one-cell mark under its header.
+            let pad = (w - 1) / 2;
+            line.push_str("  ");
+            line.push_str(&" ".repeat(pad));
+            line.push_str(&paint(mark, code, color));
+            line.push_str(&" ".repeat(w - 1 - pad));
+        }
+        println!("{}", line.trim_end());
+    }
+}
+
 /// Is `cmd` an executable file on PATH? Checked before spawning so a missing
 /// tool is a clear error rather than an opaque NotFound from the OS.
 fn on_path(cmd: &str) -> bool {
@@ -3190,6 +3429,92 @@ diff --git a/gone.txt b/gone.txt
         // A non-existent ref propagates git's error.
         let err = cmd_merged(&tmp, "no-such-ref", "main").unwrap_err();
         assert!(err.contains("no-such-ref") || err.contains("Not a valid object"), "{err}");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn commits_args_take_a_limit_and_all() {
+        let parse = |args: &[&str]| {
+            let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            parse_commits_args(&v)
+        };
+
+        let a = parse(&[]).unwrap();
+        assert_eq!(a.limit, None);
+        assert!(!a.all);
+
+        assert_eq!(parse(&["-n", "20"]).unwrap().limit, Some(20));
+        assert_eq!(parse(&["--limit", "20"]).unwrap().limit, Some(20));
+        assert_eq!(parse(&["--limit=5"]).unwrap().limit, Some(5));
+        assert!(parse(&["--all"]).unwrap().all);
+
+        // A count of zero asks for an empty table, which is never meant.
+        assert!(parse(&["-n", "0"]).unwrap_err().contains("show nothing"));
+        assert!(parse(&["-n", "x"]).unwrap_err().contains("bad count 'x'"));
+        assert!(parse(&["-n"]).unwrap_err().contains("needs a count"));
+        assert!(parse(&["--stat"]).unwrap_err().contains("unexpected argument"));
+    }
+
+    #[test]
+    fn commit_rows_stop_at_the_common_ancestor() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-commits-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let mut c = std::process::Command::new("git");
+            c.current_dir(dir).args(args);
+            let out = c.output().unwrap();
+            assert!(out.status.success(), "git {:?} failed: {:?}", args, out);
+        }
+        fn commit(dir: &std::path::Path, name: &str) {
+            std::fs::write(dir.join(format!("{name}.txt")), name).unwrap();
+            git(dir, &["add", "-A"]);
+            git(dir, &["commit", "--quiet", "-m", name]);
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        commit(&tmp, "shared");
+        git(&tmp, &["branch", "feat"]);
+        commit(&tmp, "on-main");
+        git(&tmp, &["checkout", "--quiet", "feat"]);
+        commit(&tmp, "on-feat");
+
+        let refs = vec!["main".to_string(), "feat".to_string()];
+        let base = octopus_base(&tmp, &refs).expect("branches share a root commit");
+
+        // The fork point is excluded, so only the two diverged commits are rows.
+        let rows = commit_rows(&tmp, &refs, Some(&base), None).unwrap();
+        let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(rows.len(), 2, "{subjects:?}");
+        assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
+        assert!(subjects.iter().any(|t| t.ends_with("on-feat")), "{subjects:?}");
+        assert!(!subjects.iter().any(|t| t.ends_with("shared")), "{subjects:?}");
+
+        // Each diverged commit belongs to exactly one branch; the sets get the
+        // same cut, so the shared commit is in neither.
+        let main_set = ref_shas(&tmp, "main", Some(&base)).unwrap();
+        let feat_set = ref_shas(&tmp, "feat", Some(&base)).unwrap();
+        for row in &rows {
+            let on_main = main_set.contains(&row.sha);
+            let on_feat = feat_set.contains(&row.sha);
+            assert!(on_main ^ on_feat, "{} should be on one branch", row.text);
+            assert_eq!(on_main, row.text.ends_with("on-main"), "{}", row.text);
+        }
+
+        // Without the cut, the shared commit is back and checked on both.
+        let all = commit_rows(&tmp, &refs, None, None).unwrap();
+        assert_eq!(all.len(), 3);
+        let shared = all.iter().find(|r| r.text.ends_with("shared")).unwrap();
+        assert!(ref_shas(&tmp, "main", None).unwrap().contains(&shared.sha));
+        assert!(ref_shas(&tmp, "feat", None).unwrap().contains(&shared.sha));
+
+        // -n caps the rows, newest first.
+        let capped = commit_rows(&tmp, &refs, None, Some(1)).unwrap();
+        assert_eq!(capped.len(), 1);
 
         std::fs::remove_dir_all(&tmp).ok();
     }

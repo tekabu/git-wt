@@ -288,7 +288,7 @@ check "index 0 errors"               exit=1 err="no worktree #0" -- 0
 check "index over range errors"      exit=1 err="there are" -- 99
 # Pin the whole action list, not just the prefix: the README documents it, and
 # a substring match let it drift silently when diff/meld were added.
-check "unknown action errors"        exit=1 err="unknown action 'bogus' (switch, path, remove, diff, merge, meld, merged)" -- 1 bogus
+check "unknown action errors"        exit=1 err="unknown action 'bogus' (switch, path, remove, diff, commits, merge, meld, merged)" -- 1 bogus
 check "flag on target errors"        exit=1 err="'-n' is an option, not an action" -- 1 -n x
 # The message must not claim an action rejects flags that it actually takes.
 check "flag on target hints actions" exit=1 err="options follow the action" -- 1 --stat
@@ -356,6 +356,62 @@ echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"
 check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- "1,$didx" diff --name-only
 check "dirty warning points at live" exit=0 err="git-wt 1,$didx diff live" -- "1,$didx" diff --name-only
 rm -f "$CODE/myapp-feature-login/uncommitted.txt"
+
+# --- commits ----------------------------------------------------------------
+# Same divergence the diff cases built: 'mainside' on main, 'loginside' on
+# feature/login, 'init' shared by both. That makes every cell predictable --
+# one commit per column, and a shared one that must not appear at all.
+check "commits heads the columns"    exit=0 out="feature/login" -- "1,$didx" commits
+check "commits lists both sides"     exit=0 out="mainside" -- "1,$didx" commits
+check "commits lists the other side" exit=0 out="loginside" -- "1,$didx" commits
+
+# The cut is the point: a shared history would check in every column and say
+# nothing, so it is excluded until --all asks for it.
+shared="$("$BIN" "1,$didx" commits 2>/dev/null)"
+scmd="$(fmt_cmd "1,$didx" commits)"
+case "$shared" in
+  *init*) report FAIL HAPPY "commits cuts shared history" "$scmd" "'init' still listed: '$shared'" ;;
+  *)      report PASS HAPPY "commits cuts shared history" "$scmd" ;;
+esac
+check "commits --all adds shared"    exit=0 out="init" -- "1,$didx" commits --all
+
+# A row is checked only where the branch really has the commit. Marks are
+# positional, so assert the whole row: 'mainside' is main's alone.
+mrow="$("$BIN" "1,$didx" commits 2>/dev/null | awk '/mainside/{print $NF}')"
+mcmd="$(fmt_cmd "1,$didx" commits)"
+if [ "$mrow" = "·" ]; then
+  report PASS HAPPY "commits leaves foreign cell" "$mcmd  # mainside unchecked on login"
+else
+  report FAIL HAPPY "commits leaves foreign cell" "$mcmd" "wanted '·' in login's column, got '$mrow'"
+fi
+
+# Three columns: what diff cannot do, and the reason the command exists.
+oidx="$("$BIN" list | awk '$2=="feature/logout"{print $1}')"
+check "commits takes three worktrees" exit=0 out="feature/logout" -- "1,$didx,$oidx" commits
+
+# Which row survives a cap is not asserted: the suite's commits land in the same
+# second, so --date-order ties and settles it by ref order. The count is the
+# contract -- '-n 1' means one row, whichever it is.
+for spelling in "-n 1" "--limit=1"; do
+  # shellcheck disable=SC2086 # both spellings must word-split into flag+value
+  ncnt="$("$BIN" "1,$didx" commits $spelling 2>/dev/null | grep -cE 'mainside|loginside')"
+  ncmd="$(fmt_cmd "1,$didx" commits $spelling)"
+  if [ "$ncnt" = 1 ]; then
+    report PASS HAPPY "commits $spelling caps the rows" "$ncmd"
+  else
+    report FAIL HAPPY "commits $spelling caps the rows" "$ncmd" "wanted 1 row, got $ncnt"
+  fi
+done
+
+# A worktree against itself is a column of guaranteed checks: never meant.
+check "commits rejects a dup target" exit=1 err="listed twice" -- "1,1" commits
+check "commits needs two worktrees"  exit=1 err="commits takes a worktree list" -- 1 commits
+check "commits bad index errors"     exit=1 err="no worktree #99" -- "1,99" commits
+check "commits rejects git flags"    exit=1 err="unexpected argument '--stat' for commits" -- "1,$didx" commits --stat
+check "commits -n needs a count"     exit=1 err="-n needs a count" -- "1,$didx" commits -n
+check "commits -n 0 errors"          exit=1 err="would show nothing" -- "1,$didx" commits -n 0
+check "commits -n non-numeric"       exit=1 err="bad count 'x'" -- "1,$didx" commits -n x
+check "bare commits hints the list"  exit=1 err="use 'git-wt 1,2 commits'" -- commits
 
 # --- diff live --------------------------------------------------------------
 # The case no ref diff can answer: put BOTH worktrees on the same commit, then

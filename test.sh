@@ -306,20 +306,26 @@ didx="$("$BIN" list | awk '$2=="feature/login"{print $1}')"
 ( cd "$APP" && echo m > onlymain.txt && git add -A && git commit -qm mainside )
 ( cd "$CODE/myapp-feature-login" && echo l > onlylogin.txt && git add -A && git commit -qm loginside )
 
+check "diff --name-only shows adds"  exit=0 out="onlylogin.txt" -- "1,$didx" diff --name-only
 # '..' is both directions: main's file shows as a deletion, login's as an add.
-check "diff --name-only both sides"  exit=0 out="onlylogin.txt" -- "1,$didx" diff --name-only
 check "diff .. keeps main-only file" exit=0 out="onlymain.txt" -- "1,$didx" diff .. --name-only
-# '...' is "since the fork", so main's own later commit drops out.
-dots3="$("$BIN" "1,$didx" diff ... --name-only 2>/dev/null)"
-dcmd="$(fmt_cmd "1,$didx" diff ... --name-only)"
-case "$dots3" in
-  *onlymain.txt*)
-    report FAIL HAPPY "diff ... hides main-only file" "$dcmd" "main-only file still listed: '$dots3'" ;;
-  *onlylogin.txt*)
-    report PASS HAPPY "diff ... hides main-only file" "$dcmd" ;;
-  *)
-    report FAIL HAPPY "diff ... hides main-only file" "$dcmd" "wanted login's file, got '$dots3'" ;;
-esac
+# The default is '...' -- "since the fork" -- so main's own later commit drops
+# out, and the listing matches what '1,N merge' would actually bring in. A '..'
+# default would report main's commit as a deletion the merge never makes.
+for spelling in "" "..."; do
+  # shellcheck disable=SC2086 # empty spelling must vanish, not pass ''
+  dots3="$("$BIN" "1,$didx" diff $spelling --name-only 2>/dev/null)"
+  dcmd="$(fmt_cmd "1,$didx" diff $spelling --name-only)"
+  name="diff ${spelling:-(default)} hides main-only file"
+  case "$dots3" in
+    *onlymain.txt*)
+      report FAIL HAPPY "$name" "$dcmd" "main-only file still listed: '$dots3'" ;;
+    *onlylogin.txt*)
+      report PASS HAPPY "$name" "$dcmd" ;;
+    *)
+      report FAIL HAPPY "$name" "$dcmd" "wanted login's file, got '$dots3'" ;;
+  esac
+done
 check "diff --stat"                  exit=0 out="1 +" -- "1,$didx" diff --stat
 check "diff --name-status"           exit=0 out="A" -- "1,$didx" diff --name-status
 # Exact output, not a substring: the unfiltered diff also *contains*
@@ -343,7 +349,7 @@ check "diff rejects three targets"   exit=1 err="exactly two worktrees, got 3" -
 check "diff rejects other git flags" exit=1 err="unexpected argument '-w' for diff" -- "1,$didx" diff -w
 # The hint must name the real branches, not echo the offending flag back as a
 # ref: 'git diff -w..feat -w' is what a shadowed loop variable looks like.
-check "diff flag error hints git"    exit=1 err="run git itself: git diff main..feature/login -w" -- "1,$didx" diff -w
+check "diff flag error hints git"    exit=1 err="run git itself: git diff main...feature/login -w" -- "1,$didx" diff -w
 
 # Uncommitted work is invisible to a ref diff, so it must be called out.
 echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"

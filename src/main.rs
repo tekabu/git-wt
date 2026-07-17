@@ -55,8 +55,8 @@ REMOVE OPTIONS:
 DIFF OPTIONS:
     live                  Compare the files on disk, not the commits
     hunks                 Print each file's changed line numbers
-    ..                    Range: everything that differs (default)
-    ...                   Range: only what M added since it forked from N
+    ...                   Range: only what M added since it forked from N (default)
+    ..                    Range: everything that differs between the two tips
         --name-only       File names only
         --name-status     File names with A/M/D
         --stat            File names with a churn summary
@@ -67,13 +67,18 @@ DIFF:
     own pager, so uncommitted work does not show up; diff warns when either
     side is dirty and points at 'live'.
 
-        git-wt 1,2 diff              -> git diff <branch 1>..<branch 2>
-        git-wt 1,2 diff ...          -> git diff <branch 1>...<branch 2>
+        git-wt 1,2 diff              -> git diff <branch 1>...<branch 2>
+        git-wt 1,2 diff ..           -> git diff <branch 1>..<branch 2>
         git-wt 1,2 diff --stat
         git-wt 1,2 diff -- src/
 
+    The default range is '...', so '1,2 diff' shows exactly what '1,2 merge'
+    would bring in: M's own commits since the fork, and nothing of N's. '..'
+    compares the two tips instead, which also reports N's commits, inverted,
+    as if M had removed them.
+
     Any other git flag is an error, not a passthrough: run git yourself,
-    'git diff <A>..<B> <flag>'. The error prints that command for you.
+    'git diff <A>...<B> <flag>'. The error prints that command for you.
 
 DIFF LIVE:
     'live' compares the literal bytes in the two directories, so uncommitted
@@ -1529,7 +1534,7 @@ fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], rest: &[String]) ->
                      closest, one file at a time"
                         .to_string()
                 } else {
-                    let d = dots.unwrap_or("..");
+                    let d = dots.unwrap_or("...");
                     format!(
                         "hint: for any other git flag, run git itself: \
                          git diff {a}{d}{b} {unknown}"
@@ -1581,7 +1586,12 @@ fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], rest: &[String]) ->
         }
     }
 
-    let dots = dots.unwrap_or("..");
+    // '...' by default so a bare '1,2 diff' previews '1,2 merge': the range
+    // holds M's commits since the fork and nothing of N's, which is what the
+    // merge brings in. '..' answers a different question -- tip vs tip -- and
+    // reports N's own commits as deletions, which reads as a huge phantom diff
+    // on branches that have diverged at all.
+    let dots = dots.unwrap_or("...");
     if live {
         let files = live_diff(
             root,

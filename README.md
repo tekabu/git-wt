@@ -241,8 +241,8 @@ leaves you exactly where you are.
 Diff two worktrees in the terminal, through git's own pager:
 
 ```sh
-git-wt 1,2 diff             # git diff <branch 1>..<branch 2>
-git-wt 1,2 diff ...         # git diff <branch 1>...<branch 2>
+git-wt 1,2 diff             # git diff <branch 1>...<branch 2>
+git-wt 1,2 diff ..          # git diff <branch 1>..<branch 2>
 git-wt 1,2 diff --name-only
 git-wt 1,2 diff --stat -- src/
 ```
@@ -251,9 +251,11 @@ It compares the two worktrees' **branches**, not their directories — a directo
 diff would drag in `target/`, `node_modules` and everything else `.gitignore`
 exists to hide. Detached worktrees diff by HEAD sha.
 
-`..` (the default) is everything that differs between the two. `...` is only what
-worktree M added since it forked from worktree N — the review view, which hides
-N's own newer commits.
+`...` (the default) is only what worktree M added since it forked from worktree N
+— the review view, and exactly what `git-wt N,M merge` would bring in. `..`
+compares the two tips instead: it also reports N's own newer commits, inverted,
+as if M had deleted them, which on diverged branches reads as a huge diff that no
+merge would ever apply.
 
 | Flag | Shows |
 |---|---|
@@ -265,7 +267,7 @@ N's own newer commits.
 | `hunks` | Each file's changed line numbers |
 
 That is the whole flag set on purpose. Anything else git diff can do, get from
-git diff — the error for an unknown flag prints the exact `git diff <A>..<B>`
+git diff — the error for an unknown flag prints the exact `git diff <A>...<B>`
 command to run instead.
 
 Because the comparison is committed state, uncommitted work is invisible to it.
@@ -586,9 +588,9 @@ Every form the CLI accepts. Examples assume:
 
 | Command | Effect |
 |---|---|
-| `git-wt 1,2 diff` | `git diff <branch 1>..<branch 2>` — everything that differs |
-| `git-wt 1,2 diff ..` | Same, spelled out |
-| `git-wt 1,2 diff ...` | `git diff <branch 1>...<branch 2>` — only 2's own commits |
+| `git-wt 1,2 diff` | `git diff <branch 1>...<branch 2>` — only 2's own commits, i.e. what `1,2 merge` brings |
+| `git-wt 1,2 diff ...` | Same, spelled out |
+| `git-wt 1,2 diff ..` | `git diff <branch 1>..<branch 2>` — tip vs tip, includes 1's commits inverted |
 | `git-wt 1,2 diff --name-only` | File names only (also `--name-status`, `--stat`) |
 | `git-wt 1,2 diff -- src/` | Limit to `src/`; combines with the flags above |
 | `git-wt 1,2 diff live` | Compare the files on disk, `.gitignore` honored |

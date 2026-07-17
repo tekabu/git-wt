@@ -439,6 +439,25 @@ git's own `--since`/`--until` filter on *committer* dates and would quietly
 disagree with the column, so git-wt does the comparison itself and rejects
 those two spellings with a pointer to `--from-date`/`--to-date`.
 
+**Days and times.** The column shows a day, but the rows are ordered by the
+full timestamp — commits from one day sort by time of day, so a busy afternoon
+reads in the order it happened even though every row says `Jul. 17, 2026`:
+
+```
+commit    author         date           uat  main  subject
+4ddb114   kinlie         Jul. 17, 2026   ✓    ·    ...21:00
+c8eed92   jhoriz.aquino  Jul. 17, 2026   ·    ✓    ...17:00
+4bcb71a   kinlie         Jul. 17, 2026   ✓    ·    ...13:00
+241a891   nino           Jul. 17, 2026   ·    ✓    ...09:00
+```
+
+Date *bounds*, by contrast, are whole days: `--date '=2026-07-17'` takes every
+commit of that day, 09:00 and 23:30 alike, and `--from-date 2026-07-17` starts
+at that day's first moment. The day is the **author's own** — a commit written
+at 23:30 +0800 belongs to the day it was there, not to whatever day it was
+where you're standing — which is exactly why a bound can never contradict the
+date printed next to it.
+
 Rows are ordered by date across all branches at once, so a row's neighbors are
 the commits written around the same time, not the rest of its branch. That
 answers "what happened when". `--topo` answers the other question — "what did

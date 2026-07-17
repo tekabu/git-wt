@@ -152,6 +152,13 @@ COMMITS FILTERS:
     with the column. --author is a fuzzy subsequence, case-folded, the
     same match 'git-wt list SEARCH' uses: 'nes' finds 'Nino Escalera'.
 
+    Date bounds are whole days: '--date =2026-07-17' takes every commit
+    of that day, 09:00 and 23:30 alike. The day is the author's own --
+    a commit written at 23:30 +0800 belongs to the day it was there, not
+    to yours -- so a bound never contradicts the printed column. Rows are
+    still ordered by the full timestamp: same-day commits sort by time of
+    day, even though the column only shows the day.
+
     Quote --date, always. '>' and '<' are redirects, so an unquoted
     --date >=2026-01-01 writes a file called '=2026-01-01' and git-wt
     sees no date at all. --from-date/--to-date need no quoting.
@@ -4259,6 +4266,56 @@ diff --git a/gone.txt b/gone.txt
             subjects(Order::Topo),
             ["feat-05", "feat-03", "main-04", "main-02", "base"]
         );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn same_day_rows_are_ordered_by_time_of_day() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-sameday-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str], when: &str) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", when)
+                .env("GIT_COMMITTER_DATE", when)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+        }
+        let commit = |name: &str, when: &str| {
+            git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", name], when);
+        };
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"], "");
+        git(&tmp, &["config", "user.email", "t@test"], "");
+        git(&tmp, &["config", "user.name", "t"], "");
+
+        // Two branches, four commits, one calendar day. The column prints the
+        // day, so every row looks tied; only the time can order them.
+        commit("base", "2026-07-01T10:00:00");
+        git(&tmp, &["branch", "feat"], "");
+        commit("main-09h", "2026-07-17T09:00:00");
+        commit("main-17h", "2026-07-17T17:00:00");
+        git(&tmp, &["checkout", "--quiet", "feat"], "");
+        commit("feat-13h", "2026-07-17T13:00:00");
+        commit("feat-21h", "2026-07-17T21:00:00");
+
+        let refs = vec!["main".to_string(), "feat".to_string()];
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date).unwrap();
+        let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+
+        // Ordering reads the full timestamp, not the printed day: the branches
+        // interleave by hour even though all four rows show 'Jul. 17, 2026'.
+        assert_eq!(seen, ["feat-21h", "main-17h", "feat-13h", "main-09h", "base"]);
+        assert!(rows[..4].iter().all(|r| r.date == "Jul. 17, 2026"));
+
+        // The filter key is the day, so one '=' bound takes every hour in it.
+        let day = parse_date_filter("=2026-07-17").unwrap();
+        assert_eq!(rows.iter().filter(|r| day.admits(&r.key)).count(), 4);
 
         std::fs::remove_dir_all(&tmp).ok();
     }

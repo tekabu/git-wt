@@ -4650,6 +4650,19 @@ fn render_commits(
     // an unpadded day makes 'Jan. 1, 2026' a character shorter than
     // 'Sep. 15, 2026'; left-aligned, that ragged edge is the first thing you
     // see. ISO is one width, so the alignment is moot there -- and free.
+    // Legend above the header: the marks are the point of the table and the
+    // '≈'/'·' distinction is not self-evident, so name each glyph once up top.
+    let legend = format!(
+        "{} {}   {} {}   {} {}",
+        paint(CHECK, GREEN, color),
+        paint("has commit", DIM, color),
+        paint(EQUIV, YELLOW, color),
+        paint("same patch, other sha", DIM, color),
+        paint(MISS, DIM, color),
+        paint("neither", DIM, color),
+    );
+    println!("{}", legend);
+
     let mut head = format!("{:<shaw$}  ", "commit");
     if let Some(w) = pickw {
         head.push_str(&format!("{PICK_HEAD:<w$}  "));

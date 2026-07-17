@@ -107,6 +107,8 @@ COMMITS OPTIONS:
         --no-cherry       Skip the patch comparison behind '≈' (faster)
         --topo            Group each branch's commits, don't interleave
         --reverse         Newest last (alias: --oldest-first)
+    -w, --wrap [N]        Let a long subject take N terminal lines, not
+                          one; 'full' or a bare --wrap never cuts it
         --md [FILE]       Write a markdown table instead of printing one
                           (default: commits_<date>_<time>.md in the cwd)
         --show-time       Add the time to the date column, 24-hour
@@ -252,6 +254,22 @@ COMMITS DATES:
     rather than wrapped; piped output is never cut, so 'commits | grep' still
     sees whole subjects. Dates are author dates, and the author is
     .mailmap-aware, so one contributor is one name.
+
+    '--wrap N' buys the cut subject more room: N lines instead of one, each
+    the width the subject column already had, so what a conventional-commit
+    prefix pushes past the edge lands on the next line rather than in an
+    ellipsis. The extra lines are indented to the subject column, so the
+    table still reads as one row per commit -- and one row per commit is
+    why the default stays 1.
+
+        git-wt 1,2 commits --wrap 2      # two lines of subject
+        git-wt 1,2 commits -w full       # whole subject, however many
+        git-wt 1,2 commits --wrap        # the same 'full'
+
+    Only the last line an N allows is ellipsized, and only when the subject
+    outruns it. 'full' wraps until the subject is spent, so nothing is ever
+    lost; off a terminal there is nothing to wrap to and --wrap does nothing,
+    the whole subject being on the line already.
 
 MARKS:
     ✓   the branch has this commit
@@ -2442,6 +2460,28 @@ impl DateFilter {
     }
 }
 
+/// How many terminal lines a subject may take before it is cut.
+///
+/// One line is the table's shape -- a row is a commit -- so more of it is
+/// asked for, never inferred: a subject that wraps by itself is the table
+/// coming apart, which is what the budget exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Wrap {
+    /// At most this many lines; the last one ellipsized if the subject runs on.
+    Lines(usize),
+    /// However many the subject needs. Nothing is cut.
+    Full,
+}
+
+impl Wrap {
+    fn lines(self) -> usize {
+        match self {
+            Wrap::Lines(n) => n,
+            Wrap::Full => usize::MAX,
+        }
+    }
+}
+
 /// Options for `commits`.
 #[derive(Debug)]
 struct CommitsArgs {
@@ -2459,6 +2499,8 @@ struct CommitsArgs {
     no_cherry: bool,
     /// Rows come from every worktree at once, not the first one's log alone.
     union: bool,
+    /// Terminal lines a subject may take. Moot off a terminal: nothing is cut.
+    wrap: Wrap,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
@@ -2474,6 +2516,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut reverse = false;
     let mut no_cherry = false;
     let mut union = false;
+    let mut wrap = Wrap::Lines(1);
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -2487,6 +2530,19 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             "--reverse" | "--oldest-first" => reverse = true,
             "--no-cherry" => no_cherry = true,
             "--union" | "--any" => union = true,
+            // The count is optional, and only a count or 'full' is read as
+            // one: '--wrap --topo' asks for the whole subject, not for a
+            // worktree named '--topo' to be parsed as a number.
+            "--wrap" | "-w" => {
+                wrap = match it.peek().and_then(|v| parse_wrap(v).ok()) {
+                    Some(w) => {
+                        it.next();
+                        w
+                    }
+                    None => Wrap::Full,
+                };
+            }
+            s if s.starts_with("--wrap=") => wrap = parse_wrap(&s["--wrap=".len()..])?,
             // The flag this replaced: '--all' asked for the shared history back
             // when the rows were the diverged ones. Nothing is cut now, so the
             // question it answered is the default, and the one thing it could
@@ -2552,12 +2608,26 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
         }
     }
     Ok(CommitsArgs {
-        limit, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, union,
+        limit, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, union, wrap,
     })
+}
+
+/// Read `--wrap`'s value: a line count, or 'full' for as many as it takes.
+fn parse_wrap(v: &str) -> Result<Wrap, String> {
+    if v.eq_ignore_ascii_case("full") || v.eq_ignore_ascii_case("all") {
+        return Ok(Wrap::Full);
+    }
+    match v.parse::<usize>() {
+        // Zero lines is no subject column, which no one means by 'wrap'.
+        Ok(0) | Err(_) => Err(format!("{WRAP_BAD}\n  got: '{v}'")),
+        Ok(n) => Ok(Wrap::Lines(n)),
+    }
 }
 
 const ALL_MSG: &str = "no '--all' for commits: the rows are the whole log now, nothing is cut\n\
      hint: '--union' adds every other worktree's commits as rows too";
+const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'full', e.g. '--wrap 2'\n\
+     hint: a bare '--wrap' is 'full'";
 const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
      hint: quote it, or the shell reads '>' as a redirect";
 const FROM_DATE_MISSING: &str = "--from-date needs a date, e.g. '--from-date 2026-01-01'";
@@ -2779,7 +2849,7 @@ fn cmd_commits(
     }
 
     let tty = std::io::stdout().is_terminal();
-    render_commits(&rows, &names, &sets, &equiv, color_enabled(tty), term_width(tty));
+    render_commits(&rows, &names, &sets, &equiv, color_enabled(tty), term_width(tty), args.wrap);
     Ok(())
 }
 
@@ -3153,6 +3223,59 @@ fn write_md(
     Ok(())
 }
 
+/// Split `s` at the last column that fits `max`, preferring a word boundary.
+///
+/// The tail keeps no leading space: it starts a line of its own, where a space
+/// would push the text a column out of the subject column it is indented to.
+fn split_at_width(s: &str, max: usize) -> (&str, &str) {
+    let mut used = 0;
+    let mut end = s.len();
+    for (i, c) in s.char_indices() {
+        let w = if c.is_ascii() { 1 } else { 2 };
+        if used + w > max {
+            end = i;
+            break;
+        }
+        used += w;
+    }
+    // A word longer than the whole budget has no boundary to break at -- a sha
+    // or a URL, usually -- so it is cut mid-word rather than left to overflow.
+    match s[..end].rfind(' ').filter(|b| *b > 0) {
+        Some(b) => (&s[..b], s[b + 1..].trim_start()),
+        None => (&s[..end], s[end..].trim_start()),
+    }
+}
+
+/// Break `s` into at most `lines` lines of `max` columns by `width_bound`.
+///
+/// Only the last line an allowance permits is ellipsized, and only when the
+/// subject outruns it: the ellipsis means "there was more", so a line that
+/// wrapped must not wear one.
+fn wrap_wide(s: &str, max: usize, lines: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    loop {
+        if width_bound(rest) <= max {
+            out.push(rest.to_string());
+            return out;
+        }
+        // The last line this allowance buys: what is left has to fit in it.
+        if out.len() + 1 >= lines {
+            out.push(ellipsize_wide(rest, max));
+            return out;
+        }
+        let (head, tail) = split_at_width(rest, max);
+        // No progress means no boundary and no room -- a budget under one
+        // character's width. Cut the loop rather than spin on it.
+        if head.is_empty() {
+            out.push(ellipsize_wide(rest, max));
+            return out;
+        }
+        out.push(head.to_string());
+        rest = tail;
+    }
+}
+
 /// Print the table: sha, author, date, a mark per branch, then the subject.
 ///
 /// The subject comes last because it is the only cell holding arbitrary text.
@@ -3170,6 +3293,7 @@ fn render_commits(
     equiv: &[HashSet<String>],
     color: bool,
     width: Option<usize>,
+    wrap: Wrap,
 ) {
     let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
     let marksw: usize = widths.iter().map(|w| w + 2).sum();
@@ -3203,23 +3327,32 @@ fn render_commits(
         .max()
         .unwrap_or(0);
 
-    let rows: Vec<CommitRow> = rows
+    // Everything left of the subject, which is both what the subject has to
+    // fit beside and what a wrapped line is indented past to line up under it.
+    let fixed = shaw + 2 + authw + 2 + datew + marksw + 2;
+
+    let rows: Vec<(CommitRow, Vec<String>)> = rows
         .iter()
-        .map(|r| CommitRow {
-            sha: r.sha.clone(),
-            short: r.short.clone(),
-            author: ellipsize(&r.author, authw),
-            date: r.date.clone(),
-            key: r.key.clone(),
-            text: match width {
+        .map(|r| {
+            let text = match width {
                 // Only the tail is budgeted, and only to keep a long subject
-                // from wrapping; piped output has no terminal to fit.
+                // from wrapping where it was not asked to; piped output has no
+                // terminal to fit, so it is never cut and never wrapped.
                 Some(w) => {
-                    let fixed = shaw + 2 + authw + 2 + datew + marksw + 2;
-                    ellipsize_wide(&r.text, w.saturating_sub(fixed).max(MIN_TEXTW))
+                    let textw = w.saturating_sub(fixed).max(MIN_TEXTW);
+                    wrap_wide(&r.text, textw, wrap.lines())
                 }
-                None => r.text.clone(),
-            },
+                None => vec![r.text.clone()],
+            };
+            let row = CommitRow {
+                sha: r.sha.clone(),
+                short: r.short.clone(),
+                author: ellipsize(&r.author, authw),
+                date: r.date.clone(),
+                key: r.key.clone(),
+                text: r.text.clone(),
+            };
+            (row, text)
         })
         .collect();
     let rows = &rows;
@@ -3239,7 +3372,7 @@ fn render_commits(
     head.push_str("  subject");
     println!("{}", paint(&head, DIM, color));
 
-    for row in rows {
+    for (row, text) in rows {
         let mut line = format!("{:<shaw$}  ", row.short);
         // Dim, so the marks and the subject stay what the eye lands on.
         let meta = format!("{:<authw$}  {:>datew$}", row.author, row.date);
@@ -3254,8 +3387,14 @@ fn render_commits(
             line.push_str(&" ".repeat(w - 1 - pad));
         }
         line.push_str("  ");
-        line.push_str(&row.text);
+        line.push_str(&text[0]);
         println!("{}", line.trim_end());
+        // The rest of a wrapped subject, indented to the column it belongs to:
+        // the row is still one commit, and the marks stay the leftmost thing
+        // the eye has to scan.
+        for more in &text[1..] {
+            println!("{}{}", " ".repeat(fixed), more.trim_end());
+        }
     }
 }
 
@@ -4486,6 +4625,70 @@ diff --git a/gone.txt b/gone.txt
         // git's spellings point at ours instead of reading as a typo.
         assert!(parse(&["--since", "2026-01-01"]).unwrap_err().contains("--from-date"));
         assert!(parse(&["--until", "2026-01-01"]).unwrap_err().contains("--to-date"));
+    }
+
+    #[test]
+    fn wrap_reads_a_count_or_full() {
+        let parse = |a: &[&str]| {
+            parse_commits_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        // One line is the table's shape: more of it is asked for, never given.
+        assert_eq!(parse(&[]).unwrap().wrap, Wrap::Lines(1));
+        assert_eq!(parse(&["--wrap", "2"]).unwrap().wrap, Wrap::Lines(2));
+        assert_eq!(parse(&["--wrap=3"]).unwrap().wrap, Wrap::Lines(3));
+        assert_eq!(parse(&["-w", "2"]).unwrap().wrap, Wrap::Lines(2));
+        assert_eq!(parse(&["--wrap", "full"]).unwrap().wrap, Wrap::Full);
+        assert_eq!(parse(&["--wrap=full"]).unwrap().wrap, Wrap::Full);
+        assert_eq!(parse(&["--wrap"]).unwrap().wrap, Wrap::Full);
+        // The count is optional, so the flag after a bare --wrap must not be
+        // eaten -- the same rule --md's optional path follows.
+        let a = parse(&["--wrap", "--topo"]).unwrap();
+        assert_eq!(a.wrap, Wrap::Full);
+        assert!(a.topo, "--topo must still take effect");
+        // Zero lines is no subject column, and a word is not a count.
+        assert!(parse(&["--wrap=0"]).unwrap_err().contains("1 or more"));
+        assert!(parse(&["--wrap=two"]).unwrap_err().contains("1 or more"));
+    }
+
+    #[test]
+    fn wrapping_a_subject_never_exceeds_its_budget() {
+        let s = "fix(portal-sales): validate the uploaded masterfile rows";
+        // Every line fits, and the words survive the break.
+        for line in wrap_wide(s, 20, 3) {
+            assert!(width_bound(&line) <= 20, "{line:?}");
+        }
+        assert_eq!(wrap_wide(s, 20, usize::MAX).join(" "), s, "full loses nothing");
+        // One line is the old behavior exactly: cut, with an ellipsis.
+        let one = wrap_wide(s, 20, 1);
+        assert_eq!(one.len(), 1);
+        assert!(one[0].ends_with(ELLIPSIS), "{one:?}");
+        // Only the last line an allowance permits wears the ellipsis: the
+        // others wrapped, and an ellipsis there would claim text was lost.
+        let two = wrap_wide(s, 20, 2);
+        assert_eq!(two.len(), 2);
+        assert!(!two[0].ends_with(ELLIPSIS), "{two:?}");
+        assert!(two[1].ends_with(ELLIPSIS), "{two:?}");
+        // A subject that fits takes one line whatever it is allowed.
+        assert_eq!(wrap_wide("short one", 20, 3), vec!["short one"]);
+        // An emoji is two columns wide and one char: the budget counts columns.
+        for line in wrap_wide("🚀🚀🚀🚀🚀🚀 ship it", 6, 4) {
+            assert!(width_bound(&line) <= 6, "{line:?}");
+        }
+        // A word longer than the budget has no boundary to break at, so it is
+        // cut rather than left to overflow -- and the wrap still terminates.
+        let long = wrap_wide("aaaaaaaaaaaaaaaaaaaaaaaa tail", 8, usize::MAX);
+        assert!(long.len() > 1, "{long:?}");
+        assert!(long.iter().all(|l| width_bound(l) <= 8), "{long:?}");
+        assert_eq!(long.last().unwrap(), "tail");
+    }
+
+    #[test]
+    fn wrapped_lines_start_at_the_subject_column() {
+        // A leading space would push the text one column past the indent the
+        // continuation line is padded to -- the table failing to line up.
+        let (head, tail) = split_at_width("feat: add the thing", 10);
+        assert_eq!(head, "feat: add");
+        assert_eq!(tail, "the thing");
     }
 
     #[test]

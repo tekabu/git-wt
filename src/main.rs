@@ -102,6 +102,9 @@ DIFF LIVE:
 COMMITS OPTIONS:
     -n, --limit N         Show at most N commits (newest first)
         --all             Every commit, not just the diverged ones
+        --anchor          Rows are the first worktree's whole log; the other
+                          columns only say who else has each one
+                          (alias: --first-only)
         --no-merges       Drop merge commits; keep the work they joined
         --no-cherry       Skip the patch comparison behind '≈' (faster)
         --topo            Group each branch's commits, don't interleave
@@ -130,7 +133,18 @@ COMMITS:
         git-wt 2 commits             # worktree 2 vs the one you stand in
         git-wt 1,2 commits -n 20     # newest 20 rows only
         git-wt 1,2,3 commits --all   # include the shared history too
+        git-wt 1,2,3 commits --anchor    # 1's log, checked against 2 and 3
         git-wt 1,2 commits --no-merges   # only the commits someone wrote
+
+    '--anchor' turns the table one-sided. The rows stop being the union of
+    the branches and become exactly 'git log --oneline <first>' -- every
+    commit that branch has, shared history included -- and the remaining
+    columns answer one question per row: does this one have it too. A
+    commit only worktree 2 carries is then no row at all, where the
+    default gives it one with a '·' under 1. Read it as 'what of mine has
+    landed elsewhere'; the default reads as 'who is out of sync with who'.
+    '--all' says nothing new next to it: an anchored table is already the
+    whole log of the branch it is anchored to.
 
     '--no-merges' drops merge commits: they carry no work of their own,
     and on a branch that merges often they are most of the table. The
@@ -2445,6 +2459,8 @@ struct CommitsArgs {
     md: Option<Option<String>>,
     reverse: bool,
     no_cherry: bool,
+    /// Rows come from the first worktree alone: its whole log, nothing else.
+    anchor: bool,
 }
 
 fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
@@ -2460,6 +2476,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
     let mut md = None;
     let mut reverse = false;
     let mut no_cherry = false;
+    let mut anchor = false;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -2473,6 +2490,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
             "--no-merges" => no_merges = true,
             "--reverse" | "--oldest-first" => reverse = true,
             "--no-cherry" => no_cherry = true,
+            "--anchor" | "--first-only" => anchor = true,
             "--show-time" => fmt.time = true,
             "--date-human" => fmt.human = true,
             // The path is optional, so the next word is only it when it is not
@@ -2532,7 +2550,7 @@ fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
         }
     }
     Ok(CommitsArgs {
-        limit, all, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry,
+        limit, all, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, anchor,
     })
 }
 
@@ -2644,11 +2662,21 @@ fn cmd_commits(
     // a repo with any history at all, the shared past is most of it and every
     // column would be checked. Unrelated histories have no base to cut at, so
     // the walk covers everything -- which is also what --all asks for.
-    let base = if args.all {
+    //
+    // --anchor asks the other question: not "what do these branches not share"
+    // but "what is on the first one, and who else has it". Its rows are that
+    // branch's whole log, so there is nothing to cut -- and the sets, cut the
+    // same way, then answer for the full history of every other column rather
+    // than for their diverged tips.
+    let base = if args.all || args.anchor {
         None
     } else {
         octopus_base(root, &refs)
     };
+
+    // The rows are one ref's walk under --anchor; a commit only worktree 2 has
+    // is not a row at all, it is an absence from the marks on 2's column.
+    let row_refs: &[String] = if args.anchor { &refs[..1] } else { &refs };
 
     // A filter runs here rather than in git, so `-n` has to as well: git's -n
     // caps the walk, and capping before the filter would leave rows the filter
@@ -2662,7 +2690,7 @@ fn cmd_commits(
     let order = if args.topo { Order::Topo } else { Order::Date };
     let all_rows = commit_rows(
         root,
-        &refs,
+        row_refs,
         base.as_deref(),
         git_limit,
         order,
@@ -2712,7 +2740,10 @@ fn cmd_commits(
         // A filter that matched nothing is a different story from a history
         // with nothing in it: say which one happened.
         let msg = if filtered && unfiltered > 0 {
-            format!("no commits match those filters: {unfiltered} diverged commits, none kept")
+            let what = if args.all || args.anchor { "commits" } else { "diverged commits" };
+            format!("no commits match those filters: {unfiltered} {what}, none kept")
+        } else if args.anchor {
+            format!("no commits on {}", label(&trees[idxs[0]]))
         } else if args.all {
             "no commits".to_string()
         } else {
@@ -4610,6 +4641,22 @@ diff --git a/gone.txt b/gone.txt
         let shared = all.iter().find(|r| r.text.ends_with("shared")).unwrap();
         assert!(ref_shas(&tmp, "main", None).unwrap().contains(&shared.sha));
         assert!(ref_shas(&tmp, "feat", None).unwrap().contains(&shared.sha));
+
+        // What --anchor walks: the first ref alone, uncut -- exactly
+        // 'git log --oneline main'. feat's own commit is not a row, it is a
+        // missing mark on feat's column.
+        let anchored = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
+        let subjects: Vec<&str> = anchored.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(anchored.len(), 2, "{subjects:?}");
+        assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
+        assert!(subjects.iter().any(|t| t.ends_with("shared")), "{subjects:?}");
+        assert!(!subjects.iter().any(|t| t.ends_with("on-feat")), "{subjects:?}");
+        // The sets are uncut too, so the columns answer for the whole history:
+        // feat has the shared commit and not the one that is only on main.
+        let feat_all = ref_shas(&tmp, "feat", None).unwrap();
+        for row in &anchored {
+            assert_eq!(feat_all.contains(&row.sha), row.text.ends_with("shared"), "{}", row.text);
+        }
 
         // -n caps the rows, newest first.
         let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date, ISO, false).unwrap();

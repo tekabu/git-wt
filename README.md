@@ -376,6 +376,22 @@ git-wt 1,2 commits -n 20    # newest 20 rows
 git-wt 1,2,3 commits --all  # shared history too (slow on a big repo)
 ```
 
+### Anchoring on one branch
+
+`--anchor` (alias `--first-only`) makes the table one-sided. The rows stop
+being the union of the branches and become exactly `git log --oneline <first>`
+— every commit the first worktree has, shared history included — and the other
+columns only answer whether they have it too:
+
+```sh
+git-wt 1,2,3 commits --anchor   # 1's log, counter-checked against 2 and 3
+```
+
+A commit only worktree 2 carries is then no row at all, where the default gives
+it one with a `·` under 1. Read it as *what of mine has landed elsewhere*; the
+default reads as *who is out of sync with who*. `--all` adds nothing next to it:
+an anchored table is already the whole log of the branch it is anchored to.
+
 ### Spelling the date
 
 The date column is **ISO** by default — the same shape the filters take, so a
@@ -895,6 +911,7 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits --show-time` | Add the time to the date column, 24-hour |
 | `git-wt 1,2 commits --date-human` | `Jan. 31, 2026` instead of the default `2026-01-31` |
 | `git-wt 1,2 commits --reverse` | Newest last (also `--oldest-first`) |
+| `git-wt 1,2,3 commits --anchor` | Rows are worktree 1's whole log; 2 and 3 only say who else has each (also `--first-only`) |
 | `git-wt 1,2 commits --md` | Write `commits_<date>_<time>.md` in the current directory |
 | `git-wt 1,2 commits --md report.md` | Write that path, overwriting it |
 | `git-wt 1,2 commits --author nes` | Only commits whose author fuzzy-matches `nes` |

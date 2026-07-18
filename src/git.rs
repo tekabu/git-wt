@@ -84,3 +84,26 @@ pub(crate) fn git_quiet(dir: &Path, args: &[&str]) -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+
+/// Is `cmd` an executable file on PATH? Checked before spawning so a missing
+/// tool is a clear error rather than an opaque NotFound from the OS.
+pub(crate) fn on_path(cmd: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let p = dir.join(cmd);
+        p.is_file() && is_executable(&p)
+    })
+}
+
+#[cfg(unix)]
+pub(crate) fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn is_executable(_p: &Path) -> bool {
+    true
+}

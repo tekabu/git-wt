@@ -1,38 +1,37 @@
-   Compiling git-wt v1.3.13 (/Users/admin/Scripts/src/git-wt-refactor-split-main-into-modules)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.69s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
      Running unittests src/main.rs (target/debug/deps/git_wt-6fdf46985e33562c)
 
 running 69 tests
-test tests::add_path_dirname_absolute_is_verbatim ... ok
-test tests::a_piped_table_has_no_width_to_fit ... ok
-test tests::add_path_dirname_relative_path_is_parent_relative ... ok
 test tests::add_path_default_is_sibling ... ok
+test tests::add_path_dirname_absolute_is_verbatim ... ok
 test tests::add_path_dirname_is_whole_leaf ... ok
+test tests::add_path_dirname_relative_path_is_parent_relative ... ok
+test tests::a_piped_table_has_no_width_to_fit ... ok
 test tests::add_path_name_is_suffix ... ok
 test tests::add_path_parentdir_overrides ... ok
-test tests::binary_patch_reports_no_counts ... ok
 test tests::branch_like_detection ... ok
+test tests::binary_patch_reports_no_counts ... ok
 test tests::check_index_bounds ... ok
 test tests::classify_status_reads_porcelain ... ok
 test tests::col_header_uses_last_commit_name ... ok
 test tests::commits_args_take_a_limit_and_all ... ok
 test tests::commits_args_take_the_filters ... ok
-test tests::date_filters_compare_iso_dates_as_text ... ok
 test tests::containment_beats_equivalence_in_a_mark ... ok
-test tests::date_filters_parse_every_comparison ... ok
+test tests::date_filters_compare_iso_dates_as_text ... ok
 test tests::ellipsize_only_cuts_what_overflows ... ok
+test tests::date_filters_parse_every_comparison ... ok
 test tests::leaf_of_returns_last_component ... ok
 test tests::ellipsize_wide_budgets_in_columns_not_chars ... ok
 test tests::md_cells_cannot_invent_columns ... ok
-test tests::merge_rejections_name_the_offending_flag ... ok
+test tests::merge_dry_run_rejects_start_only_flags ... ok
+test tests::merge_parses_source_and_options ... ok
 test tests::merge_accepts_bare_and_dashed_resume_words ... ok
+test tests::merge_rejections_name_the_offending_flag ... ok
+test tests::merge_rejects_bad_combinations ... ok
 test tests::merge_rejects_both_ops_but_allows_repeats ... ok
 test tests::merge_rejects_both_sides_but_allows_repeats ... ok
-test tests::merge_parses_source_and_options ... ok
-test tests::merge_rejects_bad_combinations ... ok
-test tests::merge_dry_run_rejects_start_only_flags ... ok
-test tests::merge_side_maps_to_strategy_option ... ok
 test tests::merge_resume_rejects_a_side_with_a_pointed_hint ... ok
+test tests::merge_side_maps_to_strategy_option ... ok
 test tests::merge_words_take_optional_dashes_and_shorts ... ok
 test tests::omitted_hunk_count_means_one ... ok
 test tests::paint_wraps_only_when_on ... ok
@@ -42,36 +41,36 @@ test tests::patch_splits_by_file_and_reads_status_from_dev_null ... ok
 test tests::render_row_pads_and_tints ... ok
 test tests::sanitize_collapses_separators ... ok
 test tests::sh_quote_wraps_and_escapes ... ok
-test tests::subject_width_is_a_width_not_a_filter ... ok
 test tests::subseq_matches_in_order ... ok
+test tests::subject_width_is_a_width_not_a_filter ... ok
 test tests::summary_matches_gits_phrasing ... ok
 test tests::sync_all_is_worktrees_not_remotes ... ok
 test tests::sync_bare_verb_takes_no_flags ... ok
+test tests::sync_contradictions_are_typos ... ok
 test tests::sync_flags_are_per_verb ... ok
 test tests::sync_push_force_is_refused ... ok
-test tests::sync_contradictions_are_typos ... ok
 test tests::sync_repeated_flag_is_passed_once ... ok
 test tests::sync_shorts_canonicalize ... ok
 test tests::sync_skips_what_the_verb_cannot_mean ... ok
 test tests::sync_unknown_flag_is_not_a_passthrough ... ok
 test tests::sync_words_are_exact ... ok
 test tests::tracked_changes_ignore_untracked_only ... ok
-test tests::width_bound_never_under_counts_a_subject ... ok
 test tests::unknown_command_messages ... ok
-test tests::wrapped_lines_start_at_the_subject_column ... ok
+test tests::width_bound_never_under_counts_a_subject ... ok
 test tests::wrap_reads_a_count_or_full ... ok
+test tests::wrapped_lines_start_at_the_subject_column ... ok
 test tests::zero_hunk_count_is_not_an_edit ... ok
 test tests::wrapping_a_subject_never_exceeds_its_budget ... ok
 test tests::md_filename_is_stamped_and_sorts ... ok
 test tests::rows_follow_ancestry_even_when_the_dates_disagree ... ok
 test tests::no_merges_drops_only_the_merge_commits ... ok
 test tests::merged_reports_ancestor_and_non_ancestor ... ok
-test tests::topo_groups_the_branches_that_date_order_interleaves ... ok
 test tests::same_day_rows_are_ordered_by_time_of_day ... ok
+test tests::topo_groups_the_branches_that_date_order_interleaves ... ok
 test tests::commits_window_does_not_leak_merge_side_branches ... ok
 test tests::commit_rows_stop_at_the_common_ancestor ... ok
 test tests::a_cherry_picked_patch_is_neither_present_nor_missing ... ok
 test tests::commits_default_slice_uses_earliest_divergence ... ok
 
-test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
 

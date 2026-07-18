@@ -11,6 +11,12 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod cli;
+mod cmd;
+mod git;
+mod ui;
+mod worktree;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const HELP: &str = "\

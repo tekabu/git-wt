@@ -331,3 +331,52 @@ pub(crate) fn is_subseq(hay: &str, needle: &str) -> bool {
     }
     true
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subseq_matches_in_order() {
+        assert!(is_subseq("feature-login", "flogin"));
+        assert!(is_subseq("feature-login", "feat"));
+        assert!(!is_subseq("feature-login", "zzz"));
+        assert!(!is_subseq("abc", "cba"));
+    }
+
+
+    #[test]
+    fn parse_cols_accepts_status_last_and_merged() {
+        assert_eq!(parse_cols("1,4,5").unwrap(), vec![1, 4, 5]);
+        assert_eq!(parse_cols("1,2,6").unwrap(), vec![1, 2, 6]);
+        assert_eq!(parse_cols("1,7,8").unwrap(), vec![1, 7, 8]);
+        assert_eq!(parse_cols("1,9,10").unwrap(), vec![1, 9, 10]);
+        assert!(parse_cols("11").is_err());
+    }
+
+
+    #[test]
+    fn col_header_uses_last_commit_name() {
+        assert_eq!(col_header(5), "last-commit");
+        assert_eq!(col_header(7), "merged");
+        assert_eq!(col_header(8), "merged-at");
+        assert_eq!(col_header(9), "push");
+        assert_eq!(col_header(10), "pull");
+    }
+
+
+    #[test]
+    fn render_row_pads_and_tints() {
+        let cols = vec![1, 2];
+        let row = vec!["1".to_string(), "main".to_string()];
+        let widths = vec![1, 7];
+        // No color: branch is left-padded to width, no ANSI.
+        let plain = render_row(&row, &cols, &widths, Status::Clean, false);
+        assert_eq!(plain, "1  main");
+        // Color: branch cell tinted green (padding inside the escape).
+        let tinted = render_row(&row, &cols, &widths, Status::Clean, true);
+        assert_eq!(tinted, "1  \x1b[32mmain\x1b[0m");
+    }
+
+}

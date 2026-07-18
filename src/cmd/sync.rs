@@ -253,3 +253,135 @@ pub(crate) fn cmd_sync(trees: &[Worktree], idxs: &[usize], args: &SyncArgs) -> R
     let names: Vec<&str> = failed.iter().map(|(n, _)| n.as_str()).collect();
     Err(format!("{word} failed in {}: {}", failed.len(), names.join(", ")))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn sync_args(op: SyncOp, args: &[&str]) -> Result<SyncArgs, String> {
+        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_sync_args(op, &v)
+    }
+
+
+    #[test]
+    fn sync_words_are_exact() {
+        assert_eq!(SyncOp::from_word("fetch"), Some(SyncOp::Fetch));
+        assert_eq!(SyncOp::from_word("pull"), Some(SyncOp::Pull));
+        assert_eq!(SyncOp::from_word("push"), Some(SyncOp::Push));
+        // An abbreviation would shadow a branch of the same name.
+        assert_eq!(SyncOp::from_word("pu"), None);
+        assert_eq!(SyncOp::from_word("--pull"), None);
+    }
+
+
+    #[test]
+    fn sync_bare_verb_takes_no_flags() {
+        let a = sync_args(SyncOp::Pull, &[]).unwrap();
+        assert!(!a.all);
+        assert!(a.flags.is_empty());
+    }
+
+
+    #[test]
+    fn sync_all_is_worktrees_not_remotes() {
+        assert!(sync_args(SyncOp::Fetch, &["--all"]).unwrap().all);
+        assert!(sync_args(SyncOp::Push, &["-a"]).unwrap().all);
+        // `--all` is ours, so it never reaches git as `fetch --all` (every remote).
+        assert!(sync_args(SyncOp::Fetch, &["--all"]).unwrap().flags.is_empty());
+    }
+
+
+    #[test]
+    fn sync_shorts_canonicalize() {
+        assert_eq!(sync_args(SyncOp::Push, &["-u"]).unwrap().flags, ["--set-upstream"]);
+        assert_eq!(sync_args(SyncOp::Push, &["-n"]).unwrap().flags, ["--dry-run"]);
+        assert_eq!(sync_args(SyncOp::Fetch, &["-p"]).unwrap().flags, ["--prune"]);
+        assert_eq!(sync_args(SyncOp::Pull, &["-p"]).unwrap().flags, ["--prune"]);
+    }
+
+
+    #[test]
+    fn sync_flags_are_per_verb() {
+        assert!(sync_args(SyncOp::Pull, &["--rebase"]).is_ok());
+        assert!(sync_args(SyncOp::Push, &["--rebase"]).is_err());
+        assert!(sync_args(SyncOp::Fetch, &["--rebase"]).is_err());
+        assert!(sync_args(SyncOp::Push, &["--set-upstream"]).is_ok());
+        assert!(sync_args(SyncOp::Pull, &["--set-upstream"]).is_err());
+        // -p is prune for fetch/pull; push has no -p at all.
+        assert!(sync_args(SyncOp::Push, &["-p"]).is_err());
+    }
+
+
+    #[test]
+    fn sync_unknown_flag_is_not_a_passthrough() {
+        let e = sync_args(SyncOp::Pull, &["--depth=1"]).unwrap_err();
+        assert!(e.contains("unknown option '--depth=1' for pull"));
+        // The error hands back the command that would work.
+        assert!(e.contains("git -C <dir> pull --depth=1"));
+    }
+
+
+    #[test]
+    fn sync_push_force_is_refused() {
+        for f in ["--force", "-f"] {
+            let e = sync_args(SyncOp::Push, &[f]).unwrap_err();
+            assert!(e.contains("no '--force' for push"));
+            assert!(e.contains("--force-with-lease"));
+        }
+        assert!(sync_args(SyncOp::Push, &["--force-with-lease"]).is_ok());
+        // fetch --force only refreshes a ref that moved; it overwrites no remote.
+        assert!(sync_args(SyncOp::Fetch, &["--force"]).is_ok());
+    }
+
+
+    #[test]
+    fn sync_contradictions_are_typos() {
+        assert!(sync_args(SyncOp::Pull, &["--rebase", "--no-rebase"]).is_err());
+        assert!(sync_args(SyncOp::Pull, &["--rebase", "--ff-only"]).is_err());
+        assert!(sync_args(SyncOp::Fetch, &["--tags", "--no-tags"]).is_err());
+        assert!(sync_args(SyncOp::Pull, &["--rebase", "--autostash"]).is_ok());
+    }
+
+
+    #[test]
+    fn sync_repeated_flag_is_passed_once() {
+        let a = sync_args(SyncOp::Fetch, &["--prune", "-p", "--prune"]).unwrap();
+        assert_eq!(a.flags, ["--prune"]);
+    }
+
+
+    #[test]
+    fn sync_skips_what_the_verb_cannot_mean() {
+        let bare = Worktree {
+            path: PathBuf::from("/code/myapp.git"),
+            branch: None,
+            detached: false,
+            bare: true,
+        };
+        let detached = Worktree {
+            path: PathBuf::from("/code/myapp-x"),
+            branch: None,
+            detached: true,
+            bare: false,
+        };
+        let normal = Worktree {
+            path: PathBuf::from("/code/myapp"),
+            branch: Some("main".into()),
+            detached: false,
+            bare: false,
+        };
+        assert_eq!(sync_skip(&bare, SyncOp::Fetch), Some("bare"));
+        assert_eq!(sync_skip(&bare, SyncOp::Push), Some("bare"));
+        // fetch only moves remote-tracking refs, so a detached HEAD is fine.
+        assert_eq!(sync_skip(&detached, SyncOp::Fetch), None);
+        assert!(sync_skip(&detached, SyncOp::Pull).is_some());
+        assert!(sync_skip(&detached, SyncOp::Push).is_some());
+        for op in [SyncOp::Fetch, SyncOp::Pull, SyncOp::Push] {
+            assert_eq!(sync_skip(&normal, op), None);
+        }
+    }
+
+}

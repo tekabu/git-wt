@@ -233,3 +233,45 @@ pub(crate) fn worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
     }
     Ok(trees)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_collapses_separators() {
+        assert_eq!(sanitize("feature/login"), "feature-login");
+        assert_eq!(sanitize("a/b/c/d"), "a-b-c-d");
+        assert_eq!(sanitize("feat//x"), "feat-x");
+        assert_eq!(sanitize("has space"), "has-space");
+        assert_eq!(sanitize("/leading/"), "leading");
+        assert_eq!(sanitize("release-3.2.1"), "release-3.2.1");
+    }
+
+
+    #[test]
+    fn classify_status_reads_porcelain() {
+        assert_eq!(classify_status(""), Status::Clean);
+        assert_eq!(classify_status("   \n"), Status::Clean);
+        assert_eq!(classify_status(" M src/main.rs"), Status::Dirty);
+        assert_eq!(classify_status("?? new.txt"), Status::Untracked);
+        // Untracked wins when both are present.
+        assert_eq!(classify_status(" M a\n?? b"), Status::Untracked);
+    }
+
+
+    #[test]
+    fn sh_quote_wraps_and_escapes() {
+        assert_eq!(sh_quote(Path::new("/code/my app")), "'/code/my app'");
+        assert_eq!(sh_quote(Path::new("/a'b")), "'/a'\\''b'");
+    }
+
+
+    #[test]
+    fn leaf_of_returns_last_component() {
+        assert_eq!(leaf_of(Path::new("/code/myapp-feat-x")), "myapp-feat-x");
+        assert_eq!(leaf_of(Path::new("myapp")), "myapp");
+    }
+
+}

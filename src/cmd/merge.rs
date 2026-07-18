@@ -489,3 +489,157 @@ pub(crate) fn conflict_msg(dir: &Path, files: &[String], idx: usize) -> String {
     ));
     m
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::worktree::{classify_status, Status};
+
+    fn merge_args(args: &[&str]) -> Result<MergeArgs, String> {
+        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_merge_args(&v)
+    }
+
+
+    #[test]
+    fn tracked_changes_ignore_untracked_only() {
+        assert!(!has_tracked_changes(""));
+        assert!(!has_tracked_changes("?? new.txt"));
+        assert!(!has_tracked_changes("?? a\n?? b"));
+        assert!(has_tracked_changes(" M src/main.rs"));
+        assert!(has_tracked_changes("A  staged.rs"));
+        // The case classify_status collapses to Untracked: tracked edits are
+        // still present, so a merge here needs -f.
+        assert!(has_tracked_changes("?? new.txt\n M src/main.rs"));
+        assert!(has_tracked_changes(" M src/main.rs\n?? new.txt"));
+        assert_eq!(classify_status(" M a\n?? b"), Status::Untracked); // why not classify_status
+    }
+
+
+    #[test]
+    fn merge_parses_source_and_options() {
+        let a = merge_args(&["2"]).unwrap();
+        assert_eq!(a.op, MergeOp::Start("2".into()));
+        assert!(!a.no_ff && !a.squash && !a.force && a.message.is_none());
+
+        let a = merge_args(&["feat/x", "--no-ff", "-m", "sync", "-f"]).unwrap();
+        assert_eq!(a.op, MergeOp::Start("feat/x".into()));
+        assert!(a.no_ff && a.force);
+        assert_eq!(a.message.as_deref(), Some("sync"));
+
+        assert_eq!(merge_args(&["2", "--message=hi"]).unwrap().message.as_deref(), Some("hi"));
+    }
+
+
+    #[test]
+    fn merge_accepts_bare_and_dashed_resume_words() {
+        assert_eq!(merge_args(&["continue"]).unwrap().op, MergeOp::Continue);
+        assert_eq!(merge_args(&["--continue"]).unwrap().op, MergeOp::Continue);
+        assert_eq!(merge_args(&["abort"]).unwrap().op, MergeOp::Abort);
+        assert_eq!(merge_args(&["--abort"]).unwrap().op, MergeOp::Abort);
+    }
+
+
+    /// Every keyword means the same thing bare, dashed, or short.
+    #[test]
+    fn merge_words_take_optional_dashes_and_shorts() {
+        for (bare, dashed, short) in [
+            ("continue", "--continue", "-c"),
+            ("abort", "--abort", "-a"),
+        ] {
+            let want = merge_args(&[bare]).unwrap().op;
+            assert_eq!(merge_args(&[dashed]).unwrap().op, want, "{dashed}");
+            assert_eq!(merge_args(&[short]).unwrap().op, want, "{short}");
+        }
+        for (bare, dashed, short, want) in [
+            ("ours", "--ours", "-o", Side::Ours),
+            ("theirs", "--theirs", "-t", Side::Theirs),
+        ] {
+            for w in [bare, dashed, short] {
+                assert_eq!(merge_args(&["2", w]).unwrap().side, Some(want), "{w}");
+            }
+        }
+        for w in ["dry-run", "--dry-run", "-d"] {
+            assert!(merge_args(&["2", w]).unwrap().dry_run, "{w}");
+        }
+    }
+
+
+    #[test]
+    fn merge_side_maps_to_strategy_option() {
+        // -X ours / -X theirs, never -s ours: the whole-tree strategy would
+        // drop the source's changes and still record a merge.
+        assert_eq!(Side::Ours.strategy_option(), "ours");
+        assert_eq!(Side::Theirs.strategy_option(), "theirs");
+    }
+
+
+    #[test]
+    fn merge_rejects_both_ops_but_allows_repeats() {
+        let e = merge_args(&["continue", "abort"]).unwrap_err();
+        assert_eq!(e, "continue and abort conflict");
+        assert!(merge_args(&["-c", "--abort"]).is_err());
+        // Saying the same word twice is redundant, not wrong — same rule as
+        // ours/theirs.
+        assert_eq!(merge_args(&["continue", "-c"]).unwrap().op, MergeOp::Continue);
+    }
+
+
+    #[test]
+    fn merge_rejections_name_the_offending_flag() {
+        let e = merge_args(&["abort", "-m", "x", "--squash"]).unwrap_err();
+        assert!(e.contains("got -m, --squash"), "{e}");
+        let e = merge_args(&["2", "dry-run", "--no-ff", "-f"]).unwrap_err();
+        assert!(e.contains("got --no-ff, -f"), "{e}");
+    }
+
+
+    #[test]
+    fn merge_rejects_both_sides_but_allows_repeats() {
+        assert!(merge_args(&["2", "ours", "theirs"]).is_err());
+        assert!(merge_args(&["2", "-o", "--theirs"]).is_err());
+        // Saying the same side twice is redundant, not wrong.
+        assert_eq!(merge_args(&["2", "ours", "-o"]).unwrap().side, Some(Side::Ours));
+    }
+
+
+    #[test]
+    fn merge_resume_rejects_a_side_with_a_pointed_hint() {
+        // 'theirs continue' reads as "finish this by taking theirs", which git
+        // cannot do — the error has to say so rather than ignore the word.
+        let e = merge_args(&["theirs", "continue"]).unwrap_err();
+        assert!(e.contains("applied when a merge starts"), "{e}");
+        assert!(e.contains("merge abort"), "{e}");
+    }
+
+
+    #[test]
+    fn merge_dry_run_rejects_start_only_flags() {
+        assert!(merge_args(&["2", "dry-run", "--no-ff"]).is_err());
+        assert!(merge_args(&["2", "dry-run", "-m", "x"]).is_err());
+        assert!(merge_args(&["2", "dry-run", "-f"]).is_err());
+        // --ff-only gates the merge rather than shaping its commit, but a dry
+        // run has no merge to gate: merge-tree resolves in memory and never
+        // fast-forwards anything, so honoring it is impossible.
+        let e = merge_args(&["2", "dry-run", "--ff-only"]).unwrap_err();
+        assert!(e.contains("got --ff-only"), "{e}");
+        // A side is fine: it changes what the dry run would report.
+        assert!(merge_args(&["2", "dry-run", "theirs"]).is_ok());
+    }
+
+
+    #[test]
+    fn merge_rejects_bad_combinations() {
+        assert!(merge_args(&[]).is_err()); // no source
+        assert!(merge_args(&["--continue", "2"]).is_err()); // resume takes no source
+        assert!(merge_args(&["--continue", "--no-ff"]).is_err()); // nor options
+        assert!(merge_args(&["--continue", "--abort"]).is_err());
+        assert!(merge_args(&["2", "--no-ff", "--ff-only"]).is_err());
+        assert!(merge_args(&["2", "--squash", "--no-ff"]).is_err());
+        assert!(merge_args(&["2", "3"]).is_err()); // too many
+        assert!(merge_args(&["2", "--rebase"]).is_err()); // unknown option
+        assert!(merge_args(&["-m"]).is_err()); // -m needs a value
+    }
+
+}

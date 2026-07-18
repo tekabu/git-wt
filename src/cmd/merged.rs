@@ -240,3 +240,58 @@ pub(crate) fn ahead_count(dir: &Path, src: &str, dest: &str) -> Result<usize, St
         .parse()
         .map_err(|e| format!("could not parse ahead count: {e}"))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `cmd_merged` exit contract: Ok when src is already in dest, Err when not.
+    #[test]
+    fn merged_reports_ancestor_and_non_ancestor() {
+        let tmp = std::env::temp_dir().join(format!(
+            "git-wt-merged-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let mut c = std::process::Command::new("git");
+            c.current_dir(dir).args(args);
+            let out = c.output().unwrap();
+            assert!(out.status.success(), "git {:?} failed: {:?}", args, out);
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp,
+            &[
+                "init",
+                "--quiet",
+                "--initial-branch=main",
+            ],
+        );
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        std::fs::write(tmp.join("x.txt"), "init").unwrap();
+        git(&tmp, &["add", "x.txt"]);
+        git(&tmp, &["commit", "--quiet", "-m", "init"]);
+        git(&tmp, &["branch", "feat"]);
+        git(&tmp, &["checkout", "--quiet", "feat"]);
+        std::fs::write(tmp.join("y.txt"), "a").unwrap();
+        git(&tmp, &["add", "y.txt"]);
+        git(&tmp, &["commit", "--quiet", "-m", "add"]);
+
+        // main is an ancestor of feat.
+        assert!(cmd_merged(&tmp, "main", "feat").is_ok());
+        // feat is not an ancestor of main: 1 commit ahead.
+        let err = cmd_merged(&tmp, "feat", "main").unwrap_err();
+        assert!(err.contains("Ahead feat is NOT in main"), "{err}");
+        assert!(err.contains("ahead 1"), "{err}");
+        // A non-existent ref propagates git's error.
+        let err = cmd_merged(&tmp, "no-such-ref", "main").unwrap_err();
+        assert!(err.contains("no-such-ref") || err.contains("Not a valid object"), "{err}");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+}

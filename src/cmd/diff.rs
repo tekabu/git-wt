@@ -606,3 +606,110 @@ pub(crate) fn summary(files: &[FileDiff]) -> String {
     }
     s
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hunk(line: &str) -> (usize, &'static str, usize) {
+        let h = parse_hunk_header(line).expect("header should parse");
+        (h.line, h.kind, h.count)
+    }
+
+
+    #[test]
+    fn omitted_hunk_count_means_one() {
+        // '@@ -119 +119 @@' is a one-line change, not a malformed header.
+        assert_eq!(hunk("@@ -119 +119 @@"), (119, "modified", 1));
+        assert_eq!(parse_range("-119"), Some((119, 1)));
+        assert_eq!(parse_range("+42,7"), Some((42, 7)));
+    }
+
+
+    #[test]
+    fn zero_hunk_count_is_not_an_edit() {
+        // A zero side is a pure insert/delete. Labeling off the new-side
+        // number alone would report every deletion as '+0' additions.
+        assert_eq!(hunk("@@ -0,0 +290,2 @@"), (290, "added", 2));
+        assert_eq!(hunk("@@ -5,3 +4,0 @@"), (4, "deleted", 3));
+        assert_eq!(hunk("@@ -119,3 +119,5 @@ fn x() {"), (119, "modified", 5));
+    }
+
+
+    #[test]
+    fn patch_counts_skip_the_file_headers() {
+        // '--- a/x' / '+++ b/x' are +/- lines to a naive counter.
+        let patch = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new\n+extra\n";
+        let mut fd = FileDiff {
+            path: "x".into(),
+            status: 'M',
+            plus: 0,
+            minus: 0,
+            binary: false,
+            hunks: Vec::new(),
+        };
+        parse_patch_into(patch, &mut fd);
+        assert_eq!((fd.plus, fd.minus), (2, 1));
+        assert_eq!(fd.hunks.len(), 1);
+    }
+
+
+    #[test]
+    fn patch_splits_by_file_and_reads_status_from_dev_null() {
+        let patch = "\
+diff --git a/add.txt b/add.txt
+--- /dev/null
++++ b/add.txt
+@@ -0,0 +1 @@
++hi
+diff --git a/gone.txt b/gone.txt
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-bye
+";
+        let files = split_patch(patch);
+        assert_eq!(files.len(), 2);
+        assert_eq!((files[0].path.as_str(), files[0].status), ("add.txt", 'A'));
+        assert_eq!((files[0].plus, files[0].minus), (1, 0));
+        assert_eq!((files[1].path.as_str(), files[1].status), ("gone.txt", 'D'));
+        assert_eq!((files[1].plus, files[1].minus), (0, 1));
+    }
+
+
+    #[test]
+    fn binary_patch_reports_no_counts() {
+        let mut fd = FileDiff {
+            path: "i.png".into(),
+            status: 'M',
+            plus: 0,
+            minus: 0,
+            binary: false,
+            hunks: Vec::new(),
+        };
+        parse_patch_into("Binary files a/i.png and b/i.png differ\n", &mut fd);
+        assert!(fd.binary);
+        assert_eq!((fd.plus, fd.minus), (0, 0));
+    }
+
+
+    #[test]
+    fn summary_matches_gits_phrasing() {
+        let f = |p, m| FileDiff {
+            path: "x".into(),
+            status: 'M',
+            plus: p,
+            minus: m,
+            binary: false,
+            hunks: Vec::new(),
+        };
+        assert_eq!(
+            summary(&[f(90, 10), f(345, 38), f(73, 4)]),
+            "3 files changed, 508 insertions(+), 52 deletions(-)"
+        );
+        assert_eq!(summary(&[f(1, 1)]), "1 file changed, 1 insertion(+), 1 deletion(-)");
+        assert_eq!(summary(&[f(0, 2)]), "1 file changed, 2 deletions(-)");
+    }
+
+}

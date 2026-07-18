@@ -425,3 +425,64 @@ pub(crate) fn confirm(prompt: &str) -> Result<bool, String> {
     let a = line.trim().to_ascii_lowercase();
     Ok(a == "y" || a == "yes")
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_path_default_is_sibling() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/myapp-feat-x"));
+    }
+
+
+    #[test]
+    fn add_path_name_is_suffix() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", Some("test"), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/myapp-test"));
+    }
+
+
+    #[test]
+    fn add_path_dirname_is_whole_leaf() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("test"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/test"));
+    }
+
+
+    #[test]
+    fn add_path_parentdir_overrides() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, Some("/work"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/work/myapp-feat-x"));
+    }
+
+
+    #[test]
+    fn add_path_dirname_absolute_is_verbatim() {
+        let p =
+            resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("/tmp/scratch"), None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(p, PathBuf::from("/tmp/scratch"));
+    }
+
+
+    #[test]
+    fn add_path_dirname_relative_path_is_parent_relative() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("sub/test"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/sub/test"));
+    }
+
+}

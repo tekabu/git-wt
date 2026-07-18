@@ -186,3 +186,117 @@ pub(crate) fn wrap_wide(s: &str, max: usize, lines: usize) -> Vec<String> {
         rest = tail;
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paint_wraps_only_when_on() {
+        assert_eq!(paint("x", GREEN, false), "x");
+        assert_eq!(paint("x", GREEN, true), "\x1b[32mx\x1b[0m");
+    }
+
+
+    #[test]
+    fn ellipsize_only_cuts_what_overflows() {
+        assert_eq!(ellipsize("short", 10), "short");
+        // Exactly the budget is not an overflow: nothing is lost, so no marker.
+        assert_eq!(ellipsize("abcde", 5), "abcde");
+        assert_eq!(ellipsize("abcdef", 5), "abcd…");
+        // The marker costs a character, so the result still fits the budget.
+        assert_eq!(ellipsize("abcdef", 5).chars().count(), 5);
+        // Counted in characters, not bytes: a multi-byte subject must not be
+        // cut mid-codepoint, nor counted as if it were wider than it looks.
+        assert_eq!(ellipsize("héllo wörld", 20), "héllo wörld");
+        assert_eq!(ellipsize("héllo wörld", 7), "héllo …");
+        assert_eq!(ellipsize("日本語のコミット", 4), "日本語…");
+    }
+
+
+    #[test]
+    fn wrapping_a_subject_never_exceeds_its_budget() {
+        let s = "fix(portal-sales): validate the uploaded masterfile rows";
+        // Every line fits, and the words survive the break.
+        for line in wrap_wide(s, 20, 3) {
+            assert!(width_bound(&line) <= 20, "{line:?}");
+        }
+        assert_eq!(wrap_wide(s, 20, usize::MAX).join(" "), s, "full loses nothing");
+        // One line is the old behavior exactly: cut, with an ellipsis.
+        let one = wrap_wide(s, 20, 1);
+        assert_eq!(one.len(), 1);
+        assert!(one[0].ends_with(ELLIPSIS), "{one:?}");
+        // Only the last line an allowance permits wears the ellipsis: the
+        // others wrapped, and an ellipsis there would claim text was lost.
+        let two = wrap_wide(s, 20, 2);
+        assert_eq!(two.len(), 2);
+        assert!(!two[0].ends_with(ELLIPSIS), "{two:?}");
+        assert!(two[1].ends_with(ELLIPSIS), "{two:?}");
+        // A subject that fits takes one line whatever it is allowed.
+        assert_eq!(wrap_wide("short one", 20, 3), vec!["short one"]);
+        // An emoji is two columns wide and one char: the budget counts columns.
+        for line in wrap_wide("🚀🚀🚀🚀🚀🚀 ship it", 6, 4) {
+            assert!(width_bound(&line) <= 6, "{line:?}");
+        }
+        // A word longer than the budget has no boundary to break at, so it is
+        // cut rather than left to overflow -- and the wrap still terminates.
+        let long = wrap_wide("aaaaaaaaaaaaaaaaaaaaaaaa tail", 8, usize::MAX);
+        assert!(long.len() > 1, "{long:?}");
+        assert!(long.iter().all(|l| width_bound(l) <= 8), "{long:?}");
+        assert_eq!(long.last().unwrap(), "tail");
+    }
+
+
+    #[test]
+    fn wrapped_lines_start_at_the_subject_column() {
+        // A leading space would push the text one column past the indent the
+        // continuation line is padded to -- the table failing to line up.
+        let (head, tail) = split_at_width("feat: add the thing", 10);
+        assert_eq!(head, "feat: add");
+        assert_eq!(tail, "the thing");
+    }
+
+
+    #[test]
+    fn width_bound_never_under_counts_a_subject() {
+        // ASCII is exact.
+        assert_eq!(width_bound("abc"), 3);
+        // An emoji is two columns wide but one char: counting chars is what
+        // shifted every column after an emoji subject.
+        assert_eq!("🚀 fix".chars().count(), 5);
+        assert_eq!(width_bound("🚀 fix"), 6);
+        // CJK, likewise.
+        assert_eq!(width_bound("日本語"), 6);
+        // Pessimistic on accented Latin -- costs a character of subject, never
+        // an overflow, which is the safe direction for a budget.
+        assert_eq!(width_bound("é"), 2);
+    }
+
+
+    #[test]
+    fn ellipsize_wide_budgets_in_columns_not_chars() {
+        assert_eq!(ellipsize_wide("abcdef", 10), "abcdef");
+        assert_eq!(ellipsize_wide("abcdef", 4), "abc…");
+        // Two emoji = 4 columns, so a 4-column budget fits them whole: exactly
+        // the budget is not an overflow.
+        assert_eq!(ellipsize_wide("🚀🚀", 4), "🚀🚀");
+        // Never cut mid-emoji: the char is atomic, so a budget that cannot fit
+        // it drops it rather than splitting it.
+        assert_eq!(ellipsize_wide("🚀🚀", 3), "🚀…");
+        // The result always fits the budget it was given.
+        for max in 2..12 {
+            let out = ellipsize_wide("🚀 (ci): add validate stage", max);
+            assert!(width_bound(&out) <= max, "{max}: {out:?}");
+        }
+    }
+
+
+    #[test]
+    fn a_piped_table_has_no_width_to_fit() {
+        // Not a terminal: the subject is the payload for `| grep`, so it must
+        // arrive whole however long it is.
+        assert_eq!(term_width(false), None);
+    }
+
+}

@@ -22,9 +22,10 @@ USAGE:
                                  List, optional fuzzy filter; --col picks/orders
                                  columns (1=id, 2=branch, 3=dir, 4=status,
                                  5=last-commit, 6=merged, 7=merged-ref, 8=merged-at,
-                                 9=push). Push is ahead/behind vs the branch's upstream.
+                                 9=push, 10=pull). Push/pull are the commits ahead of
+                                 and behind the branch's upstream, as of the last fetch.
                                  --show-path (-p) adds the dir column, which a terminal
-                                 leaves out; --long shows id/branch/dir/status/last/push; --short
+                                 leaves out; --long shows id/branch/dir/status/last/push/pull; --short
                                  id+branch+status summary.
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
@@ -969,9 +970,9 @@ fn cmd_list(
     let cols = match (cols, mode) {
         (Some(c), _) => c,
         (None, ListMode::Short) => vec![1, 2, 4],
-        (None, ListMode::Long) => vec![1, 2, 3, 4, 5, 9],
-        (None, ListMode::Normal) if stdout_tty && show_path => vec![1, 2, 3, 4, 5, 9],
-        (None, ListMode::Normal) if stdout_tty => vec![1, 2, 4, 5, 9],
+        (None, ListMode::Long) => vec![1, 2, 3, 4, 5, 9, 10],
+        (None, ListMode::Normal) if stdout_tty && show_path => vec![1, 2, 3, 4, 5, 9, 10],
+        (None, ListMode::Normal) if stdout_tty => vec![1, 2, 4, 5, 9, 10],
         (None, ListMode::Normal) => vec![1, 2, 3],
     };
 
@@ -981,7 +982,7 @@ fn cmd_list(
     let need_merged = cols.contains(&6);
     let need_merged_ref = cols.contains(&7);
     let need_merged_at = cols.contains(&8);
-    let need_push = cols.contains(&9);
+    let need_push = cols.contains(&9) || cols.contains(&10);
     let header = !explicit && stdout_tty && mode != ListMode::Short;
 
     // Right-align the index to the widest possible so filtered output lines up.
@@ -998,7 +999,7 @@ fn cmd_list(
     let merged_ref = here.clone();
 
     // Per-row metadata, fetched once (read-only git calls).
-    let meta: Vec<(Status, String, String, String, String, String)> = rows
+    let meta: Vec<(Status, String, String, String, String, String, String)> = rows
         .iter()
         .map(|(_, w)| {
             let st = if need_status && !w.bare {
@@ -1017,8 +1018,12 @@ fn cmd_list(
             } else {
                 (String::new(), String::new())
             };
-            let push = if need_push { push_text(w) } else { String::new() };
-            (st, last, merged, merged_r, merged_a, push)
+            let (push, pull) = if need_push {
+                push_pull_text(w)
+            } else {
+                (String::new(), String::new())
+            };
+            (st, last, merged, merged_r, merged_a, push, pull)
         })
         .collect();
 
@@ -1027,7 +1032,7 @@ fn cmd_list(
     let cells: Vec<Vec<String>> = rows
         .iter()
         .zip(&meta)
-        .map(|((i, w), (st, last, merged, merged_r, merged_a, push))| {
+        .map(|((i, w), (st, last, merged, merged_r, merged_a, push, pull))| {
             cols.iter()
                 .map(|c| match c {
                     1 => format!("{:>numw$}", i + 1, numw = numw),
@@ -1038,7 +1043,8 @@ fn cmd_list(
                     6 => merged.clone(),
                     7 => merged_r.clone(),
                     8 => merged_a.clone(),
-                    _ => push.clone(),
+                    9 => push.clone(),
+                    _ => pull.clone(),
                 })
                 .collect()
         })
@@ -1088,7 +1094,7 @@ fn cmd_list(
         println!("{}", paint(&line, DIM, color));
     }
 
-    for (row, (st, _, _, _, _, _)) in cells.iter().zip(&meta) {
+    for (row, (st, _, _, _, _, _, _)) in cells.iter().zip(&meta) {
         let line = render_row(row, &cols, &widths, *st, color);
         println!("{line}");
     }
@@ -1106,7 +1112,8 @@ fn col_header(c: usize) -> &'static str {
         6 => "merged",
         7 => "merged",
         8 => "merged-at",
-        _ => "push",
+        9 => "push",
+        _ => "pull",
     }
 }
 
@@ -1146,7 +1153,7 @@ fn render_row(
 /// Parse `--col` value like "1,2,4" into column ids.
 /// 1=id, 2=branch, 3=dir, 4=status, 5=last-commit, 6=merged-into-current,
 /// 7=merged-into-ref, 8=merged-at.
-const COL_HELP: &str = "1=id, 2=branch, 3=dir, 4=status, 5=last-commit, 6=merged, 7=merged-ref, 8=merged-at, 9=push";
+const COL_HELP: &str = "1=id, 2=branch, 3=dir, 4=status, 5=last-commit, 6=merged, 7=merged-ref, 8=merged-at, 9=push, 10=pull";
 
 fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
     let mut v = Vec::new();
@@ -1158,7 +1165,7 @@ fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
         let n: usize = p
             .parse()
             .map_err(|_| format!("bad column '{p}' (use {COL_HELP})"))?;
-        if n < 1 || n > 9 {
+        if n < 1 || n > 10 {
             return Err(format!("no column {n} (use {COL_HELP})"));
         }
         v.push(n);
@@ -1262,27 +1269,36 @@ fn last_commit(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Short text for the "push" column: how the worktree's branch stands against
-/// its upstream. "-" when bare or no upstream is configured, "synced" when the
-/// two match, otherwise the ahead/behind counts.
-fn push_text(w: &Worktree) -> String {
+/// Text for the "push" (col 9) and "pull" (col 10) columns: how far the
+/// worktree's branch is ahead of and behind its upstream. Both are "-" when
+/// bare or no upstream is configured. Counts come from the remote-tracking ref,
+/// so they are as fresh as the last fetch -- no network call is made here.
+fn push_pull_text(w: &Worktree) -> (String, String) {
+    let dash = || ("-".to_string(), "-".to_string());
     if w.bare {
-        return "-".into();
+        return dash();
     }
-    let Ok(out) = git_stdout(&w.path, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
-    else {
-        return "-".into();
+    let Ok(out) = git_stdout(
+        &w.path,
+        &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+    ) else {
+        return dash();
     };
     let mut it = out.split_whitespace();
     let (Some(behind), Some(ahead)) = (it.next(), it.next()) else {
-        return "-".into();
+        return dash();
     };
-    match (ahead, behind) {
-        ("0", "0") => "synced".into(),
-        (a, "0") => format!("ahead {a}"),
-        ("0", b) => format!("behind {b}"),
-        (a, b) => format!("ahead {a} behind {b}"),
-    }
+    let push = if ahead == "0" {
+        "-".to_string()
+    } else {
+        format!("ahead {ahead}")
+    };
+    let pull = if behind == "0" {
+        "-".to_string()
+    } else {
+        format!("behind {behind}")
+    };
+    (push, pull)
 }
 
 /// Short text for the "merged" column: whether `w`'s branch is already in the
@@ -5556,8 +5572,8 @@ mod tests {
         assert_eq!(parse_cols("1,4,5").unwrap(), vec![1, 4, 5]);
         assert_eq!(parse_cols("1,2,6").unwrap(), vec![1, 2, 6]);
         assert_eq!(parse_cols("1,7,8").unwrap(), vec![1, 7, 8]);
-        assert_eq!(parse_cols("1,9").unwrap(), vec![1, 9]);
-        assert!(parse_cols("10").is_err());
+        assert_eq!(parse_cols("1,9,10").unwrap(), vec![1, 9, 10]);
+        assert!(parse_cols("11").is_err());
     }
 
     #[test]
@@ -5566,6 +5582,7 @@ mod tests {
         assert_eq!(col_header(7), "merged");
         assert_eq!(col_header(8), "merged-at");
         assert_eq!(col_header(9), "push");
+        assert_eq!(col_header(10), "pull");
     }
 
     #[test]

@@ -493,7 +493,10 @@ pub(crate) fn render(
     }
 
     println!("{}\n", paint(head, DIM, on));
-    let w = files.iter().map(|f| f.path.len()).max().unwrap_or(0);
+    // `{:<w$}` pads by character count, so the width must be measured the same
+    // way -- `len()` is bytes, and a path with any multi-byte character would
+    // reserve more columns than the padding then fills.
+    let w = files.iter().map(|f| f.path.chars().count()).max().unwrap_or(0);
     let pw = files
         .iter()
         .map(|f| format!("+{}", f.plus).len())
@@ -542,7 +545,10 @@ pub(crate) fn render(
 /// fits, then the same summary line.
 pub(crate) fn render_stat(files: &[FileDiff], on: bool) -> Result<(), String> {
     const BAR: usize = 40;
-    let w = files.iter().map(|f| f.path.len()).max().unwrap_or(0);
+    // `{:<w$}` pads by character count, so the width must be measured the same
+    // way -- `len()` is bytes, and a path with any multi-byte character would
+    // reserve more columns than the padding then fills.
+    let w = files.iter().map(|f| f.path.chars().count()).max().unwrap_or(0);
     let max = files
         .iter()
         .map(|f| f.plus + f.minus)

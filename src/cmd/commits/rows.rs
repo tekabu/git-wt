@@ -36,25 +36,6 @@ pub(crate) struct FileStat {
     pub(crate) removed: Option<usize>,
 }
 
-/// Rows for the table: every commit reachable from any ref, newest first.
-///
-/// `%H` drives the set lookups and `%h %s` is what the row prints -- the same
-/// text `git log --oneline` shows, which is the format the rows are meant to
-/// read as. `%aN` respects .mailmap, so a contributor who has committed under
-/// two names is one name here.
-///
-/// Author dates throughout, and `--author-date-order` to match the column the
-/// table prints; commit dates answer "when did this land here", which is not
-/// what a table about who-wrote-what is asking.
-///
-/// The order is ancestry first: git shows no parent before its children
-/// whatever the timestamps claim, and the date only sequences commits that do
-/// not descend from each other. So a commit authored before its own parent --
-/// rebased, cherry-picked, or written on a machine with a bad clock -- reads as
-/// out of order against its date column while the history stays true. That is
-/// the right trade: a table whose rows contradicted the history would be
-/// lying, where one whose dates jump is merely reporting a wrong clock.
-
 /// The files a commit touched, with status and line counts.
 ///
 /// Diffed against the first parent (or the empty tree for root commits), which
@@ -160,6 +141,24 @@ pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, Stri
     Ok(stats)
 }
 
+/// Rows for the table: every commit reachable from any ref, newest first.
+///
+/// `%H` drives the set lookups and `%h %s` is what the row prints -- the same
+/// text `git log --oneline` shows, which is the format the rows are meant to
+/// read as. `%aN` respects .mailmap, so a contributor who has committed under
+/// two names is one name here.
+///
+/// Author dates throughout, and `--author-date-order` to match the column the
+/// table prints; commit dates answer "when did this land here", which is not
+/// what a table about who-wrote-what is asking.
+///
+/// The order is ancestry first: git shows no parent before its children
+/// whatever the timestamps claim, and the date only sequences commits that do
+/// not descend from each other. So a commit authored before its own parent --
+/// rebased, cherry-picked, or written on a machine with a bad clock -- reads as
+/// out of order against its date column while the history stays true. That is
+/// the right trade: a table whose rows contradicted the history would be
+/// lying, where one whose dates jump is merely reporting a wrong clock.
 pub(crate) fn commit_rows(
     root: &Path,
     refs: &[String],

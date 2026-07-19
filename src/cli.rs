@@ -1,7 +1,14 @@
 use std::path::Path;
 
-use crate::cmd::*;
-use crate::worktree::*;
+use crate::cmd::commits::cmd_commits;
+use crate::cmd::diff::cmd_diff;
+use crate::cmd::list::{cmd_list, parse_cols, ListMode};
+use crate::cmd::meld::cmd_meld;
+use crate::cmd::merge::{cmd_merge, parse_merge_args, resolve_merge_source, MergeOp};
+use crate::cmd::merged::{cmd_merged, cmd_merged_others};
+use crate::cmd::remove::cmd_remove;
+use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp};
+use crate::worktree::{current_ref, here_index, label, ref_of, worktrees};
 
 /// Legacy verb-first forms get a migration hint; branch-like words get an
 /// `add` suggestion.

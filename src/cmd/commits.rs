@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::git::{git_cmd, git_stdout};
-use crate::list::is_subseq;
+use crate::cmd::list::is_subseq;
 use crate::ui::{
     abbrev, color_enabled, ellipsize, paint, term_width, width_bound, wrap_wide, AUTHOR_MAX, CHECK,
     DIM, EQUIV, GREEN, MIN_TEXTW, MISS, PICK_HEAD, YELLOW,

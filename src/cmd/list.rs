@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::git::git_stdout;
-use crate::merged::{merged_text, merged_text_at};
+use crate::cmd::merged::{merged_text, merged_text_at};
 use crate::ui::{color_enabled, ellipsize, paint, term_width, BRANCH_MIN, DIM};
 use crate::worktree::{
     current_ref, label, status_color, status_text, worktree_status, worktrees, Status, Worktree,

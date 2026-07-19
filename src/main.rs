@@ -12,9 +12,12 @@ mod git;
 mod ui;
 mod worktree;
 
-use crate::cli::*;
-use crate::cmd::*;
-use crate::worktree::*;
+use crate::cli::{
+    dispatch_target, dispatch_targets, list_from_args, parse_target_list, unknown_command_msg,
+};
+use crate::cmd::add::cmd_add;
+use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp, ALL_HINT};
+use crate::worktree::{repo_root, worktrees};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

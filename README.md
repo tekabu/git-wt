@@ -537,6 +537,14 @@ slice. A range widens through its lower bound, and `--author` never widens.
 When a filter keeps nothing, the message names the flags that reach further
 back.
 
+**A filter highlights what it read.** A filtered table is all matches by
+definition, so the color says *where* the answer lives rather than which rows
+survived: `--author` lights the author column, every date filter lights the date
+column, and `--commits`/`--commit-since`/`--commit-until` light the sha of the
+commit they name — the row that was asked for, as opposed to the rows that
+merely fall on the right side of it. Cyan, since green and yellow already mean
+"has commit" and "same patch" in the marks.
+
 **Both ends include what they name.** `--commit-since 5568a21` takes that
 commit's whole day, and `--date-since 2026-01-01` takes that whole day. That's
 why there's no `>` or `<`: the day either side of a bound is just the inclusive bound next

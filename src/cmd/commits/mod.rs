@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::cmd::commits::args::{parse_commits_args, DateFilter, DateOp, Order};
 use crate::cmd::commits::md::{md_filename, write_md};
-use crate::cmd::commits::render::render_commits;
+use crate::cmd::commits::render::{render_commits, Highlight};
 use crate::cmd::commits::rows::{
     commit_day, commit_files, commit_of, commit_rows, divergent_set, equivalents, pick_ids,
     ref_shas, window_to_divergent, CommitRow, FileStat,
@@ -113,13 +113,19 @@ pub(crate) fn cmd_commits(
     // Both bounds resolve before any row is judged, so a typo'd ref is an error
     // rather than a quietly empty table.
     let mut dates: Vec<DateFilter> = Vec::new();
+    // The anchors a filter named: the commit a bound was measured from, and any
+    // commit named outright. They get highlighted, because in a table where
+    // every row matched they are the rows that were actually asked for.
+    let mut anchors: HashSet<String> = HashSet::new();
     if let Some(r) = &args.commit_since {
         let c = commit_of(root, r, "--commit-since")?;
         dates.push(DateFilter { op: DateOp::Ge, date: commit_day(root, &c)? });
+        anchors.insert(c);
     }
     if let Some(r) = &args.commit_until {
         let c = commit_of(root, r, "--commit-until")?;
         dates.push(DateFilter { op: DateOp::Le, date: commit_day(root, &c)? });
+        anchors.insert(c);
     }
 
     // '--commits a,b' names the rows outright. Each id resolves first, for the
@@ -127,7 +133,9 @@ pub(crate) fn cmd_commits(
     // the whole 40 characters both land on the same row.
     let mut wanted: HashSet<String> = HashSet::new();
     for id in &args.commits {
-        wanted.insert(commit_of(root, id, "--commits")?);
+        let c = commit_of(root, id, "--commits")?;
+        wanted.insert(c.clone());
+        anchors.insert(c);
     }
 
     // Fuzzy, and the same fuzzy `list` uses: a subsequence, case-folded, so
@@ -256,6 +264,12 @@ pub(crate) fn cmd_commits(
         term_width(tty),
         args.wrap,
         args.subjectw,
+        &Highlight {
+            // Every date filter reads the one column, whichever spelling asked.
+            date: !args.dates.is_empty() || !dates.is_empty(),
+            author: args.author.is_some(),
+            shas: anchors,
+        },
     );
     Ok(())
 }

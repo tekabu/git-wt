@@ -3,9 +3,23 @@ use std::collections::{HashMap, HashSet};
 use crate::cmd::commits::args::{SubjectWidth, Wrap};
 use crate::cmd::commits::rows::{file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
-    abbrev, ellipsize, paint, wrap_wide, AUTHOR_MAX, CHECK, DIM, EQUIV, GREEN,
+    abbrev, ellipsize, paint, wrap_wide, AUTHOR_MAX, CHECK, DIM, EQUIV, GREEN, MATCH,
     MIN_TEXTW, MISS, PICK_HEAD, YELLOW,
 };
+
+/// Which cells a filter acted on, so the eye can find them in a long table.
+///
+/// A filtered table is all matches by definition, so highlighting is about
+/// *where* the answer lives, not which rows survived: the column a date filter
+/// read, the column --author read. `shas` is the exception and the useful one --
+/// a commit named outright, or the anchor a bound was measured from, is one row
+/// among rows that merely fall on the right side of it.
+#[derive(Default)]
+pub(crate) struct Highlight {
+    pub(crate) date: bool,
+    pub(crate) author: bool,
+    pub(crate) shas: HashSet<String>,
+}
 
 /// Print the table: sha, author, date, a mark per branch, then the subject.
 ///
@@ -28,6 +42,7 @@ pub(crate) fn render_commits(
     width: Option<usize>,
     wrap: Wrap,
     subjectw: Option<SubjectWidth>,
+    hl: &Highlight,
 ) {
     let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
     let marksw: usize = widths.iter().map(|w| w + 2).sum();
@@ -154,7 +169,16 @@ pub(crate) fn render_commits(
         if grouped && i > 0 {
             println!();
         }
-        let mut line = format!("{:<shaw$}  ", row.short);
+        // A sha the filter named outright, or the anchor a bound was measured
+        // from: the one row in the table that is not merely on the right side
+        // of the answer, but is the answer.
+        let anchored = hl.shas.contains(&row.sha);
+        let sha_cell = format!("{:<shaw$}  ", row.short);
+        let mut line = if anchored {
+            paint(&sha_cell, MATCH, color)
+        } else {
+            sha_cell
+        };
         if let Some(w) = pickw {
             // Blank, not '·': the column names a sha or it has nothing to say,
             // where the marks' '·' is an answer about a branch.
@@ -166,9 +190,17 @@ pub(crate) fn render_commits(
             line.push_str(&paint(&format!("{cell:<w$}"), YELLOW, color));
             line.push_str("  ");
         }
-        // Dim, so the marks and the subject stay what the eye lands on.
-        let meta = format!("{:<authw$}  {:>datew$}", row.author, row.date);
-        line.push_str(&paint(&meta, DIM, color));
+        // Dim, so the marks and the subject stay what the eye lands on -- unless
+        // a filter read this cell, in which case it is exactly what the eye came
+        // for. Padded before coloring, so the escapes never skew the column.
+        let author_cell = format!("{:<authw$}", row.author);
+        let date_cell = format!("{:>datew$}", row.date);
+        let dim_or = |cell: &str, lit: bool| {
+            paint(cell, if lit { MATCH } else { DIM }, color)
+        };
+        line.push_str(&dim_or(&author_cell, hl.author));
+        line.push_str("  ");
+        line.push_str(&dim_or(&date_cell, hl.date));
         for ((set, eq), w) in sets.iter().zip(equiv).zip(&widths) {
             let mark = Mark::of(&row.sha, set, eq);
             // Center the one-cell mark under its header.

@@ -213,6 +213,12 @@ COMMITS FILTERS:
     --author never widens: it matches many commits and named none of them.
     When a filter keeps nothing, the message says which flag reaches back.
 
+    A filter also highlights what it read, so a long table can be
+    skimmed: --author lights the author column, the date filters light
+    the date column, and --commits/--commit-since/--commit-until light
+    the sha of the commit they name -- the one row that was asked for
+    rather than merely kept.
+
     --date compares the date the table prints, which is the AUTHOR date;
     git's own --since/--until read committer dates and would disagree
     with the column. --author is a fuzzy subsequence, case-folded, the

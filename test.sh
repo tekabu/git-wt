@@ -579,6 +579,38 @@ check "--author --all is the full log" exit=0 out="init" -- "1,$didx" commits --
 # A --union the user typed still wins over the implied --all.
 check "--union survives a date filter" exit=0 out="loginside" -- "1,$didx" commits --union --date "$today"
 
+# Highlighting: a filtered table is all matches, so the color says WHERE the
+# answer lives. CLICOLOR_FORCE makes the pipe emit ANSI the way a terminal does.
+# 36 = cyan, the highlight; 2 = dim, the unlit default.
+hl() { ( cd "$APP" && CLICOLOR_FORCE=1 "$BIN" "$@" 2>/dev/null ); }
+hlsha="$(cd "$APP" && git rev-parse --short HEAD)"
+hlcheck() {
+  local name="$1" want="$2" cmd="$3"; shift 3
+  local out; out="$(hl "$@")"
+  if printf '%s' "$out" | grep -q "$want"; then
+    report PASS HAPPY "$name" "$cmd"
+  else
+    report FAIL HAPPY "$name" "$cmd" "no match for '$want'"
+  fi
+}
+# The named commit's sha cell is lit.
+hlcheck "--commits lights its sha" "$(printf '\033')\[36m$hlsha" \
+  "$(fmt_cmd 1,$didx commits --commits "$hlsha")" "1,$didx" commits --commits "$hlsha"
+# A date filter lights the date column it read.
+hlcheck "--date lights the date" "$(printf '\033')\[36m$today" \
+  "$(fmt_cmd 1,$didx commits --date "$today")" "1,$didx" commits --date "$today"
+# --author lights the author column instead.
+hlcheck "--author lights the author" "$(printf '\033')\[36mTest" \
+  "$(fmt_cmd 1,$didx commits --author Test)" "1,$didx" commits --author Test
+# Nothing is lit without a filter: the table is not an answer to anything.
+plainhl="$(hl "1,$didx" commits)"
+phcmd="$(fmt_cmd "1,$didx" commits)"
+if printf '%s' "$plainhl" | grep -q "$(printf '\033')\[36m"; then
+  report FAIL HAPPY "no filter lights nothing" "$phcmd" "a cell was highlighted with no filter"
+else
+  report PASS HAPPY "no filter lights nothing" "$phcmd"
+fi
+
 # --commit-since/--commit-until include the commit they name -- the point of the flags.
 mainsha="$(cd "$APP" && git rev-parse --short HEAD)"
 check "commits --commit-since keeps its own" exit=0 out="$mainsha" -- "1,$didx" commits --commit-since "$mainsha"

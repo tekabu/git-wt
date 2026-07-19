@@ -407,6 +407,17 @@ check "commits default shows slice"  exit=0 out="mainside" -- "1,$didx" commits
 check "commits --all shows full log" exit=0 out="init" -- "1,$didx" commits --all
 # --all and --union are different row sources and cannot combine.
 check "commits --all vs --union"     exit=1 err="two different row sources" -- "1,$didx" commits --all --union
+# Short flags, alone and bundled under one dash.
+check "commits -a aliases --all"     exit=0 out="init" -- "1,$didx" commits -a
+check "commits -f aliases --files"   exit=0 out="A  onlymain.txt" -- "1,$didx" commits -a -f
+check "commits -af bundles both"     exit=0 out="A  onlymain.txt" -- "1,$didx" commits -af
+check "commits -fa order-free"       exit=0 out="A  onlymain.txt" -- "1,$didx" commits -fa
+check "commits -fn takes a value"    exit=0 out="init" -- "1,$didx" commits -afn 20
+# A value-taking flag mid-bundle would hand one value to two flags.
+check "commits -nf refused"          exit=1 err="has to come last" -- "1,$didx" commits -nf 20
+check "commits -nf names the fix"    exit=1 err="-fn <value>" -- "1,$didx" commits -nf 20
+# A bundle of letters that name nothing is reported as typed, not split up.
+check "commits -xz reported whole"   exit=1 err="'-xz'" -- "1,$didx" commits -xz
 # The default really drops the shared root -- not merely 'not asserted'.
 droot="$("$BIN" "1,$didx" commits 2>/dev/null | grep -cw init || true)"
 dcmd2="$(fmt_cmd "1,$didx" commits)"

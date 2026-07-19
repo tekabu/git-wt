@@ -148,7 +148,54 @@ pub(crate) struct CommitsArgs {
     pub(crate) subjectw: Option<SubjectWidth>,
 }
 
+/// Short flags that carry no value, so any number of them can share one dash.
+const FLAG_SHORTS: &str = "af";
+/// Short flags that read the next argument (`-w`'s is optional), so at most one
+/// can appear in a bundle and only as its last letter.
+const VALUE_SHORTS: &str = "ndw";
+
+/// Split `-af` into `-a -f` so short flags can be bundled the way every other
+/// unix tool bundles them.
+///
+/// A value-taking flag has to come last -- `-fn 20` is the only reading of a
+/// bundle that ends in one, and `-nf 20` would have to hand '20' to both. Rather
+/// than pick for the user, that spelling is an error naming the one that works.
+/// Anything that is not a short bundle (`--all`, a path, a lone `-`) is passed
+/// through untouched for the parser proper to judge.
+pub(crate) fn expand_short_bundles(args: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::with_capacity(args.len());
+    for a in args {
+        let is_bundle = a.len() > 2 && a.starts_with('-') && !a.starts_with("--");
+        if !is_bundle {
+            out.push(a.clone());
+            continue;
+        }
+        let letters: Vec<char> = a.chars().skip(1).collect();
+        // Not a bundle at all if any letter names nothing: leave it whole so the
+        // parser reports the argument the user actually typed.
+        if !letters
+            .iter()
+            .all(|c| FLAG_SHORTS.contains(*c) || VALUE_SHORTS.contains(*c))
+        {
+            out.push(a.clone());
+            continue;
+        }
+        for (i, c) in letters.iter().enumerate() {
+            if VALUE_SHORTS.contains(*c) && i + 1 != letters.len() {
+                let rest: String = letters.iter().filter(|o| *o != c).collect();
+                return Err(format!(
+                    "'-{c}' takes a value, so it has to come last in '{a}'\n\
+                     hint: '-{rest}{c} <value>'"
+                ));
+            }
+            out.push(format!("-{c}"));
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String> {
+    let args = expand_short_bundles(args)?;
     let mut limit = None;
     let mut dates = Vec::new();
     let mut from = None;
@@ -179,9 +226,9 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             "--reverse" | "--oldest-first" => reverse = true,
             "--no-cherry" => no_cherry = true,
             "--pick-id" => pick = true,
-            "--files" => files = true,
+            "--files" | "-f" => files = true,
             "--union" | "--any" => union = true,
-            "--all" => all = true,
+            "--all" | "-a" => all = true,
             // The count is optional, and only a count or 'full' is read as
             // one: '--wrap --topo' asks for the whole subject, not for a
             // worktree named '--topo' to be parsed as a number.
@@ -401,13 +448,14 @@ pub(crate) fn parse_limit(s: &str) -> Result<usize, String> {
 mod tests {
     use super::*;
 
+    /// `parse_commits_args` over string literals.
+    fn parse(args: &[&str]) -> Result<CommitsArgs, String> {
+        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_commits_args(&v)
+    }
+
     #[test]
     fn commits_args_take_a_limit_and_all() {
-        let parse = |args: &[&str]| {
-            let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            parse_commits_args(&v)
-        };
-
         let a = parse(&[]).unwrap();
         assert_eq!(a.limit, None);
         // The default is the first branch's merge-request-style range; the
@@ -440,6 +488,41 @@ mod tests {
         // --files is also opt-in: it spawns a diff per displayed commit.
         assert!(!parse(&[]).unwrap().files);
         assert!(parse(&["--files"]).unwrap().files);
+    }
+
+    #[test]
+    fn short_flags_alias_their_long_forms() {
+        assert!(parse(&["-a"]).unwrap().all);
+        assert!(parse(&["-f"]).unwrap().files);
+    }
+
+    #[test]
+    fn short_flags_bundle_under_one_dash() {
+        for spelling in [&["-af"][..], &["-fa"][..], &["-a", "-f"][..]] {
+            let got = parse(spelling).unwrap();
+            assert!(got.all && got.files, "{spelling:?}");
+        }
+    }
+
+    #[test]
+    fn a_value_taking_short_ends_the_bundle() {
+        // Last letter: the value is unambiguously its own.
+        let got = parse(&["-fn", "5"]).unwrap();
+        assert!(got.files);
+        assert_eq!(got.limit, Some(5));
+        // Anywhere else, '5' would have to belong to two flags at once. Say so,
+        // and say which spelling works.
+        let err = parse(&["-nf", "5"]).unwrap_err();
+        assert!(err.contains("has to come last"), "{err}");
+        assert!(err.contains("-fn <value>"), "{err}");
+    }
+
+    #[test]
+    fn a_bundle_of_nonsense_is_reported_whole() {
+        // '-xz' names no flag of ours, so the error quotes what was typed
+        // rather than an invented '-x' the user never wrote.
+        let err = parse(&["-xz"]).unwrap_err();
+        assert!(err.contains("'-xz'"), "{err}");
     }
 
     #[test]

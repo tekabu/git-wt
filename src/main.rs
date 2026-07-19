@@ -116,7 +116,7 @@ DIFF LIVE:
 
 COMMITS OPTIONS:
     -n, --limit N         Show at most N commits (newest first)
-        --all             Full log of the first worktree (default is the
+    -a, --all             Full log of the first worktree (default is the
                           range the other worktrees are missing)
         --union           Rows from every worktree listed, not just the
                           first one's range (alias: --any)
@@ -124,7 +124,7 @@ COMMITS OPTIONS:
         --no-cherry       Skip the patch comparison behind '≈' (faster)
         --pick-id         Add a 'pick' column: the sha the '≈' copy of the
                           commit carries elsewhere
-        --files           Add the changed files under each commit, with
+    -f, --files           Add the changed files under each commit, with
                           status and +/- line counts
         --topo            Group each branch's commits, don't interleave
         --reverse         Newest last (alias: --oldest-first)
@@ -160,6 +160,8 @@ COMMITS:
         git-wt 1,2 commits -n 20     # newest 20 rows of the range
         git-wt 1,2,3 commits --union # every branch's commits as rows
         git-wt 1,2 commits --no-merges   # only the commits someone wrote
+        git-wt 1,2 commits -af       # short flags bundle: == --all --files
+        git-wt 1,2 commits -fn 20    # a value-taking flag ends the bundle
 
     The first worktree is the target: 'git-wt 1,2,3 commits' asks what 1
     has that 2 and 3 do not. The range is computed from those missing

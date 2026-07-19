@@ -111,15 +111,26 @@ pub(crate) fn render_commits(
     // see. ISO is one width, so the alignment is moot there -- and free.
     // Legend above the header: the marks are the point of the table and the
     // '≈'/'·' distinction is not self-evident, so name each glyph once up top.
-    let legend = format!(
-        "{} {}   {} {}   {} {}",
+    // '≈' is named only when it can appear: --no-cherry skips the patch-id walk
+    // and leaves every equivalence set empty, so advertising the glyph there
+    // promises a mark the table can never carry.
+    let mut legend = format!(
+        "{} {}",
         paint(CHECK, GREEN, color),
         paint("has commit", DIM, color),
-        paint(EQUIV, YELLOW, color),
-        paint("same patch, other sha", DIM, color),
+    );
+    if equiv.iter().any(|e| !e.is_empty()) {
+        legend.push_str(&format!(
+            "   {} {}",
+            paint(EQUIV, YELLOW, color),
+            paint("same patch, other sha", DIM, color),
+        ));
+    }
+    legend.push_str(&format!(
+        "   {} {}",
         paint(MISS, DIM, color),
         paint("neither", DIM, color),
-    );
+    ));
     println!("{}", legend);
 
     let mut head = format!("{:<shaw$}  ", "commit");

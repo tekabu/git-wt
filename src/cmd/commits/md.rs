@@ -62,8 +62,13 @@ pub(crate) fn write_md(
         .join(", ")));
     out.push_str(&format!("- Commits: {}\n", rows.len()));
     // The glyphs are the whole content of the table; a reader who was not at
-    // the terminal has nowhere else to learn them.
-    out.push_str("- Legend: `✓` has the commit · `≈` has the same patch under another sha · `·` has neither\n");
+    // the terminal has nowhere else to learn them. '≈' is named only when the
+    // table can carry it -- see the same rule in render_commits.
+    if equiv.iter().any(|e| !e.is_empty()) {
+        out.push_str("- Legend: `✓` has the commit · `≈` has the same patch under another sha · `·` has neither\n");
+    } else {
+        out.push_str("- Legend: `✓` has the commit · `·` has neither\n");
+    }
     if picks.is_some() {
         out.push_str("- `pick`: the sha that other copy of the patch was committed under\n");
     }

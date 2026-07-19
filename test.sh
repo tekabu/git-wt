@@ -236,7 +236,7 @@ check "list filter keeps index"      exit=0 out="2  feature/login" -- list logi
 check "list --col branch only"       exit=0 out="feature/login" -- list --col 2 logi
 check "list --col id+branch"         exit=0 out="2  feature/login" -- list --col 1,2 logi
 check "list --col reorder"           exit=0 out="feature/login  2" -- list --col 2,1 logi
-check "list --col bad number"        exit=1 err="no column 9" -- list --col 9
+check "list --col bad number"        exit=1 err="no column 11" -- list --col 11
 check "list --col non-numeric"       exit=1 err="bad column 'x'" -- list --col x
 check "bare --col (no list word)"    exit=0 out="main" -- --col 2
 check "bare -c short flag"           exit=0 out="main" -- -c 1,2
@@ -534,8 +534,11 @@ check "commits --no-merges keeps work" exit=0 out="mainside" -- "1,$didx" commit
 
 # --reverse flips the display, and only the display: '-n 2 --reverse' is the
 # same two commits as '-n 2', read bottom-up -- not the two oldest.
-fwd="$("$BIN" "1,$didx" commits -n 2 2>/dev/null | tail -n +2 | awk '{print $1}')"
-rev="$("$BIN" "1,$didx" commits -n 2 --reverse 2>/dev/null | tail -n +2 | awk '{print $1}')"
+# Match the sha rows rather than counting header lines off the top: the table
+# is preceded by both a legend and a column header, and a row is the only line
+# that starts with a short sha.
+fwd="$("$BIN" "1,$didx" commits -n 2 2>/dev/null | awk '$1 ~ /^[0-9a-f]{7,}$/{print $1}')"
+rev="$("$BIN" "1,$didx" commits -n 2 --reverse 2>/dev/null | awk '$1 ~ /^[0-9a-f]{7,}$/{print $1}')"
 rcmd="$(fmt_cmd "1,$didx" commits -n 2 --reverse)"
 want="$(printf '%s\n' "$fwd" | tail -r 2>/dev/null || printf '%s\n' "$fwd" | tac)"
 if [ "$rev" = "$want" ]; then

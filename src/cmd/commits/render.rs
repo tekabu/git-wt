@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::cmd::commits::args::{SubjectWidth, Wrap};
 use crate::cmd::commits::rows::{file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
-    abbrev, ellipsize, paint, wrap_wide, AUTHOR_MAX, CHECK, DIM, EQUIV, GREEN, MATCH,
-    MIN_TEXTW, MISS, PICK_HEAD, YELLOW,
+    abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, CHECK, DIM, EQUIV, GREEN,
+    MATCH, MIN_TEXTW, MISS, PICK_HEAD, YELLOW,
 };
 
 /// Which cells a filter acted on, so the eye can find them in a long table.
@@ -14,11 +14,28 @@ use crate::ui::{
 /// read, the column --author read. `shas` is the exception and the useful one --
 /// a commit named outright, or the anchor a bound was measured from, is one row
 /// among rows that merely fall on the right side of it.
+/// The text filters go further still: they light the matched *characters*, not
+/// the cell around them, because a subject is a sentence and the word that was
+/// searched for is a few letters of it.
 #[derive(Default)]
 pub(crate) struct Highlight {
     pub(crate) date: bool,
     pub(crate) author: bool,
     pub(crate) shas: HashSet<String>,
+    /// Lowercased terms, or None when the filter was not asked for.
+    pub(crate) message: Option<String>,
+    pub(crate) file: Option<String>,
+}
+
+/// Light a --message match where it sits in a subject line.
+///
+/// The term may be in the body instead, in which case nothing here matches and
+/// the body block below the row is what shows it.
+fn hl_text(line: &str, hl: &Highlight, color: bool) -> String {
+    match &hl.message {
+        None => line.to_string(),
+        Some(t) => paint_matches(line, t, MATCH, "", color),
+    }
 }
 
 /// Print the table: sha, author, date, a mark per branch, then the subject.
@@ -34,6 +51,7 @@ pub(crate) struct Highlight {
 pub(crate) fn render_commits(
     rows: &[CommitRow],
     row_files: &[Vec<FileStat>],
+    row_bodies: &[(Vec<String>, usize)],
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
@@ -114,6 +132,7 @@ pub(crate) fn render_commits(
                 key: r.key.clone(),
                 stamp: r.stamp.clone(),
                 text: r.text.clone(),
+                body: r.body.clone(),
             };
             (row, text)
         })
@@ -163,7 +182,8 @@ pub(crate) fn render_commits(
     // With file blocks the table becomes a series of groups, so every commit is
     // fenced off by a blank line -- including one whose block is empty, which
     // would otherwise huddle against the block above and read as part of it.
-    let grouped = row_files.iter().any(|f| !f.is_empty());
+    let grouped = row_files.iter().any(|f| !f.is_empty())
+        || row_bodies.iter().any(|(lines, _)| !lines.is_empty());
 
     for (i, (row, text)) in rows.iter().enumerate() {
         if grouped && i > 0 {
@@ -211,13 +231,39 @@ pub(crate) fn render_commits(
             line.push_str(&" ".repeat(w - 1 - pad));
         }
         line.push_str("  ");
-        line.push_str(&text[0]);
+        // Painted after the wrap, never before: the budget is measured on plain
+        // text, and an escape counted as a column would cut the subject short.
+        // A term split across a wrap boundary lights on neither half -- the row
+        // is still right, just unmarked.
+        line.push_str(&hl_text(&text[0], hl, color));
         println!("{}", line.trim_end());
         // The rest of a wrapped subject, indented to the column it belongs to:
         // the row is still one commit, and the marks stay the leftmost thing
         // the eye has to scan.
         for more in &text[1..] {
-            println!("{}{}", " ".repeat(fixed), more.trim_end());
+            println!("{}{}", " ".repeat(fixed), hl_text(more.trim_end(), hl, color));
+        }
+
+        // The body lines --message matched on, indented to the subject column
+        // they continue. Printed because the row was kept for words that are
+        // in none of the cells above: without them the match is invisible and
+        // the table is asserting something it never shows.
+        if let Some((lines, extra)) = row_bodies.get(i) {
+            if !lines.is_empty() {
+                println!();
+                let term = hl.message.as_deref().unwrap_or_default();
+                for body_line in lines {
+                    println!(
+                        "{}{}",
+                        " ".repeat(fixed),
+                        paint_matches(body_line, term, MATCH, DIM, color)
+                    );
+                }
+                if *extra > 0 {
+                    let more = format!("+{extra} more");
+                    println!("{}{}", " ".repeat(fixed), paint(&more, DIM, color));
+                }
+            }
         }
 
         // File block, tab-indented under the commit row. Kept dim so the commit
@@ -226,7 +272,11 @@ pub(crate) fn render_commits(
             if !file_stats.is_empty() {
                 println!();
                 for file_line in file_stat_lines(file_stats) {
-                    println!("{}", paint(&file_line, DIM, color));
+                    // Every file the commit touched, even under --filename: the
+                    // filter chose the row, and a trimmed block could not answer
+                    // what that commit did. The matched paths are lit instead.
+                    let term = hl.file.as_deref().unwrap_or_default();
+                    println!("{}", paint_matches(&file_line, term, MATCH, DIM, color));
                 }
             }
         }

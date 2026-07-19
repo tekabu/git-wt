@@ -223,6 +223,58 @@ pub(crate) fn confirm(prompt: &str) -> Result<bool, String> {
 // Text matching
 // ---------------------------------------------------------------------------
 
+/// Paint every case-folded occurrence of `needle` in `s` with `code`, leaving
+/// the rest of the string under `base`.
+///
+/// Widths are measured on the plain text and color applied after -- the rule
+/// the table already follows -- so a highlight never shifts a column. `base`
+/// exists because a file block is already dim: the RESET that ends a highlight
+/// would otherwise drop the rest of the line out of dim, and the block would
+/// brighten from its first match onward.
+///
+/// The search runs on a lowercased copy but the offsets are mapped back, so
+/// what prints keeps the case it was written in -- lowercasing can change a
+/// string's byte length, and assuming it does not would slice mid-character.
+pub(crate) fn paint_matches(s: &str, needle: &str, code: &str, base: &str, on: bool) -> String {
+    let tint = |t: &str| if base.is_empty() { t.to_string() } else { paint(t, base, on) };
+    if !on || needle.is_empty() {
+        return tint(s);
+    }
+    // Where each byte of the lowercased copy came from, plus the end, so both
+    // bounds of a match always map back to a real offset in `s`.
+    let mut lower = String::with_capacity(s.len());
+    let mut origin: Vec<usize> = Vec::with_capacity(s.len() + 1);
+    for (i, c) in s.char_indices() {
+        for l in c.to_lowercase() {
+            lower.push(l);
+            origin.resize(lower.len(), i);
+        }
+    }
+    origin.push(s.len());
+
+    let needle = needle.to_lowercase();
+    let mut out = String::new();
+    let mut cut = 0;
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find(&needle) {
+        let (lo, hi) = (from + rel, from + rel + needle.len());
+        let (start, end) = (origin[lo], origin[hi]);
+        // A folding that changes length can put a bound inside a character.
+        // Skip such a match rather than slice one in half.
+        if start >= cut && s.is_char_boundary(start) && s.is_char_boundary(end) {
+            out.push_str(&tint(&s[cut..start]));
+            out.push_str(&paint(&s[start..end], code, on));
+            cut = end;
+        }
+        from = hi.max(lo + 1);
+    }
+    if cut == 0 {
+        return tint(s);
+    }
+    out.push_str(&tint(&s[cut..]));
+    out
+}
+
 /// True when every char of `needle` appears in `hay`, in order.
 pub(crate) fn is_subseq(hay: &str, needle: &str) -> bool {
     let mut chars = hay.chars();
@@ -340,6 +392,54 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn paint_matches_lights_every_hit_and_nothing_else() {
+        let amber = |s: &str, n: &str| paint_matches(s, n, MATCH, "", true);
+        // Color off is the plain string, whatever matched.
+        assert_eq!(paint_matches("fix: the thing", "the", MATCH, "", false), "fix: the thing");
+        // No match, and an empty needle, both leave the string alone -- an
+        // empty needle matches at every position, which would paint nothing
+        // and everything at once.
+        assert_eq!(amber("fix: the thing", "zzz"), "fix: the thing");
+        assert_eq!(amber("fix: the thing", ""), "fix: the thing");
+        // The match is wrapped and the rest is untouched.
+        assert_eq!(amber("a fix b", "fix"), format!("a \x1b[{MATCH}mfix\x1b[0m b"));
+        // Every occurrence, not just the first.
+        assert_eq!(amber("fix fix", "fix").matches("\x1b[0m").count(), 2);
+        // Case-folded, and the original case is what prints.
+        assert_eq!(amber("FIX it", "fix"), format!("\x1b[{MATCH}mFIX\x1b[0m it"));
+        // Either end of the string, where an off-by-one would panic or drop text.
+        assert_eq!(amber("fix", "fix"), format!("\x1b[{MATCH}mfix\x1b[0m"));
+        assert_eq!(amber("a fix", "fix"), format!("a \x1b[{MATCH}mfix\x1b[0m"));
+        // Multi-byte text must not be sliced mid-character.
+        assert!(amber("héllo wörld", "wörld").contains("wörld"));
+        assert!(amber("日本語のコミット", "コミット").contains("コミット"));
+        // Painting never loses a character: strip the escapes and it is the
+        // string that went in.
+        for (hay, needle) in [("fix: héllo", "héllo"), ("🚀 fix 🚀", "fix"), ("aaa", "a")] {
+            let plain = amber(hay, needle)
+                .replace(&format!("\x1b[{MATCH}m"), "")
+                .replace("\x1b[0m", "");
+            assert_eq!(plain, hay, "{hay:?} / {needle:?}");
+        }
+    }
+
+    #[test]
+    fn paint_matches_keeps_the_rest_of_a_dim_line_dim() {
+        // A file block is dim before it is highlighted, so the text after a
+        // match has to be put back under DIM -- the highlight's RESET ends the
+        // dim as well as the amber.
+        let out = paint_matches("\tM  src/ui.rs  +1  -0", "ui.rs", MATCH, DIM, true);
+        let tail = &out[out.rfind("\x1b[0m").unwrap()..];
+        assert!(out.matches(&format!("\x1b[{DIM}m")).count() >= 2, "{out:?}");
+        assert!(tail.starts_with("\x1b[0m"), "{out:?}");
+        // And with color off it is the bare line, no escapes at all.
+        assert_eq!(
+            paint_matches("\tM  src/ui.rs", "ui.rs", MATCH, DIM, false),
+            "\tM  src/ui.rs"
+        );
+    }
 
     #[test]
     fn subseq_matches_in_order() {

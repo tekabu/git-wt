@@ -131,6 +131,13 @@ pub(crate) struct CommitsArgs {
     /// Only these commits, by sha prefix. Empty means every row.
     pub(crate) commits: Vec<String>,
     pub(crate) author: Option<String>,
+    /// Only commits whose subject or body contains this, case-folded. A
+    /// substring, not the subsequence --author matches with: a name is one word
+    /// typed from memory, where a message is prose -- a subsequence over prose
+    /// matches nearly all of it.
+    pub(crate) message: Option<String>,
+    /// Only commits touching a path containing this, case-folded.
+    pub(crate) filename: Option<String>,
     pub(crate) topo: bool,
     pub(crate) no_merges: bool,
     pub(crate) fmt: DateFmt,
@@ -174,7 +181,7 @@ fn push_commit_ids(into: &mut Vec<String>, v: &str) -> Result<(), String> {
 const FLAG_SHORTS: &str = "af";
 /// Short flags that read the next argument (`-w`'s is optional), so at most one
 /// can appear in a bundle and only as its last letter.
-const VALUE_SHORTS: &str = "ndwc";
+const VALUE_SHORTS: &str = "ndwcm";
 
 /// Split `-af` into `-a -f` so short flags can be bundled the way every other
 /// unix tool bundles them.
@@ -224,6 +231,8 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     let mut commit_until = None;
     let mut commits: Vec<String> = Vec::new();
     let mut author = None;
+    let mut message = None;
+    let mut filename = None;
     let mut topo = false;
     let mut no_merges = false;
     let mut fmt = DateFmt { human: false, time: false };
@@ -234,7 +243,7 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     let mut union = false;
     let mut all = false;
     let mut files = false;
-    let mut wrap = Wrap::Lines(1);
+    let mut wrap = None;
     let mut subjectw = None;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
@@ -256,15 +265,15 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             // one: '--wrap --topo' asks for the whole subject, not for a
             // worktree named '--topo' to be parsed as a number.
             "--wrap" | "-w" => {
-                wrap = match it.peek().and_then(|v| parse_wrap(v).ok()) {
+                wrap = Some(match it.peek().and_then(|v| parse_wrap(v).ok()) {
                     Some(w) => {
                         it.next();
                         w
                     }
                     None => Wrap::Full,
-                };
+                });
             }
-            s if s.starts_with("--wrap=") => wrap = parse_wrap(&s["--wrap=".len()..])?,
+            s if s.starts_with("--wrap=") => wrap = Some(parse_wrap(&s["--wrap=".len()..])?),
             // Unlike --wrap, the count is required: a bare '--subject-width'
             // names no width, and 'full' is the word for wanting all of it.
             "--subject-width" | "--subjw" => {
@@ -277,9 +286,6 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             s if s.starts_with("--subjw=") => {
                 subjectw = Some(parse_subjectw(&s["--subjw=".len()..])?);
             }
-            // A '--subject' would read as the filter --author is: same table,
-            // same shape, and one of them cuts rows. Say which was meant.
-            "--subject" => return Err(SUBJECT_MSG.into()),
             "--time" => fmt.time = true,
             "--date-human" => fmt.human = true,
             // The path is optional, so the next word is only it when it is not
@@ -316,6 +322,26 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             }
             "--author" => author = Some(it.next().ok_or(AUTHOR_MISSING)?.clone()),
             s if s.starts_with("--author=") => author = Some(s["--author=".len()..].to_string()),
+            // The text filter. Its term has to end up somewhere on the row it
+            // keeps -- see the --wrap implication below.
+            "--message" | "-m" => message = Some(term(it.next(), MESSAGE_MISSING)?),
+            s if s.starts_with("--message=") => {
+                message = Some(term_of(&s["--message=".len()..], MESSAGE_MISSING)?);
+            }
+            "--filename" => filename = Some(term(it.next(), FILENAME_MISSING)?),
+            s if s.starts_with("--filename=") => {
+                filename = Some(term_of(&s["--filename=".len()..], FILENAME_MISSING)?);
+            }
+            // One letter from --files and the opposite kind of thing: one cuts
+            // rows, the other adds a block under the ones that stayed.
+            "--file" => return Err(FILE_MSG.into()),
+            // git's word for a message search, and a regex where these are
+            // substrings -- name the two that are here rather than let the
+            // habit read as a typo.
+            "--grep" => return Err(GREP_MSG.into()),
+            // Reads as a filter, and there is one -- it just covers the body as
+            // well. The width beside it keeps its own longer name.
+            "--subject" => return Err(SUBJECT_MSG.into()),
             "--commit-since" => commit_since = Some(it.next().ok_or(COMMIT_SINCE_MISSING)?.clone()),
             s if s.starts_with("--commit-since=") => commit_since = Some(s["--commit-since=".len()..].to_string()),
             "--commit-until" => commit_until = Some(it.next().ok_or(COMMIT_UNTIL_MISSING)?.clone()),
@@ -393,11 +419,36 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
         || commit_since.is_some()
         || dates.iter().any(|d| d.op != DateOp::Le);
     let all = all || (names_a_floor && !union);
+
+    // A text filter keeps a row for words that have to be *on* that row, or the
+    // table is asserting a match it never shows. The subject is the one cell cut
+    // at the terminal's edge, so searching it means showing all of it. An
+    // explicit --wrap wins: that is an answer already given.
+    let wrap = wrap.unwrap_or(if message.is_some() { Wrap::Full } else { Wrap::Lines(1) });
+    // Same rule for a path: a row kept for a file it touched has to name it.
+    let files = files || filename.is_some();
+
     Ok(CommitsArgs {
-        limit, dates, commit_since, commit_until, commits, author, topo, no_merges, fmt, md,
+        limit, dates, commit_since, commit_until, commits, author, message, filename,
+        topo, no_merges, fmt, md,
         reverse, no_cherry, pick, union,
         all, files, wrap, subjectw,
     })
+}
+
+/// Read a filter's term from the next argument, rejecting an empty one: it
+/// would match every row, which is the opposite of what a filter was typed for.
+fn term(v: Option<&String>, missing: &str) -> Result<String, String> {
+    term_of(v.ok_or(missing)?, missing)
+}
+
+/// The same check for the `--flag=value` spelling, where the value is present
+/// but can still be empty.
+fn term_of(v: &str, missing: &str) -> Result<String, String> {
+    if v.trim().is_empty() {
+        return Err(missing.to_string());
+    }
+    Ok(v.to_string())
 }
 
 /// Read `--subject-width`'s value: a column count, or 'full' for no cut at all.
@@ -434,8 +485,19 @@ pub(crate) const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'f
 pub(crate) const SUBJW_MISSING: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
 pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'\n\
      hint: 'full' never cuts the subject, however wide it is";
-pub(crate) const SUBJECT_MSG: &str = "no '--subject' for commits: it would read as a filter, and it is a width\n\
-     hint: '--subject-width 80' widens the column; '--author NAME' filters rows";
+pub(crate) const SUBJECT_MSG: &str =
+    "no '--subject' for commits: '--message TERM' searches the subject and the body\n\
+     hint: '--subject-width 80' is the column's width, not a filter";
+pub(crate) const MESSAGE_MISSING: &str =
+    "--message needs a term, e.g. '--message ISSUE-42'\n\
+     hint: it searches the subject and the body";
+pub(crate) const FILENAME_MISSING: &str =
+    "--filename needs a term, e.g. '--filename render.rs'";
+pub(crate) const FILE_MSG: &str =
+    "no '--file' for commits: '--filename TERM' filters rows, '--files' shows the file block";
+pub(crate) const GREP_MSG: &str =
+    "no '--grep' for commits; '--message TERM' searches the subject and the body\n\
+     hint: it takes a plain substring, not a pattern";
 pub(crate) const DATE_MISSING: &str =
     "--date needs a day, e.g. '--date 2026-01-01'\n\
      hint: for a range use --date-since / --date-until";
@@ -795,6 +857,76 @@ mod tests {
     }
 
     #[test]
+    fn text_and_path_filters_take_a_term() {
+        assert_eq!(parse(&[]).unwrap().message, None);
+        assert_eq!(parse(&["--message", "wrap"]).unwrap().message.as_deref(), Some("wrap"));
+        assert_eq!(parse(&["--message=wrap"]).unwrap().message.as_deref(), Some("wrap"));
+        assert_eq!(parse(&["-m", "wrap"]).unwrap().message.as_deref(), Some("wrap"));
+        assert_eq!(parse(&["--filename", "ui.rs"]).unwrap().filename.as_deref(), Some("ui.rs"));
+        assert_eq!(parse(&["--filename=ui.rs"]).unwrap().filename.as_deref(), Some("ui.rs"));
+
+        // An empty term is a prefix of every row, so it is a typo rather than
+        // a filter -- whichever spelling it arrives in.
+        assert!(parse(&["--message"]).unwrap_err().contains("needs a term"));
+        assert!(parse(&["--message="]).unwrap_err().contains("needs a term"));
+        assert!(parse(&["--message", "  "]).unwrap_err().contains("needs a term"));
+        assert!(parse(&["--filename"]).unwrap_err().contains("needs a term"));
+
+        // '-m' takes a value, so it ends a bundle like every other value-short.
+        assert!(parse(&["-fm", "wrap"]).unwrap().files);
+        assert!(parse(&["-mf", "wrap"]).unwrap_err().contains("has to come last"));
+    }
+
+    #[test]
+    fn a_text_filter_shows_what_it_matched() {
+        // The subject is the one cell cut at the terminal's edge, so searching
+        // it means showing all of it: a row kept for a word past the cut would
+        // be asserting a match it never displays.
+        assert_eq!(parse(&[]).unwrap().wrap, Wrap::Lines(1));
+        assert_eq!(parse(&["--message", "wrap"]).unwrap().wrap, Wrap::Full);
+        // An explicit --wrap is an answer already given, and wins either way.
+        assert_eq!(parse(&["--message", "wrap", "-w", "1"]).unwrap().wrap, Wrap::Lines(1));
+        assert_eq!(parse(&["-w", "2", "--message", "wrap"]).unwrap().wrap, Wrap::Lines(2));
+
+        // Likewise a row kept for a path it touched has to name that path.
+        assert!(!parse(&[]).unwrap().files);
+        assert!(parse(&["--filename", "ui.rs"]).unwrap().files);
+        // ...and --filename does not turn on the wrap: its match is in the
+        // block below the row, not in the subject.
+        assert_eq!(parse(&["--filename", "ui.rs"]).unwrap().wrap, Wrap::Lines(1));
+    }
+
+    #[test]
+    fn the_text_filters_never_widen_the_source() {
+        // They match many commits and name none, so the branch comparison stays
+        // the question -- the same rule --author follows. --all is there to be
+        // typed, and the empty-result hint says so.
+        assert!(!parse(&["--message", "wrap"]).unwrap().all);
+        assert!(!parse(&["--filename", "ui.rs"]).unwrap().all);
+        assert!(parse(&["--message", "wrap", "--all"]).unwrap().all);
+        let a = parse(&["--union", "--filename", "ui.rs"]).unwrap();
+        assert!(a.union && !a.all);
+    }
+
+    #[test]
+    fn the_flags_these_filters_are_mistaken_for() {
+        // '--subject' reads as a filter, and there is one -- it just covers the
+        // body too. The width beside it keeps its own longer name.
+        let err = parse(&["--subject", "fix"]).unwrap_err();
+        assert!(err.contains("--message"), "{err}");
+        assert!(err.contains("--subject-width"), "{err}");
+        // git's word for a message search, and a regex where this is a
+        // substring: name the flag that is here.
+        let err = parse(&["--grep", "^fix"]).unwrap_err();
+        assert!(err.contains("--message"), "{err}");
+        assert!(err.contains("substring"), "{err}");
+        // One letter from --files, and the opposite kind of thing.
+        let err = parse(&["--file", "ui.rs"]).unwrap_err();
+        assert!(err.contains("--filename"), "{err}");
+        assert!(err.contains("--files"), "{err}");
+    }
+
+    #[test]
     fn subject_width_is_a_width_not_a_filter() {
         let parse = |a: &[&str]| {
             parse_commits_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
@@ -812,7 +944,7 @@ mod tests {
         // Below MIN_TEXTW the column says only 'there was a subject'.
         assert!(parse(&["--subjw=8"]).unwrap_err().contains("columns or more"));
         assert!(parse(&["--subjw=0"]).unwrap_err().contains("needs a column count"));
-        // '--subject' is the filter it is not: --author is right there.
-        assert!(parse(&["--subject", "fix"]).unwrap_err().contains("--subject-width 80"));
+        // '--subject' names the filter that exists, not this width.
+        assert!(parse(&["--subject", "fix"]).unwrap_err().contains("--message"));
     }
 }

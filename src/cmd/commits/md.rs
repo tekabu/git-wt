@@ -47,6 +47,7 @@ pub(crate) fn write_md(
     path: &Path,
     rows: &[CommitRow],
     row_files: &[Vec<FileStat>],
+    row_bodies: &[(Vec<String>, usize)],
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
@@ -116,6 +117,19 @@ pub(crate) fn write_md(
             out.push_str(&format!(" {} |", Mark::of(&row.sha, set, eq).glyph()));
         }
         let mut subject = md_cell(&row.text);
+        // The body lines --message matched on, for the same reason the terminal
+        // prints them: the row was kept for words no cell here holds.
+        if let Some((lines, extra)) = row_bodies.get(i) {
+            if !lines.is_empty() {
+                subject.push_str("<br><br>");
+                for l in lines {
+                    subject.push_str(&format!("{}<br>", md_cell(l)));
+                }
+                if *extra > 0 {
+                    subject.push_str(&format!("+{extra} more<br>"));
+                }
+            }
+        }
         if let Some(file_stats) = row_files.get(i) {
             if !file_stats.is_empty() {
                 let mut lines = String::from("<br><br>");

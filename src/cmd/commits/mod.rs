@@ -11,8 +11,8 @@ use crate::cmd::commits::args::{parse_commits_args, DateFilter, DateOp, Order};
 use crate::cmd::commits::md::{md_filename, write_md};
 use crate::cmd::commits::render::{render_commits, Highlight};
 use crate::cmd::commits::rows::{
-    commit_day, commit_files, commit_of, commit_rows, divergent_set, equivalents, pick_ids,
-    ref_shas, window_to_divergent, CommitRow, FileStat,
+    body_hits, commit_day, commit_files, commit_of, commit_rows, divergent_set, equivalents,
+    path_shas, pick_ids, ref_shas, window_to_divergent, CommitRow, FileStat,
 };
 use crate::ui::{color_enabled, is_subseq, term_width};
 use crate::worktree::{label, ref_of, Worktree};
@@ -83,7 +83,9 @@ pub(crate) fn cmd_commits(
         || args.commit_since.is_some()
         || args.commit_until.is_some()
         || !args.commits.is_empty()
-        || args.author.is_some();
+        || args.author.is_some()
+        || args.message.is_some()
+        || args.filename.is_some();
     let git_limit = if filtered || divergent.is_some() { None } else { args.limit };
     let order = if args.topo { Order::Topo } else { Order::Date };
     let all_rows = commit_rows(
@@ -94,6 +96,9 @@ pub(crate) fn cmd_commits(
         order,
         args.fmt,
         args.no_merges,
+        // The body is fetched only for the filter that reads it: every other
+        // run would be paying for text the table never prints.
+        args.message.is_some(),
     )?;
     // Default view: keep the log down to its earliest divergent date, shared
     // commits above the floor included. A date threshold, so --topo shows the
@@ -142,6 +147,17 @@ pub(crate) fn cmd_commits(
     // '--author nes' finds 'Nino Escalera' and nobody types a full name twice.
     let needle = args.author.as_ref().map(|a| a.to_lowercase());
 
+    // A substring rather than a subsequence: a name is one word typed from
+    // memory, where a message is prose, and a subsequence over prose matches
+    // nearly all of it.
+    let msg = args.message.as_ref().map(|s| s.to_lowercase());
+    // A pathspec, so git does the walk once instead of a diff per commit.
+    let paths = args
+        .filename
+        .as_ref()
+        .map(|t| path_shas(root, row_refs, t))
+        .transpose()?;
+
     let mut rows: Vec<CommitRow> = all_rows
         .into_iter()
         .filter(|r| args.dates.iter().all(|f| f.admits(&r.key)))
@@ -152,6 +168,14 @@ pub(crate) fn cmd_commits(
                 .as_ref()
                 .is_none_or(|n| is_subseq(&r.author.to_lowercase(), n))
         })
+        // Subject or body: a term someone remembers from a commit is as likely
+        // to be in the explanation as in the one line summarizing it.
+        .filter(|r| {
+            msg.as_ref().is_none_or(|n| {
+                r.text.to_lowercase().contains(n) || r.body.to_lowercase().contains(n)
+            })
+        })
+        .filter(|r| paths.as_ref().is_none_or(|p| p.contains(&r.sha)))
         .collect();
     if let Some(n) = args.limit {
         rows.truncate(n);
@@ -171,6 +195,14 @@ pub(crate) fn cmd_commits(
             .collect::<Result<Vec<_>, _>>()?
     } else {
         Vec::new()
+    };
+
+    // The body lines a --message row matched on, scoped to the displayed rows
+    // like the file blocks are. Empty when the match was in the subject, which
+    // the table prints anyway.
+    let row_bodies: Vec<(Vec<String>, usize)> = match &msg {
+        Some(n) => rows.iter().map(|r| body_hits(&r.body, n)).collect(),
+        None => Vec::new(),
     };
 
     if rows.is_empty() {
@@ -244,6 +276,7 @@ pub(crate) fn cmd_commits(
             Path::new(&file),
             &rows,
             &row_files,
+            &row_bodies,
             &names,
             &sets,
             &equiv,
@@ -256,6 +289,7 @@ pub(crate) fn cmd_commits(
     render_commits(
         &rows,
         &row_files,
+        &row_bodies,
         &names,
         &sets,
         &equiv,
@@ -272,6 +306,10 @@ pub(crate) fn cmd_commits(
             date: !args.dates.is_empty(),
             author: args.author.is_some(),
             shas: anchors,
+            // The term itself, so the match is lit where it sits rather than
+            // the whole cell holding it.
+            message: msg.clone(),
+            file: args.filename.as_ref().map(|s| s.to_lowercase()),
         },
     );
     Ok(())

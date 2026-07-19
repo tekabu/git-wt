@@ -576,6 +576,16 @@ else
   report FAIL HAPPY "--author keeps the default slice" "$acmd" "init leaked: --author widened the source"
 fi
 check "--author --all is the full log" exit=0 out="init" -- "1,$didx" commits --author Test --all
+# Neither text filter widens either, for the same reason: they match many
+# commits and named none of them.
+monly="$("$BIN" "1,$didx" commits --message init 2>/dev/null | grep -cw init || true)"
+mcmd="$(fmt_cmd "1,$didx" commits --message init)"
+if [ "$monly" = 0 ]; then
+  report PASS HAPPY "--message keeps the default slice" "$mcmd  # no init row"
+else
+  report FAIL HAPPY "--message keeps the default slice" "$mcmd" "init leaked: --message widened the source"
+fi
+check "--message --all is the full log" exit=0 out="init" -- "1,$didx" commits --message init --all
 # A --union the user typed still wins over the implied --all.
 check "--union survives a date filter" exit=0 out="loginside" -- "1,$didx" commits --union --date "$today"
 
@@ -613,6 +623,15 @@ else
 fi
 hlcheck "--commit-until lights its sha" "$(printf '\033')\[1;38;5;214m$hlsha" \
   "$cbcmd" "1,$didx" commits --commit-until "$hlsha"
+
+# The text filters go further than a cell: they light the matched CHARACTERS,
+# since a subject is a sentence and the term is a few letters of it.
+hlcheck "--message lights the matched word" "$(printf '\033')\[1;38;5;214mmainside" \
+  "$(fmt_cmd 1,$didx commits --message mainside)" "1,$didx" commits --message mainside
+# A path match is lit inside the file block, which stays dim around it.
+hlcheck "--filename lights the path" "$(printf '\033')\[1;38;5;214monlymain.txt" \
+  "$(fmt_cmd 1,$didx commits --filename onlymain.txt --all)" \
+  "1,$didx" commits --filename onlymain.txt --all
 
 # Nothing is lit without a filter: the table is not an answer to anything.
 plainhl="$(hl "1,$didx" commits)"
@@ -772,6 +791,22 @@ check "commits --author fuzzy"        exit=0 out="mainside" -- "1,$didx" commits
 check "commits --author case-folds"   exit=0 out="mainside" -- "1,$didx" commits --author TEST
 check "commits --author no match"     exit=0 err="no commits match those filters" -- "1,$didx" commits --author zzzz
 check "commits --author needs a name" exit=1 err="--author needs a name" -- "1,$didx" commits --author
+
+# --message is a substring over the subject and the body; --filename is a
+# substring over the paths a commit touched.
+check "commits --message subject"     exit=0 out="mainside" -- "1,$didx" commits --message mainside
+check "commits --message case-folds"  exit=0 out="mainside" -- "1,$didx" commits --message MAINSIDE
+check "commits -m short form"         exit=0 out="mainside" -- "1,$didx" commits -m mainside
+check "commits --message no match"    exit=0 err="no commits match those filters" -- "1,$didx" commits --message zzzz
+check "commits --message needs a term" exit=1 err="--message needs a term" -- "1,$didx" commits --message
+check "commits --message rejects empty" exit=1 err="--message needs a term" -- "1,$didx" commits --message ""
+check "commits --filename needs a term" exit=1 err="--filename needs a term" -- "1,$didx" commits --filename
+# The flags these two get confused with, each naming the one that is here.
+check "commits --subject names --message" exit=1 err="--message" -- "1,$didx" commits --subject fix
+check "commits --subject keeps the width" exit=1 err="--subject-width" -- "1,$didx" commits --subject fix
+check "commits --grep names --message"    exit=1 err="--message" -- "1,$didx" commits --grep "^fix"
+check "commits --file names --filename"   exit=1 err="--filename" -- "1,$didx" commits --file x
+check "commits --file names --files"      exit=1 err="--files" -- "1,$didx" commits --file x
 
 check "commits rejects a dup target" exit=1 err="listed twice" -- "1,1" commits
 check "commits bad index errors"     exit=1 err="no worktree #99" -- "1,99" commits

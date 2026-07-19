@@ -23,6 +23,12 @@ pub(crate) struct CommitRow {
     /// commits on the same day still order against each other and the window
     /// does not swallow a whole day of shared history.
     pub(crate) stamp: String,
+    /// The message below the subject, empty unless a filter asked for it.
+    ///
+    /// The table never prints a body of its own accord, so fetching one costs
+    /// output nobody reads -- `--message` is the only thing that wants it, and
+    /// only it pays.
+    pub(crate) body: String,
 }
 
 /// One file touched by a commit, with status and line-count summary.
@@ -223,15 +229,20 @@ pub(crate) fn commit_rows(
     order: Order,
     fmt: DateFmt,
     no_merges: bool,
+    want_body: bool,
 ) -> Result<Vec<CommitRow>, String> {
     let count;
     let date_arg = format!("--date=format:{}", fmt.spec());
-    let mut args = vec![
-        "log",
-        order.flag(),
-        &date_arg,
-        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%s",
-    ];
+    // A body holds newlines, so a record cannot end at one. `%x00` terminates
+    // each record inside the format itself -- not the `-z` flag, whose meaning
+    // in `git log` is bound up with the diff options -- and the body goes last,
+    // where a tab of its own lands in the final field rather than inventing one.
+    let format = if want_body {
+        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%s%x09%b%x00"
+    } else {
+        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%s%x00"
+    };
+    let mut args = vec!["log", order.flag(), &date_arg, format];
     // Merge commits carry no work of their own; dropping them leaves the
     // commits someone actually wrote. The mark columns are unaffected: a
     // merge that is not a row is still in every rev-list that reaches it.
@@ -249,10 +260,14 @@ pub(crate) fn commit_rows(
     }
 
     let out = git_stdout(root, &args)?;
+    // Records are NUL-terminated, so the newline git puts between them belongs
+    // to neither -- trim it off the front of each rather than into a field.
     Ok(out
-        .lines()
-        .filter_map(|line| {
-            let mut f = line.splitn(7, '\t');
+        .split('\0')
+        .map(|rec| rec.trim_start_matches('\n'))
+        .filter(|rec| !rec.is_empty())
+        .filter_map(|rec| {
+            let mut f = rec.splitn(8, '\t');
             Some(CommitRow {
                 sha: f.next()?.to_string(),
                 author: f.next()?.to_string(),
@@ -261,8 +276,72 @@ pub(crate) fn commit_rows(
                 short: f.next()?.to_string(),
                 stamp: f.next()?.to_string(),
                 text: f.next()?.to_string(),
+                // Absent without `want_body`, and empty on a commit that has
+                // no body -- the same thing to every caller.
+                body: f.next().unwrap_or_default().to_string(),
             })
         })
+        .collect())
+}
+
+/// How many matching body lines a row prints before the rest are counted.
+///
+/// Enough to show why the row was kept; past it a verbose commit would push the
+/// rows around it off the screen, which is the table failing at its one job.
+pub(crate) const BODY_HITS_MAX: usize = 3;
+
+/// The body lines containing `term`, case-folded, and how many were left over.
+///
+/// Only the lines that matched: a body is prose, and printing all of it to
+/// explain one word buries the word. Blank lines and the surrounding
+/// indentation go, since neither carries the match.
+pub(crate) fn body_hits(body: &str, term: &str) -> (Vec<String>, usize) {
+    let hits: Vec<String> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.to_lowercase().contains(term))
+        .map(String::from)
+        .collect();
+    let extra = hits.len().saturating_sub(BODY_HITS_MAX);
+    (hits.into_iter().take(BODY_HITS_MAX).collect(), extra)
+}
+
+/// A path substring as a pathspec git will read literally.
+///
+/// The user typed a substring, so the glob characters in it are theirs, not
+/// syntax: an escaped `[` matches a bracket instead of opening a class.
+fn escape_pathspec(term: &str) -> String {
+    let mut out = String::with_capacity(term.len());
+    for c in term.chars() {
+        if matches!(c, '\\' | '*' | '?' | '[') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The shas, among `refs`, of commits that touched a path containing `term`.
+///
+/// A pathspec, so git does the walk: one rev-list, where matching in Rust would
+/// cost a diff per commit. `:(icase)` case-folds it, and the bare `*term*` is
+/// the default (non-`:(glob)`) pathspec, whose `*` crosses directory
+/// separators -- which is what a substring over a path has to do.
+///
+/// Path limiting brings git's history simplification with it: a merge whose
+/// tree matched no differently from its first parent is not listed. Those are
+/// the commits `git log -- <path>` shows, and for the same reason -- a merge
+/// that touched the file only by joining two sides did not touch it.
+pub(crate) fn path_shas(root: &Path, refs: &[String], term: &str) -> Result<HashSet<String>, String> {
+    let spec = format!(":(icase)*{}*", escape_pathspec(term));
+    let mut args = vec!["rev-list"];
+    args.extend(refs.iter().map(String::as_str));
+    args.push("--");
+    args.push(&spec);
+    Ok(git_stdout(root, &args)?
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .collect())
 }
 
@@ -514,6 +593,42 @@ mod tests {
     use crate::cmd::commits::args::{parse_date_filter, DateFmt};
 
     #[test]
+    fn body_hits_keeps_only_the_lines_that_matched() {
+        let body = "fixes ISSUE-42 in the parser\n\nunrelated paragraph\n  ISSUE-42 again  \n";
+        let (lines, extra) = body_hits(body, "issue-42");
+        // Case-folded, trimmed, and blanks dropped -- none of which carries a
+        // match, and all of which would pad the block.
+        assert_eq!(lines, ["fixes ISSUE-42 in the parser", "ISSUE-42 again"]);
+        assert_eq!(extra, 0);
+        // A line the term is not on stays out, however near it sits.
+        assert!(!lines.iter().any(|l| l.contains("unrelated")));
+        // No match at all is an empty block, not a blank one.
+        assert_eq!(body_hits(body, "zzz"), (Vec::new(), 0));
+        assert_eq!(body_hits("", "x"), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn body_hits_caps_a_verbose_commit() {
+        // Past the cap the rows around this one would be pushed off the screen,
+        // so the rest are counted rather than printed.
+        let body = (1..=7).map(|i| format!("line {i} has term")).collect::<Vec<_>>().join("\n");
+        let (lines, extra) = body_hits(&body, "term");
+        assert_eq!(lines.len(), BODY_HITS_MAX);
+        assert_eq!(extra, 7 - BODY_HITS_MAX);
+        assert_eq!(lines[0], "line 1 has term");
+    }
+
+    #[test]
+    fn a_pathspec_term_is_a_substring_not_a_glob() {
+        // The user typed a substring, so the glob characters in it are theirs.
+        assert_eq!(escape_pathspec("render.rs"), "render.rs");
+        assert_eq!(escape_pathspec("a[0]"), "a\\[0]");
+        assert_eq!(escape_pathspec("*.rs"), "\\*.rs");
+        assert_eq!(escape_pathspec("a?b"), "a\\?b");
+        assert_eq!(escape_pathspec("a\\b"), "a\\\\b");
+    }
+
+    #[test]
     fn a_block_groups_by_status_then_path() {
         let mut files: Vec<FileStat> = ["M docs/base.txt", "A src/cli.rs", "M src/main.rs",
                                         "A src/ui.rs", "D old.rs", "? new.txt", "R moved.rs"]
@@ -610,7 +725,7 @@ mod tests {
         // --all keeps the old default: the first ref's log, whole -- exactly
         // 'git log --oneline main', shared history included. feat's own commit
         // is not a row, it is a missing mark on feat's column.
-        let all_rows = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
+        let all_rows = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false).unwrap();
         let subjects: Vec<&str> = all_rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(all_rows.len(), 2, "{subjects:?}");
         assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
@@ -632,7 +747,7 @@ mod tests {
         // older than the missing commit and is therefore excluded.
         let divergent = divergent_set(&tmp, &refs[0], &refs[1..]).unwrap();
         assert!(!divergent.is_empty(), "feat must be missing something from main");
-        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
+        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false).unwrap();
         let rows = window_to_divergent(full, &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rows.len(), 1, "{subjects:?}");
@@ -656,7 +771,7 @@ mod tests {
 
         // --union: every ref contributes rows, so feat's commit is one too, and
         // the shared commit is checked on both.
-        let union = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false).unwrap();
+        let union = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false).unwrap();
         let subjects: Vec<&str> = union.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(union.len(), 3, "{subjects:?}");
         // --author-date-order, so the rows descend by the date they print.
@@ -666,7 +781,7 @@ mod tests {
         assert!(feat_all.contains(&shared.sha));
 
         // -n caps the rows, newest first.
-        let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date, ISO, false).unwrap();
+        let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date, ISO, false, false).unwrap();
         assert_eq!(capped.len(), 1);
 
         // A commit names a day for --commit-since/--commit-until, so the
@@ -737,7 +852,7 @@ mod tests {
         assert_eq!(divergent.len(), 2);
 
         let full = commit_rows(
-            &tmp, &refs[..1], None, None, Order::Date, ISO, false,
+            &tmp, &refs[..1], None, None, Order::Date, ISO, false, false,
         ).unwrap();
         let rows = window_to_divergent(full, &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
@@ -745,7 +860,7 @@ mod tests {
 
         // The full first-branch log with --all.
         let all_rows = commit_rows(
-            &tmp, &refs[..1], None, None, Order::Date, ISO, false,
+            &tmp, &refs[..1], None, None, Order::Date, ISO, false, false,
         ).unwrap();
         let all_subjects: Vec<&str> = all_rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(all_subjects, ["D", "C", "B", "A"], "{all_subjects:?}");
@@ -811,7 +926,7 @@ mod tests {
         assert!(divergent.contains(sha_by_subject(&tmp, "main", "FLOOR").as_str()));
         assert_eq!(divergent.len(), 2, "MAINLINE is shared, not divergent");
 
-        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false).unwrap();
+        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false).unwrap();
         let rows = window_to_divergent(full.clone(), &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         // FLOOR down to SIDE, and nothing below: MAINLINE must not leak in even
@@ -849,6 +964,7 @@ mod tests {
             None,
             Order::Date,
             ISO,
+            false,
             false,
         )
         .unwrap();
@@ -894,7 +1010,7 @@ mod tests {
 
         let refs = vec!["main".to_string(), "feat".to_string()];
         let subjects = |o: Order| -> Vec<String> {
-            commit_rows(&tmp, &refs, None, None, o, ISO, false)
+            commit_rows(&tmp, &refs, None, None, o, ISO, false, false)
                 .unwrap()
                 .iter()
                 .map(|r| r.text.clone())
@@ -952,7 +1068,7 @@ mod tests {
         commit("feat-21h", "2026-07-17T21:00:00");
 
         let refs = vec!["main".to_string(), "feat".to_string()];
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false).unwrap();
         let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
 
         // Ordering reads the full timestamp, not the printed day: the branches
@@ -967,7 +1083,7 @@ mod tests {
         // --time is what tells those four rows apart, 24-hour so they sort
         // the way they read; the day stays ISO beside it.
         let timed = DateFmt { human: false, time: true };
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, timed, false).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, timed, false, false).unwrap();
         let stamps: Vec<&str> = rows[..4].iter().map(|r| r.date.as_str()).collect();
         assert_eq!(
             stamps,
@@ -981,7 +1097,7 @@ mod tests {
 
         // --date-human is the old spelling, single-digit days unpadded.
         let human = DateFmt { human: true, time: false };
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, human, false).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, human, false, false).unwrap();
         assert_eq!(rows[4].date, "Jul. 1, 2026");
         // The filter key never changes shape, whatever the column is spelled
         // as: --date compares ISO no matter what you are looking at.
@@ -1123,7 +1239,7 @@ mod tests {
 
         let refs = vec!["main".to_string()];
         let rows = |no_merges: bool| -> Vec<String> {
-            commit_rows(&tmp, &refs, None, None, Order::Date, ISO, no_merges)
+            commit_rows(&tmp, &refs, None, None, Order::Date, ISO, no_merges, false)
                 .unwrap()
                 .iter()
                 .map(|r| r.text.clone())
@@ -1171,7 +1287,7 @@ mod tests {
         git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "child"], "2026-01-01T10:00:00");
 
         let refs = vec!["main".to_string()];
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false).unwrap();
         let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
 
         // Ancestry wins: the child is listed above the parent it descends from,

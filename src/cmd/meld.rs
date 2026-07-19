@@ -224,20 +224,38 @@ pub(crate) fn changed_paths(root: &Path, a: &str, b: &str) -> Result<Vec<String>
     Ok(out)
 }
 
+/// Parse `git diff --name-status` output into (path, status) pairs.
+///
+/// A rename or copy prints three tab-separated fields -- `R100`, the old path,
+/// then the new one -- and both paths are kept. The old path is what the left
+/// ref has and the new path is what the right ref has, so keeping only one of
+/// them would drop that file from one side of the comparison entirely.
 pub(crate) fn parse_name_status(out: &str) -> Result<Vec<(String, char)>, String> {
     let mut v = Vec::new();
     for line in out.lines() {
-        let line = line.trim();
-        if line.is_empty() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() {
             continue;
         }
-        // Status is the first character; path is the rest, possibly tab-separated.
-        let status = line.chars().next().unwrap_or('?');
-        let path = line[1..].trim_start().to_string();
-        if path.is_empty() {
+        // `M\tpath`, or `R100\told\tnew` for a rename. A line with no tab at all
+        // is read the way this always read one: status letter, then the path.
+        let (code, rest) = match line.split_once('\t') {
+            Some(pair) => pair,
+            None => line.split_at(1),
+        };
+        let status = code.trim().chars().next().unwrap_or('?');
+        let mut found = 0;
+        for p in rest.split('\t') {
+            let p = p.trim_start();
+            if p.is_empty() {
+                continue;
+            }
+            v.push((p.to_string(), status));
+            found += 1;
+        }
+        if found == 0 {
             return Err(format!("malformed --name-status line: '{line}'"));
         }
-        v.push((path, status));
     }
     Ok(v)
 }
@@ -271,4 +289,55 @@ pub(crate) fn extract_files(root: &Path, r#ref: &str, paths: &[String], dir: &Pa
             .map_err(|e| format!("failed to write {target:?}: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_status_keeps_both_sides_of_a_rename() {
+        // What `git diff --name-status` actually prints for a rename: a
+        // similarity score glued to the status letter, then old and new paths.
+        let out = "M\tkeep.txt\nR075\told.txt\tnew.txt\n";
+        let v = parse_name_status(out).unwrap();
+        assert_eq!(
+            v,
+            vec![
+                ("keep.txt".to_string(), 'M'),
+                ("old.txt".to_string(), 'R'),
+                ("new.txt".to_string(), 'R'),
+            ]
+        );
+        // The score is part of the status field, never part of a path -- the
+        // bug this guards against extracted "075\told.txt\tnew.txt" as one path
+        // and then silently dropped the file from both meld panes.
+        assert!(v.iter().all(|(p, _)| !p.contains('\t') && !p.starts_with('0')));
+    }
+
+    #[test]
+    fn name_status_reads_the_ordinary_statuses() {
+        let out = "A\tadded.rs\nD\tgone.rs\nM\tsrc/a b.rs\nC100\tfrom.rs\tto.rs\n";
+        let v = parse_name_status(out).unwrap();
+        assert_eq!(
+            v,
+            vec![
+                ("added.rs".to_string(), 'A'),
+                ("gone.rs".to_string(), 'D'),
+                // A space in a path is not a field separator; only tabs are.
+                ("src/a b.rs".to_string(), 'M'),
+                // A copy names both too: the source is in each ref, the
+                // destination only in the newer one.
+                ("from.rs".to_string(), 'C'),
+                ("to.rs".to_string(), 'C'),
+            ]
+        );
+    }
+
+    #[test]
+    fn name_status_skips_blanks_and_rejects_a_pathless_line() {
+        assert!(parse_name_status("\n\n").unwrap().is_empty());
+        assert!(parse_name_status("M\t\n").is_err());
+        assert!(parse_name_status("M").is_err());
+    }
 }

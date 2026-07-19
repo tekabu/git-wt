@@ -521,6 +521,52 @@ rootsha="$(cd "$APP" && git rev-list --max-parents=0 --abbrev-commit HEAD)"
 check "--commits implies --all"       exit=0 out="init" -- "1,$didx" commits --commits "$rootsha"
 check "--date implies --all"          exit=0 out="init" -- "1,$didx" commits --date "$today"
 check "--date-since implies --all"    exit=0 out="init" -- "1,$didx" commits --date-since "$yesterday"
+# An upper bound only trims the top, which the slice already ends at, so it
+# stays a post-filter over the default rows: 'init' is still cut.
+uonly="$("$BIN" "1,$didx" commits --date-until "$tomorrow" 2>/dev/null | grep -cw init || true)"
+ucmd="$(fmt_cmd "1,$didx" commits --date-until "$tomorrow")"
+if [ "$uonly" = 0 ]; then
+  report PASS HAPPY "--date-until keeps the slice" "$ucmd  # no init row"
+else
+  report FAIL HAPPY "--date-until keeps the slice" "$ucmd" "init leaked: an upper bound widened the source"
+fi
+check "--date-until --all widens"     exit=0 out="init" -- "1,$didx" commits --date-until "$tomorrow" --all
+# ...and a range still widens, because its lower bound does.
+check "a date range implies --all"    exit=0 out="init" -- "1,$didx" commits --date-since "$yesterday" --date-until "$tomorrow"
+# A filter that kept nothing over the slice says the slice is what it read.
+check "empty filter hints --all"      exit=0 err="try --all" -- "1,$didx" commits --date-until "$yesterday"
+check "empty filter hints --union"    exit=0 err="--union" -- "1,$didx" commits --date-until "$yesterday"
+check "empty filter hints --date-since" exit=0 err="--date-since to start further back" -- "1,$didx" commits --date-until "$yesterday"
+# --commit-until is the same kind of post-filter, and its hint speaks its own
+# vocabulary. It needs history spread over more than one day, so it gets a
+# self-contained repo: 'old' is below the slice's floor, 'new' is the slice.
+CUR="$ROOT/cu/app"; mkdir -p "$CUR"
+( cd "$CUR"
+  git init -q; git checkout -q -b main
+  git config user.email t@t; git config user.name t
+  export GIT_AUTHOR_DATE="2026-01-01T12:00:00+0000"
+  export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
+  git commit -q --allow-empty -m old-shared
+  git branch cuside
+  export GIT_AUTHOR_DATE="2026-06-01T12:00:00+0000"
+  export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
+  git commit -q --allow-empty -m new-on-main )
+( cd "$CUR" && printf 'y\n' | "$BIN" add cuside --dirname cuwt >/dev/null 2>&1 )
+oldsha="$(cd "$CUR" && git rev-list --max-parents=0 --abbrev-commit HEAD)"
+# The default slice is 'new-on-main' alone, so a bound at 'old' keeps nothing.
+uc="$( cd "$CUR" && "$BIN" 1,2 commits --commit-until "$oldsha" 2>&1 )"
+uccmd="$(fmt_cmd 1,2 commits --commit-until "$oldsha")"
+case "$uc" in
+  *"--commit-since to start further back"*) report PASS HAPPY "--commit-until hints --commit-since" "$uccmd" ;;
+  *) report FAIL HAPPY "--commit-until hints --commit-since" "$uccmd" "got '$uc'" ;;
+esac
+# ...and with --all it reaches the older commit it named.
+ucall="$( cd "$CUR" && "$BIN" 1,2 commits --commit-until "$oldsha" --all 2>&1 )"
+ucacmd="$(fmt_cmd 1,2 commits --commit-until "$oldsha" --all)"
+case "$ucall" in
+  *old-shared*) report PASS HAPPY "--commit-until --all reaches back" "$ucacmd" ;;
+  *) report FAIL HAPPY "--commit-until --all reaches back" "$ucacmd" "got '$ucall'" ;;
+esac
 # --author does not: it matches many commits and named none of them.
 aonly="$("$BIN" "1,$didx" commits --author Test 2>/dev/null | grep -cw init || true)"
 acmd="$(fmt_cmd "1,$didx" commits --author Test)"

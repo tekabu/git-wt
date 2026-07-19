@@ -370,23 +370,29 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     if all && union {
         return Err("--all and --union are two different row sources: use one of them".into());
     }
-    // A commit or a date names something that exists in the history, not
-    // something that exists in the default range -- and the default range is a
-    // slice, so naming a commit outside it would answer "no such commit" when
-    // the real answer is "not in these rows". Those two filters therefore widen
-    // the source to the full log on their own.
+    // The default rows are a slice with a floor: the first branch's log from its
+    // earliest divergent commit up to its tip. Only the bottom is cut, and that
+    // is what decides which filters have to widen the source.
     //
-    // --author does not: a name matches many commits and none of them was asked
-    // for by name, so "who wrote in this range" stays the question. Say --all
-    // when you mean the whole log.
+    // A lower bound or a named commit can point BELOW that floor, so on the
+    // default rows they would report "nothing matched" when the truth is "older
+    // than these rows". They widen to the full log on their own.
+    //
+    // An upper bound cannot: the top edge is the tip either way, so --date-until
+    // and --commit-until only ever trim rows the slice already has. They are a
+    // post-filter, and post-filters do not get to redefine the source. A range
+    // still widens, because its lower bound does.
+    //
+    // --author is the same kind of thing: it matches many commits and named none
+    // of them, so "who wrote in this range" stays the question. Say --all when
+    // you mean the whole log.
     //
     // Checked after the conflict above, so an implied --all can never collide
     // with a --union the user actually typed.
-    let selects_history = !commits.is_empty()
+    let names_a_floor = !commits.is_empty()
         || commit_since.is_some()
-        || commit_until.is_some()
-        || !dates.is_empty();
-    let all = all || (selects_history && !union);
+        || dates.iter().any(|d| d.op != DateOp::Le);
+    let all = all || (names_a_floor && !union);
     Ok(CommitsArgs {
         limit, dates, commit_since, commit_until, commits, author, topo, no_merges, fmt, md,
         reverse, no_cherry, pick, union,
@@ -715,15 +721,24 @@ mod tests {
     }
 
     #[test]
-    fn history_selectors_widen_the_source_but_author_does_not() {
-        // A commit or a day names something in the history, not something in
-        // the default slice, so each widens the source on its own.
+    fn a_lower_bound_widens_the_source_and_an_upper_one_does_not() {
+        // The default rows are cut at the bottom, so anything that names a
+        // floor -- a commit, a day, a lower bound -- can point below it and
+        // has to widen the source to mean what it says.
         assert!(parse(&["--commits", "abc123"]).unwrap().all);
         assert!(parse(&["--commit-since", "abc123"]).unwrap().all);
-        assert!(parse(&["--commit-until", "abc123"]).unwrap().all);
         assert!(parse(&["--date", "2026-01-01"]).unwrap().all);
         assert!(parse(&["--date-since", "2026-01-01"]).unwrap().all);
-        assert!(parse(&["--date-until", "2026-01-01"]).unwrap().all);
+
+        // An upper bound only ever trims the top, which the slice already ends
+        // at: a post-filter, and a post-filter does not redefine the source.
+        assert!(!parse(&["--date-until", "2026-01-01"]).unwrap().all);
+        assert!(!parse(&["--commit-until", "abc123"]).unwrap().all);
+        // ...but a range widens, because its lower bound does.
+        assert!(parse(&["--date-since", "2026-01-01", "--date-until", "2026-06-01"]).unwrap().all);
+        assert!(parse(&["--commit-since", "abc", "--commit-until", "def"]).unwrap().all);
+        // And an upper bound still takes --all when it is asked for.
+        assert!(parse(&["--date-until", "2026-01-01", "--all"]).unwrap().all);
 
         // --author matches many commits and named none of them, so the slice
         // stays the question; --all is there to be typed.

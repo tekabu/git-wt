@@ -204,11 +204,14 @@ COMMITS FILTERS:
     Both ends include what they name, and '--date' is one exact day: no
     operators anywhere, so nothing here needs quoting against the shell.
 
-    --commits and the date filters widen the rows to the full log on
-    their own: they name something in the history, not something in the
-    default slice, so a commit outside it would otherwise read as absent.
-    --author does not -- it matches many commits and named none of them,
-    so add --all yourself when you mean the whole log.
+    The default rows are cut at the BOTTOM, at the earliest divergent
+    commit, so only a filter that names a floor has to widen them:
+    --commits, --date, --date-since and --commit-since imply --all, since
+    what they name can sit below that cut. --date-until/--commit-until do
+    not -- an upper bound only trims the top, which the rows already end
+    at, so it stays a post-filter. A range widens via its lower bound.
+    --author never widens: it matches many commits and named none of them.
+    When a filter keeps nothing, the message says which flag reaches back.
 
     --date compares the date the table prints, which is the AUTHOR date;
     git's own --since/--until read committer dates and would disagree

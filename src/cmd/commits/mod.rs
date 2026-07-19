@@ -169,7 +169,25 @@ pub(crate) fn cmd_commits(
         // A filter that matched nothing is a different story from a history
         // with nothing in it: say which one happened.
         let msg = if filtered && unfiltered > 0 {
-            format!("no commits match those filters: {unfiltered} commits, none kept")
+            let mut m = format!("no commits match those filters: {unfiltered} commits, none kept");
+            // These rows are a slice, and an upper bound or an author filter
+            // never widened it -- so the commits being asked about may simply
+            // be older than the floor rather than absent.
+            if !args.all && !args.union {
+                // Suggest the lower bound in the vocabulary they were already
+                // speaking: a commit bound is answered by a commit bound.
+                let back = if args.commit_until.is_some() && args.dates.is_empty() {
+                    "--commit-since"
+                } else {
+                    "--date-since"
+                };
+                m.push_str(&format!(
+                    "\nhint: these are only the rows ahead of the other branches -- \
+                     try --all (this branch's whole log), --union (every branch listed), \
+                     or {back} to start further back"
+                ));
+            }
+            m
         } else if args.union {
             "no commits".to_string()
         } else if args.all {

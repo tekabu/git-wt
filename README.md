@@ -528,6 +528,15 @@ more.
 | `--commit-until C` | The day C was authored, and before |
 | `--commits A,B` (`-c`) | Only these commits, named by sha |
 
+**A lower bound widens the rows, an upper bound does not.** The default rows
+are cut at the bottom, at the earliest divergent commit — so `--commits`,
+`--date`, `--date-since` and `--commit-since` imply `--all`, because what they
+name can sit below that cut. `--date-until`/`--commit-until` only trim the top,
+which the rows already end at, so they stay a post-filter over the default
+slice. A range widens through its lower bound, and `--author` never widens.
+When a filter keeps nothing, the message names the flags that reach further
+back.
+
 **Both ends include what they name.** `--commit-since 5568a21` takes that
 commit's whole day, and `--date-since 2026-01-01` takes that whole day. That's
 why there's no `>` or `<`: the day either side of a bound is just the inclusive bound next
@@ -1064,6 +1073,7 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30` | A date range, inclusive, no quoting |
 | `git-wt 1,2 commits --commit-since 5568a21` | The day that commit was authored, and after |
 | `git-wt 1,2 commits --commits af48509,f9e2427` | Only those commits (also `-c`); implies `--all` |
+| `git-wt 1,2 commits --date-until 2026-06-30` | Trims the top of the default rows; does **not** imply `--all` |
 | `git-wt 1,2 commits --author nes --all` | `--author` never implies `--all` — say it yourself |
 | `git-wt 1,2 commits -af` | Short flags bundle: `--all --files` |
 | `git-wt 1,2 commits --commit-since 5568a21` | Commit `5568a21` and everything after it |

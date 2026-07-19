@@ -145,7 +145,15 @@ pub(crate) fn render_commits(
     head.push_str("  subject");
     println!("{}", paint(&head, DIM, color));
 
+    // With file blocks the table becomes a series of groups, so every commit is
+    // fenced off by a blank line -- including one whose block is empty, which
+    // would otherwise huddle against the block above and read as part of it.
+    let grouped = row_files.iter().any(|f| !f.is_empty());
+
     for (i, (row, text)) in rows.iter().enumerate() {
+        if grouped && i > 0 {
+            println!();
+        }
         let mut line = format!("{:<shaw$}  ", row.short);
         if let Some(w) = pickw {
             // Blank, not '·': the column names a sha or it has nothing to say,
@@ -188,7 +196,6 @@ pub(crate) fn render_commits(
                 for file_line in file_stat_lines(file_stats) {
                     println!("{}", paint(&file_line, DIM, color));
                 }
-                println!();
             }
         }
     }

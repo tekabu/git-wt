@@ -70,6 +70,11 @@ trap 'rm -rf "$ROOT"' EXIT
 mkdir -p "$APP"
 cd "$APP" || exit 1
 git init -q
+# git picks the default branch name from init.defaultBranch, which is 'master'
+# on a stock Linux install and 'main' only because macOS ships a system gitconfig
+# saying so. The suite asserts on the name, so pin it here (works on an unborn
+# HEAD, before the first commit).
+git checkout -q -b main
 git config user.email test@example.com
 git config user.name "Test"
 git commit -q --allow-empty -m "init"
@@ -259,7 +264,8 @@ check "picker shows a checked-out br"  exit=1 err="feature/login" -- add
 # Self-contained: a repo where every branch is checked out -> picker errors.
 FULL="$ROOT/full/app"; mkdir -p "$FULL"
 ( cd "$FULL"
-  git init -q; git config user.email t@t; git config user.name t
+  git init -q; git checkout -q -b main
+  git config user.email t@t; git config user.name t
   git commit -q --allow-empty -m i; git branch only
   "$BIN" add only >/dev/null 2>&1 )          # main + only both checked out now
 allco="$(cd "$FULL" && printf '\n' | "$BIN" add 2>&1)"
@@ -804,7 +810,8 @@ check "remove dirty with -f"         exit=0 -- "$didx" remove -y -f
 #   stuckbr  a second copy of B, kept aside so a merge can be left stopped
 MRG="$ROOT/mrg/app"; mkdir -p "$MRG"
 ( cd "$MRG"
-  git init -q; git config user.email t@t; git config user.name t
+  git init -q; git checkout -q -b main
+  git config user.email t@t; git config user.name t
   echo base > base.txt; echo 0 > shared.txt
   git add .; git commit -q -m init
   git branch feat-a; git branch cb1; git branch cb2; git branch cb3; git branch cb4
@@ -817,7 +824,7 @@ MRG="$ROOT/mrg/app"; mkdir -p "$MRG"
   # stuckbr forks from cb2 *before* any test merges into it, so it still
   # genuinely collides with cb3 late in the run.
   git branch stuckbr cb2
-  git checkout -q main 2>/dev/null || git checkout -q master
+  git checkout -q main
   "$BIN" add feat-a  --dirname w-feat  >/dev/null 2>&1
   "$BIN" add cb1     --dirname w-cb1   >/dev/null 2>&1
   "$BIN" add cb2     --dirname w-cb2   >/dev/null 2>&1

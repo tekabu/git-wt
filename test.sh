@@ -390,15 +390,15 @@ check "commits --any spells --union"  exit=0 out="loginside" -- "1,$didx" commit
 check "commits heads the author col" exit=0 out="author" -- "1,$didx" commits
 check "commits names the author"     exit=0 out="Test" -- "1,$didx" commits
 check "commits heads the subject col" exit=0 out="subject" -- "1,$didx" commits
-# ISO by default: what the table prints is what --from-date takes.
+# ISO by default: what the table prints is what --date-since takes.
 check "commits dates the rows"       exit=0 out="$(date +%F)" -- "1,$didx" commits
 check "commits --date-human"         exit=0 out=", $(date +%Y)" -- "1,$didx" commits --date-human
 # 24-hour h:m:s, appended to whichever day spelling is in play.
-check "commits --show-time"          exit=0 out="$(date +%F) " -- "1,$didx" commits --show-time
-check "commits --show-time is 24h"   exit=0 out=":" -- "1,$didx" commits --show-time
-check "commits human + time"         exit=0 out=", $(date +%Y) " -- "1,$didx" commits --date-human --show-time
+check "commits --time"          exit=0 out="$(date +%F) " -- "1,$didx" commits --time
+check "commits --time is 24h"   exit=0 out=":" -- "1,$didx" commits --time
+check "commits human + time"         exit=0 out=", $(date +%Y) " -- "1,$didx" commits --date-human --time
 # A date read off the table pastes back into a filter unchanged.
-check "commits ISO round-trips"      exit=0 out="mainside" -- "1,$didx" commits --from-date "$(date +%F)"
+check "commits ISO round-trips"      exit=0 out="mainside" -- "1,$didx" commits --date-since "$(date +%F)"
 
 # The default is a merge-request slice: only branch 1's commits the others
 # miss. 'mainside' is main's alone, so it shows; the shared 'init' is cut.
@@ -494,13 +494,13 @@ check "commits --date = today"        exit=0 out="mainside" -- "1,$didx" commits
 check "commits --date >= today"       exit=0 out="mainside" -- "1,$didx" commits --date ">=$today"
 check "commits --date <= today"       exit=0 out="mainside" -- "1,$didx" commits --date "<=$today"
 check "commits --date bare = '='"     exit=0 out="mainside" -- "1,$didx" commits --date "$today"
-check "commits --from-date today"     exit=0 out="mainside" -- "1,$didx" commits --from-date "$today"
-check "commits --to-date today"       exit=0 out="mainside" -- "1,$didx" commits --to-date "$today"
+check "commits --date-since today"     exit=0 out="mainside" -- "1,$didx" commits --date-since "$today"
+check "commits --date-until today"       exit=0 out="mainside" -- "1,$didx" commits --date-until "$today"
 # Two bounds are an AND, which is how a range is spelled.
-check "commits date range brackets"   exit=0 out="mainside" -- "1,$didx" commits --from-date "$yesterday" --to-date "$tomorrow"
+check "commits date range brackets"   exit=0 out="mainside" -- "1,$didx" commits --date-since "$yesterday" --date-until "$tomorrow"
 # A bound that keeps nothing reports the filter, not an empty history.
-check "commits --from-date tomorrow"  exit=0 err="no commits match those filters" -- "1,$didx" commits --from-date "$tomorrow"
-check "commits --to-date yesterday"   exit=0 err="no commits match those filters" -- "1,$didx" commits --to-date "$yesterday"
+check "commits --date-since tomorrow"  exit=0 err="no commits match those filters" -- "1,$didx" commits --date-since "$tomorrow"
+check "commits --date-until yesterday"   exit=0 err="no commits match those filters" -- "1,$didx" commits --date-until "$yesterday"
 
 # Inclusive bounds only: a strict comparison names a day '>=' already reaches.
 check "commits --date rejects >"      exit=1 err="no '>' comparison" -- "1,$didx" commits --date ">$today"
@@ -511,23 +511,46 @@ check "commits --date needs a value"  exit=1 err="redirect" -- "1,$didx" commits
 # An unquoted '>' is eaten by the shell, so the value arrives bare: say why.
 check "commits --date eaten by shell" exit=1 err="redirect" -- "1,$didx" commits --date ">="
 
-# --from-id/--to-id include the commit they name -- the point of the flags.
+# --commit-since/--commit-until include the commit they name -- the point of the flags.
 mainsha="$(cd "$APP" && git rev-parse --short HEAD)"
-check "commits --from-id keeps its own" exit=0 out="$mainsha" -- "1,$didx" commits --from-id "$mainsha"
-check "commits --to-id keeps its own"   exit=0 out="$mainsha" -- "1,$didx" commits --to-id "$mainsha"
-# ...and --to-id drops what the named commit cannot reach: login's own branch.
-toid="$("$BIN" "1,$didx" commits --union --to-id "$mainsha" 2>/dev/null)"
-tcmd="$(fmt_cmd "1,$didx" commits --union --to-id "$mainsha")"
+check "commits --commit-since keeps its own" exit=0 out="$mainsha" -- "1,$didx" commits --commit-since "$mainsha"
+check "commits --commit-until keeps its own"   exit=0 out="$mainsha" -- "1,$didx" commits --commit-until "$mainsha"
+# ...and the bound is that commit's DATE, not its ancestry: 'loginside' is on a
+# branch main cannot reach, and it stays, because it was authored the same day.
+# That is the whole difference from the --to-id these flags replaced.
+toid="$("$BIN" "1,$didx" commits --union --commit-until "$mainsha" 2>/dev/null)"
+tcmd="$(fmt_cmd "1,$didx" commits --union --commit-until "$mainsha")"
 case "$toid" in
-  *loginside*) report FAIL HAPPY "commits --to-id bounds the walk" "$tcmd" "loginside is unreachable from main: '$toid'" ;;
-  *)           report PASS HAPPY "commits --to-id bounds the walk" "$tcmd" ;;
+  *loginside*) report PASS HAPPY "commit bound is a date, not ancestry" "$tcmd" ;;
+  *)           report FAIL HAPPY "commit bound is a date, not ancestry" "$tcmd" "loginside dropped; the bound read as ancestry: '$toid'" ;;
 esac
-check "commits --from-id bad commit"  exit=1 err="--from-id: no commit 'zzz9'" -- "1,$didx" commits --from-id zzz9
-check "commits --to-id needs a value" exit=1 err="--to-id needs a commit" -- "1,$didx" commits --to-id
+check "commits --commit-since bad commit"  exit=1 err="--commit-since: no commit 'zzz9'" -- "1,$didx" commits --commit-since zzz9
+check "commits --commit-until needs a value" exit=1 err="--commit-until needs a commit" -- "1,$didx" commits --commit-until
 # A bare --from names neither bound; git's date words point at ours.
-check "commits rejects bare --from"   exit=1 err="'--from-id' takes a commit" -- "1,$didx" commits --from x
-check "commits rejects --since"       exit=1 err="use '--from-date" -- "1,$didx" commits --since 2026-01-01
-check "commits rejects --until"       exit=1 err="use '--to-date" -- "1,$didx" commits --until 2026-01-01
+check "commits rejects bare --from"   exit=1 err="'--commit-since' takes a commit" -- "1,$didx" commits --from x
+check "commits rejects --since"       exit=1 err="use '--date-since" -- "1,$didx" commits --since 2026-01-01
+# The old spellings say their new name rather than reading as a typo.
+check "commits --from-date renamed"   exit=1 err="'--from-date' is now '--date-since'" -- "1,$didx" commits --from-date 2026-01-01
+check "commits --to-date renamed"     exit=1 err="'--to-date' is now '--date-until'" -- "1,$didx" commits --to-date 2026-01-01
+check "commits --from-id renamed"     exit=1 err="'--from-id' is now '--commit-since'" -- "1,$didx" commits --from-id HEAD
+check "commits --to-id renamed"       exit=1 err="'--to-id' is now '--commit-until'" -- "1,$didx" commits --to-id HEAD
+check "commits --show-time renamed"   exit=1 err="'--show-time' is now '--time'" -- "1,$didx" commits --show-time
+# --commits names the rows outright, and resolves every id before filtering.
+check "commits --commits one sha"     exit=0 out="$mainsha" -- "1,$didx" commits --commits "$mainsha"
+check "commits -c short flag"         exit=0 out="$mainsha" -- "1,$didx" commits -c "$mainsha"
+check "commits --commits bundled -ac" exit=0 out="$mainsha" -- "1,$didx" commits -ac "$mainsha"
+check "commits --commits bad sha"     exit=1 err="--commits: no commit 'zzz9'" -- "1,$didx" commits --commits zzz9
+check "commits --commits empty id"    exit=1 err="bad commit list" -- "1,$didx" commits --commits "a,,b"
+# One named commit is one row, whatever else the range holds.
+conly="$("$BIN" "1,$didx" commits --all --commits "$mainsha" 2>/dev/null | grep -c "^$mainsha" || true)"
+call="$("$BIN" "1,$didx" commits --all 2>/dev/null | grep -cE "^[0-9a-f]{7}" || true)"
+ccmd="$(fmt_cmd "1,$didx" commits --all --commits "$mainsha")"
+if [ "$conly" = 1 ] && [ "$call" -gt 1 ]; then
+  report PASS HAPPY "commits --commits keeps only those" "$ccmd  # 1 of $call rows"
+else
+  report FAIL HAPPY "commits --commits keeps only those" "$ccmd" "wanted 1 row of $call, got $conly"
+fi
+check "commits rejects --until"       exit=1 err="use '--date-until" -- "1,$didx" commits --until 2026-01-01
 
 # --no-merges drops the bookkeeping rows and keeps the work. Needs a merge with
 # something to merge: a branch main already contains is "Already up to date"

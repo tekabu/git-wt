@@ -7,12 +7,12 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cmd::commits::args::{parse_commits_args, Order};
+use crate::cmd::commits::args::{parse_commits_args, DateFilter, DateOp, Order};
 use crate::cmd::commits::md::{md_filename, write_md};
 use crate::cmd::commits::render::render_commits;
 use crate::cmd::commits::rows::{
-    commit_files, commit_of, commit_rows, divergent_set, equivalents, older_than, pick_ids,
-    reachable_from, ref_shas, window_to_divergent, CommitRow, FileStat,
+    commit_day, commit_files, commit_of, commit_rows, divergent_set, equivalents, pick_ids,
+    ref_shas, window_to_divergent, CommitRow, FileStat,
 };
 use crate::ui::{color_enabled, is_subseq, term_width};
 use crate::worktree::{label, ref_of, Worktree};
@@ -80,8 +80,9 @@ pub(crate) fn cmd_commits(
     // and skip the walk it saves. The default view walks whole too: its floor
     // can sit past any -n, and letting git cap first would hide it.
     let filtered = !args.dates.is_empty()
-        || args.from.is_some()
-        || args.to.is_some()
+        || args.commit_since.is_some()
+        || args.commit_until.is_some()
+        || !args.commits.is_empty()
         || args.author.is_some();
     let git_limit = if filtered || divergent.is_some() { None } else { args.limit };
     let order = if args.topo { Order::Topo } else { Order::Date };
@@ -103,17 +104,31 @@ pub(crate) fn cmd_commits(
     };
     let unfiltered = all_rows.len();
 
-    // Ancestry, not dates: '--from X' means "X and everything after it", so
-    // the rows to drop are the ones strictly older than X. Both bounds resolve
-    // first, so a typo'd ref is an error rather than an empty table.
-    let older = match &args.from {
-        Some(r) => Some(older_than(root, &commit_of(root, r, "--from-id")?)?),
-        None => None,
-    };
-    let within = match &args.to {
-        Some(r) => Some(reachable_from(root, &commit_of(root, r, "--to-id")?)?),
-        None => None,
-    };
+    // A commit names a day here, nothing more: '--commit-since X' is
+    // '--date-since <the day X was authored>'. Ancestry would answer a
+    // different question -- what descends from X -- and a branch that forked
+    // before X but committed after it is exactly the thing you are looking for
+    // when you name a commit as a starting point.
+    //
+    // Both bounds resolve before any row is judged, so a typo'd ref is an error
+    // rather than a quietly empty table.
+    let mut dates: Vec<DateFilter> = Vec::new();
+    if let Some(r) = &args.commit_since {
+        let c = commit_of(root, r, "--commit-since")?;
+        dates.push(DateFilter { op: DateOp::Ge, date: commit_day(root, &c)? });
+    }
+    if let Some(r) = &args.commit_until {
+        let c = commit_of(root, r, "--commit-until")?;
+        dates.push(DateFilter { op: DateOp::Le, date: commit_day(root, &c)? });
+    }
+
+    // '--commits a,b' names the rows outright. Each id resolves first, for the
+    // same reason the bounds do, and is compared as a full sha so 'af48509' and
+    // the whole 40 characters both land on the same row.
+    let mut wanted: HashSet<String> = HashSet::new();
+    for id in &args.commits {
+        wanted.insert(commit_of(root, id, "--commits")?);
+    }
 
     // Fuzzy, and the same fuzzy `list` uses: a subsequence, case-folded, so
     // '--author nes' finds 'Nino Escalera' and nobody types a full name twice.
@@ -122,8 +137,8 @@ pub(crate) fn cmd_commits(
     let mut rows: Vec<CommitRow> = all_rows
         .into_iter()
         .filter(|r| args.dates.iter().all(|f| f.admits(&r.key)))
-        .filter(|r| older.as_ref().is_none_or(|o| !o.contains(&r.sha)))
-        .filter(|r| within.as_ref().is_none_or(|w| w.contains(&r.sha)))
+        .filter(|r| dates.iter().all(|f| f.admits(&r.key)))
+        .filter(|r| wanted.is_empty() || wanted.contains(&r.sha))
         .filter(|r| {
             needle
                 .as_ref()

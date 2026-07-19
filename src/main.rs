@@ -135,16 +135,17 @@ COMMITS OPTIONS:
                           --subjw)
         --md [FILE]       Write a markdown table instead of printing one
                           (default: commits_<date>_<time>.md in the cwd)
-        --show-time       Add the time to the date column, 24-hour
+        --time            Add the time to the date column, 24-hour
         --date-human      'Jan. 31, 2026' instead of '2026-01-31'
         --author NAME     Only NAME's commits (fuzzy, like list's SEARCH)
     -d, --date CMP        Only commits on a date: '=', '>=' or '<=' a
                           YYYY-MM-DD, e.g. --date '>=2026-01-01'. Repeat
                           for a range. QUOTE IT: '>' is a shell redirect
-        --from-date DATE  Same as --date '>=DATE', no quoting needed
-        --to-date DATE    Same as --date '<=DATE', no quoting needed
-        --from-id COMMIT  Only COMMIT and what came after it
-        --to-id COMMIT    Only COMMIT and what it can reach
+        --date-since DATE Same as --date '>=DATE', no quoting needed
+        --date-until DATE Same as --date '<=DATE', no quoting needed
+        --commit-since C  Same bound, dated by commit C: C's day, and after
+        --commit-until C  Same bound, dated by commit C: C's day, and before
+    -c, --commits IDS     Only these commits, comma-separated shas
 
 COMMITS:
     A merge-request-style view of the first worktree, counter-checked
@@ -195,13 +196,14 @@ COMMITS FILTERS:
 
         git-wt 1,2 commits --author nino
         git-wt 1,2 commits --date '>=2026-01-01' --date '<=2026-06-30'
-        git-wt 1,2 commits --from-date 2026-01-01 --to-date 2026-06-30
-        git-wt 1,2 commits --from-id 5568a21 --to-id HEAD
+        git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30
+        git-wt 1,2 commits --commit-since 5568a21 --commit-until HEAD
+        git-wt 1,2 commits --commits af48509,f9e2427
 
     Two vocabularies, one shape: '-id' bounds take a commit -- a sha, a
     branch, a tag, 'HEAD~3' -- and '-date' bounds take a YYYY-MM-DD.
-    Both ends include what they name: '--from-id X' lists X itself, and
-    '--from-date 2026-01-01' takes that whole day. So there is no '>' or
+    Both ends include what they name: '--commit-since X' takes X's whole
+    day, and '--date-since 2026-01-01' takes that whole day. So no '>' or
     '<': the day either side of a bound is the inclusive one next door.
 
     --date compares the date the table prints, which is the AUTHOR date;
@@ -214,7 +216,7 @@ COMMITS FILTERS:
     a commit written at 23:30 +0800 belongs to the day it was there, not
     to yours -- so a bound never contradicts the printed column. Rows are
     still ordered by the full timestamp: same-day commits sort by time of
-    day, even though the column only shows the day. '--show-time' prints
+    day, even though the column only shows the day. '--time' prints
     that time, 24-hour, which is what tells a busy day's rows apart.
 
 COMMITS MD:
@@ -237,22 +239,22 @@ COMMITS MD:
 
 COMMITS DATES:
     The date column is ISO, the same shape the filters take, so a date
-    read off the table pastes straight back into --from-date. It also
+    read off the table pastes straight back into --date-since. It also
     sorts, greps, and is one width on every row.
 
         git-wt 1,2 commits                     -> 2026-01-31
-        git-wt 1,2 commits --show-time         -> 2026-01-31 14:30:05
+        git-wt 1,2 commits --time              -> 2026-01-31 14:30:05
         git-wt 1,2 commits --date-human        -> Jan. 31, 2026
-        git-wt 1,2 commits --date-human --show-time
+        git-wt 1,2 commits --date-human --time
                                                -> Jan. 31, 2026 14:30:05
 
     --date-human is easier to read a date out of, at the cost of the
-    round-trip: it is not what --from-date accepts. What --date compares
+    round-trip: it is not what --date-since accepts. What --date compares
     never changes shape whatever the column is spelled as.
 
     Quote --date, always. '>' and '<' are redirects, so an unquoted
     --date >=2026-01-01 writes a file called '=2026-01-01' and git-wt
-    sees no date at all. --from-date/--to-date need no quoting.
+    sees no date at all. --date-since/--date-until need no quoting.
 
     Rows are ancestry-first: no parent is ever listed above its child, so
     reading down the table is reading the real history. Dates only order
@@ -264,8 +266,8 @@ COMMITS DATES:
     Within that, two readings. By default the rows are newest-first, so a
     row's neighbors are its contemporaries -- what happened when. '--topo'
     keeps each line of history in one block instead -- what each branch did,
-    which is what --union tables are usually read for. Neither depends on --show-time:
-    the order always reads the full timestamp, and --show-time only prints
+    which is what --union tables are usually read for. Neither depends on --time:
+    the order always reads the full timestamp, and --time only prints
     what it read. '--reverse' puts the newest last, after the -n cap, so
     the rows are the same ones read bottom-up.
 

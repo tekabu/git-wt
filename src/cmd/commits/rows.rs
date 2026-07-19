@@ -275,24 +275,17 @@ pub(crate) fn commit_of(root: &Path, r: &str, flag: &str) -> Result<String, Stri
         .ok_or_else(|| format!("{flag}: no commit '{r}'"))
 }
 
-/// Everything strictly older than `c`: its parents and all their ancestors.
+/// The day `c` was authored, as `YYYY-MM-DD` -- the shape `--date` compares.
 ///
-/// `c^@` is every parent at once, so `c` itself is never in the set -- which is
-/// what makes `--from <c>` include `<c>`. A root commit has no parents and the
-/// set is empty, as it should be: nothing is older than the beginning.
-pub(crate) fn older_than(root: &Path, c: &str) -> Result<HashSet<String>, String> {
-    Ok(git_stdout(root, &["rev-list", &format!("{c}^@")])?
-        .lines()
-        .map(str::to_string)
-        .collect())
-}
-
-/// `c` and everything it can reach, so `--to <c>` includes `<c>`.
-pub(crate) fn reachable_from(root: &Path, c: &str) -> Result<HashSet<String>, String> {
-    Ok(git_stdout(root, &["rev-list", c])?
-        .lines()
-        .map(str::to_string)
-        .collect())
+/// Author date, matching the column the table prints and the key the filters
+/// test, so a bound named by a commit lands on the row that commit is.
+pub(crate) fn commit_day(root: &Path, c: &str) -> Result<String, String> {
+    let out = git_stdout(root, &["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d", c])?;
+    let day = out.trim().to_string();
+    if day.is_empty() {
+        return Err(format!("no author date for commit '{c}'"));
+    }
+    Ok(day)
 }
 
 /// The oldest commit on `target` that any source branch is missing.
@@ -676,25 +669,15 @@ mod tests {
         let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date, ISO, false).unwrap();
         assert_eq!(capped.len(), 1);
 
-        // --from-id/--to-id include the commit they name. That is the whole
-        // point of the flags, and the easy thing to get wrong: 'X..' excludes
-        // X, so the bound is built from X's *parents* instead.
+        // A commit names a day for --commit-since/--commit-until, so the
+        // bound is that commit's own author date -- the same key the rows
+        // print and the date filters test.
         let on_main = rows.iter().find(|r| r.text.ends_with("on-main")).unwrap();
-        let older = older_than(&tmp, &on_main.sha).unwrap();
-        assert!(!older.contains(&on_main.sha), "--from-id must keep its own commit");
-        let within = reachable_from(&tmp, &on_main.sha).unwrap();
-        assert!(within.contains(&on_main.sha), "--to-id must keep its own commit");
-        // 'shared' is on-main's parent: strictly older, and reachable from it.
-        let shared = union.iter().find(|r| r.text.ends_with("shared")).unwrap();
-        assert!(older.contains(&shared.sha));
-        assert!(within.contains(&shared.sha));
-        // The root commit has no parents, so nothing is older than it -- the
-        // case where 'X^' would have failed outright.
-        assert!(older_than(&tmp, &shared.sha).unwrap().is_empty());
+        assert_eq!(commit_day(&tmp, &on_main.sha).unwrap(), on_main.key);
 
         // A commit that does not resolve is named by the flag that wanted it.
-        let err = commit_of(&tmp, "no-such-commit", "--from-id").unwrap_err();
-        assert_eq!(err, "--from-id: no commit 'no-such-commit'");
+        let err = commit_of(&tmp, "no-such-commit", "--commit-since").unwrap_err();
+        assert_eq!(err, "--commit-since: no commit 'no-such-commit'");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

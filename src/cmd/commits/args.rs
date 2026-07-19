@@ -124,8 +124,12 @@ impl Wrap {
 pub(crate) struct CommitsArgs {
     pub(crate) limit: Option<usize>,
     pub(crate) dates: Vec<DateFilter>,
-    pub(crate) from: Option<String>,
-    pub(crate) to: Option<String>,
+    /// Lower date bound named by a commit: that commit's day, and after.
+    pub(crate) commit_since: Option<String>,
+    /// Upper date bound named by a commit: that commit's day, and before.
+    pub(crate) commit_until: Option<String>,
+    /// Only these commits, by sha prefix. Empty means every row.
+    pub(crate) commits: Vec<String>,
     pub(crate) author: Option<String>,
     pub(crate) topo: bool,
     pub(crate) no_merges: bool,
@@ -148,11 +152,29 @@ pub(crate) struct CommitsArgs {
     pub(crate) subjectw: Option<SubjectWidth>,
 }
 
+/// The error for a flag that still exists under another name.
+fn renamed(old: &str, new: &str) -> String {
+    format!("'{old}' is now '{new}'")
+}
+
+/// Split a `--commits` value on commas into the list, rejecting an empty id --
+/// `af48509,,f9e2427` is a typo, and an empty prefix would match every row.
+fn push_commit_ids(into: &mut Vec<String>, v: &str) -> Result<(), String> {
+    for part in v.split(',') {
+        let id = part.trim();
+        if id.is_empty() {
+            return Err(format!("bad commit list '{v}'; want ids, e.g. 'af48509,f9e2427'"));
+        }
+        into.push(id.to_string());
+    }
+    Ok(())
+}
+
 /// Short flags that carry no value, so any number of them can share one dash.
 const FLAG_SHORTS: &str = "af";
 /// Short flags that read the next argument (`-w`'s is optional), so at most one
 /// can appear in a bundle and only as its last letter.
-const VALUE_SHORTS: &str = "ndw";
+const VALUE_SHORTS: &str = "ndwc";
 
 /// Split `-af` into `-a -f` so short flags can be bundled the way every other
 /// unix tool bundles them.
@@ -198,8 +220,9 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     let args = expand_short_bundles(args)?;
     let mut limit = None;
     let mut dates = Vec::new();
-    let mut from = None;
-    let mut to = None;
+    let mut commit_since = None;
+    let mut commit_until = None;
+    let mut commits: Vec<String> = Vec::new();
     let mut author = None;
     let mut topo = false;
     let mut no_merges = false;
@@ -257,7 +280,7 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             // A '--subject' would read as the filter --author is: same table,
             // same shape, and one of them cuts rows. Say which was meant.
             "--subject" => return Err(SUBJECT_MSG.into()),
-            "--show-time" => fmt.time = true,
+            "--time" => fmt.time = true,
             "--date-human" => fmt.human = true,
             // The path is optional, so the next word is only it when it is not
             // another flag: 'commits --md --topo' asks for the default name.
@@ -277,33 +300,54 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             // The same two bounds --date spells with '>=' and '<=', named to
             // mirror --from-id/--to-id -- and needing no quoting, where '>' is
             // a redirect the shell eats before git-wt ever sees it.
-            "--from-date" => {
+            "--date-since" => {
                 let v = it.next().ok_or(FROM_DATE_MISSING)?;
                 dates.push(DateFilter { op: DateOp::Ge, date: iso_date(v)? });
             }
-            s if s.starts_with("--from-date=") => {
-                dates.push(DateFilter { op: DateOp::Ge, date: iso_date(&s["--from-date=".len()..])? });
+            s if s.starts_with("--date-since=") => {
+                dates.push(DateFilter { op: DateOp::Ge, date: iso_date(&s["--date-since=".len()..])? });
             }
-            "--to-date" => {
+            "--date-until" => {
                 let v = it.next().ok_or(TO_DATE_MISSING)?;
                 dates.push(DateFilter { op: DateOp::Le, date: iso_date(v)? });
             }
-            s if s.starts_with("--to-date=") => {
-                dates.push(DateFilter { op: DateOp::Le, date: iso_date(&s["--to-date=".len()..])? });
+            s if s.starts_with("--date-until=") => {
+                dates.push(DateFilter { op: DateOp::Le, date: iso_date(&s["--date-until=".len()..])? });
             }
             "--author" => author = Some(it.next().ok_or(AUTHOR_MISSING)?.clone()),
             s if s.starts_with("--author=") => author = Some(s["--author=".len()..].to_string()),
-            "--from-id" => from = Some(it.next().ok_or(FROM_MISSING)?.clone()),
-            s if s.starts_with("--from-id=") => from = Some(s["--from-id=".len()..].to_string()),
-            "--to-id" => to = Some(it.next().ok_or(TO_MISSING)?.clone()),
-            s if s.starts_with("--to-id=") => to = Some(s["--to-id=".len()..].to_string()),
+            "--commit-since" => commit_since = Some(it.next().ok_or(COMMIT_SINCE_MISSING)?.clone()),
+            s if s.starts_with("--commit-since=") => commit_since = Some(s["--commit-since=".len()..].to_string()),
+            "--commit-until" => commit_until = Some(it.next().ok_or(COMMIT_UNTIL_MISSING)?.clone()),
+            s if s.starts_with("--commit-until=") => commit_until = Some(s["--commit-until=".len()..].to_string()),
+            // The rows named outright, rather than a window they fall in. A
+            // comma-separated list, and repeatable, so both spellings work.
+            "--commits" | "-c" => {
+                let v = it.next().ok_or(COMMITS_MISSING)?;
+                push_commit_ids(&mut commits, v)?;
+            }
+            s if s.starts_with("--commits=") => {
+                push_commit_ids(&mut commits, &s["--commits=".len()..])?;
+            }
             // A bare --from names neither of the two things it could bound, and
             // guessing which was meant would be worse than saying so.
             "--from" | "--to" => {
+                let (c, d) = if *a == "--from" {
+                    ("--commit-since", "--date-since")
+                } else {
+                    ("--commit-until", "--date-until")
+                };
                 return Err(format!(
-                    "no '{a}' for commits; '{a}-id' takes a commit, '{a}-date' takes a date"
+                    "no '{a}' for commits; '{c}' takes a commit, '{d}' takes a date"
                 ));
             }
+            // The names these bounds used to carry. A rename is a thing to be
+            // told about once, not a word that reads as a typo.
+            "--from-date" => return Err(renamed("--from-date", "--date-since")),
+            "--to-date" => return Err(renamed("--to-date", "--date-until")),
+            "--from-id" => return Err(renamed("--from-id", "--commit-since")),
+            "--to-id" => return Err(renamed("--to-id", "--commit-until")),
+            "--show-time" => return Err(renamed("--show-time", "--time")),
             // git's words for the same bounds: point at ours rather than let a
             // habit from 'git log' read as a typo.
             "--since" => return Err(SINCE_MSG.into()),
@@ -327,7 +371,8 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
         return Err("--all and --union are two different row sources: use one of them".into());
     }
     Ok(CommitsArgs {
-        limit, dates, from, to, author, topo, no_merges, fmt, md, reverse, no_cherry, pick, union,
+        limit, dates, commit_since, commit_until, commits, author, topo, no_merges, fmt, md,
+        reverse, no_cherry, pick, union,
         all, files, wrap, subjectw,
     })
 }
@@ -370,13 +415,17 @@ pub(crate) const SUBJECT_MSG: &str = "no '--subject' for commits: it would read 
      hint: '--subject-width 80' widens the column; '--author NAME' filters rows";
 pub(crate) const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
      hint: quote it, or the shell reads '>' as a redirect";
-pub(crate) const FROM_DATE_MISSING: &str = "--from-date needs a date, e.g. '--from-date 2026-01-01'";
-pub(crate) const TO_DATE_MISSING: &str = "--to-date needs a date, e.g. '--to-date 2026-06-30'";
-pub(crate) const FROM_MISSING: &str = "--from-id needs a commit, e.g. '--from-id 5568a21'";
-pub(crate) const TO_MISSING: &str = "--to-id needs a commit, e.g. '--to-id HEAD~3'";
+pub(crate) const FROM_DATE_MISSING: &str = "--date-since needs a date, e.g. '--date-since 2026-01-01'";
+pub(crate) const TO_DATE_MISSING: &str = "--date-until needs a date, e.g. '--date-until 2026-06-30'";
+pub(crate) const COMMIT_SINCE_MISSING: &str =
+    "--commit-since needs a commit, e.g. '--commit-since 5568a21'";
+pub(crate) const COMMIT_UNTIL_MISSING: &str =
+    "--commit-until needs a commit, e.g. '--commit-until HEAD~3'";
+pub(crate) const COMMITS_MISSING: &str =
+    "--commits needs one or more commits, e.g. '--commits af48509,f9e2427'";
 pub(crate) const AUTHOR_MISSING: &str = "--author needs a name, e.g. '--author nino'";
-pub(crate) const SINCE_MSG: &str = "no '--since' for commits; use '--from-date 2026-01-01'";
-pub(crate) const UNTIL_MSG: &str = "no '--until' for commits; use '--to-date 2026-06-30'";
+pub(crate) const SINCE_MSG: &str = "no '--since' for commits; use '--date-since 2026-01-01'";
+pub(crate) const UNTIL_MSG: &str = "no '--until' for commits; use '--date-until 2026-06-30'";
 
 /// Parse `>=2026-01-01`, `<=2026-06-30`, `=2026-01-01`, or a bare date (`=`).
 pub(crate) fn parse_date_filter(s: &str) -> Result<DateFilter, String> {
@@ -578,14 +627,14 @@ mod tests {
         assert_eq!(a.dates[0].op, DateOp::Ge);
         assert_eq!(a.dates[1].op, DateOp::Le);
 
-        // --from-date/--to-date are those same bounds, needing no quoting.
-        let a = parse(&["--from-date", "2026-01-01", "--to-date=2026-06-01"]).unwrap();
+        // --date-since/--date-until are those same bounds, needing no quoting.
+        let a = parse(&["--date-since", "2026-01-01", "--date-until=2026-06-01"]).unwrap();
         assert_eq!(a.dates[0], DateFilter { op: DateOp::Ge, date: "2026-01-01".into() });
         assert_eq!(a.dates[1], DateFilter { op: DateOp::Le, date: "2026-06-01".into() });
 
-        let a = parse(&["--from-id", "abc123", "--to-id=def456"]).unwrap();
-        assert_eq!(a.from.as_deref(), Some("abc123"));
-        assert_eq!(a.to.as_deref(), Some("def456"));
+        let a = parse(&["--commit-since", "abc123", "--commit-until=def456"]).unwrap();
+        assert_eq!(a.commit_since.as_deref(), Some("abc123"));
+        assert_eq!(a.commit_until.as_deref(), Some("def456"));
         assert_eq!(parse(&["--author=nino"]).unwrap().author.as_deref(), Some("nino"));
         assert!(!parse(&[]).unwrap().topo);
         assert!(parse(&["--topo"]).unwrap().topo);
@@ -595,10 +644,10 @@ mod tests {
 
         // ISO, no time, unless asked; the flags are independent.
         assert_eq!(parse(&[]).unwrap().fmt, DateFmt { human: false, time: false });
-        assert_eq!(parse(&["--show-time"]).unwrap().fmt.spec(), "%Y-%m-%d %H:%M:%S");
+        assert_eq!(parse(&["--time"]).unwrap().fmt.spec(), "%Y-%m-%d %H:%M:%S");
         assert_eq!(parse(&["--date-human"]).unwrap().fmt.spec(), "%b. %-d, %Y");
         assert_eq!(
-            parse(&["--date-human", "--show-time"]).unwrap().fmt.spec(),
+            parse(&["--date-human", "--time"]).unwrap().fmt.spec(),
             "%b. %-d, %Y %H:%M:%S"
         );
         // A format flag is not a filter: --date-human must not be read as a
@@ -619,13 +668,50 @@ mod tests {
         assert_eq!(a.md, Some(None), "--topo is a flag, not a filename");
         assert!(a.topo, "--topo must still take effect");
 
-        assert!(parse(&["--from-id"]).unwrap_err().contains("--from-id needs a commit"));
-        assert!(parse(&["--from-date", "nope"]).unwrap_err().contains("want YYYY-MM-DD"));
+        assert!(parse(&["--commit-since"]).unwrap_err().contains("--commit-since needs a commit"));
+        assert!(parse(&["--date-since", "nope"]).unwrap_err().contains("want YYYY-MM-DD"));
         // A bare --from could be either bound; it names neither.
-        assert!(parse(&["--from", "x"]).unwrap_err().contains("'--from-id' takes a commit"));
+        assert!(parse(&["--from", "x"]).unwrap_err().contains("'--commit-since' takes a commit"));
+        assert!(parse(&["--to", "x"]).unwrap_err().contains("'--commit-until' takes a commit"));
         // git's spellings point at ours instead of reading as a typo.
-        assert!(parse(&["--since", "2026-01-01"]).unwrap_err().contains("--from-date"));
-        assert!(parse(&["--until", "2026-01-01"]).unwrap_err().contains("--to-date"));
+        assert!(parse(&["--since", "2026-01-01"]).unwrap_err().contains("--date-since"));
+        assert!(parse(&["--until", "2026-01-01"]).unwrap_err().contains("--date-until"));
+    }
+
+    #[test]
+    fn renamed_flags_say_their_new_name() {
+        // A rename is worth being told about once. Silence would read as a
+        // typo, and quietly accepting the old name would keep two spellings
+        // alive forever.
+        for (old, new) in [
+            ("--from-date", "--date-since"),
+            ("--to-date", "--date-until"),
+            ("--from-id", "--commit-since"),
+            ("--to-id", "--commit-until"),
+            ("--show-time", "--time"),
+        ] {
+            let err = parse(&[old]).unwrap_err();
+            assert_eq!(err, format!("'{old}' is now '{new}'"));
+        }
+    }
+
+    #[test]
+    fn commits_names_rows_outright() {
+        // A list, a repeat, and both at once all reach the same place.
+        assert!(parse(&[]).unwrap().commits.is_empty());
+        assert_eq!(parse(&["--commits", "abc123"]).unwrap().commits, vec!["abc123"]);
+        assert_eq!(parse(&["-c", "abc123"]).unwrap().commits, vec!["abc123"]);
+        assert_eq!(
+            parse(&["--commits", "abc123,def456"]).unwrap().commits,
+            vec!["abc123", "def456"]
+        );
+        assert_eq!(
+            parse(&["--commits=abc123", "-c", "def456"]).unwrap().commits,
+            vec!["abc123", "def456"]
+        );
+        // An empty id would be a prefix of every sha, so the typo is named.
+        assert!(parse(&["--commits", "abc,,def"]).unwrap_err().contains("bad commit list"));
+        assert!(parse(&["--commits"]).unwrap_err().contains("needs one or more commits"));
     }
 
     #[test]

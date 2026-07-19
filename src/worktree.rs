@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::git::git_stdout;
+use crate::ui::{GREEN, RED, YELLOW};
 
 /// A worktree as reported by `git worktree list --porcelain`.
 pub(crate) struct Worktree {
@@ -58,9 +59,9 @@ pub(crate) fn status_text(s: Status) -> &'static str {
 /// ANSI color for a status, or "" (no color) for Unknown.
 pub(crate) fn status_color(s: Status) -> &'static str {
     match s {
-        Status::Clean => "32",
-        Status::Dirty => "33",
-        Status::Untracked => "31",
+        Status::Clean => GREEN,
+        Status::Dirty => YELLOW,
+        Status::Untracked => RED,
         Status::Unknown => "",
     }
 }

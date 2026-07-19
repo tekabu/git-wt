@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::git::{git_quiet, git_run, git_stdout};
-use crate::ui::{color_enabled, paint, GREEN};
+use crate::ui::{color_enabled, confirm, paint, DIM, GREEN};
 use crate::worktree::{current_ref, leaf_of, sanitize, sh_quote, worktrees};
 
 // ---------------------------------------------------------------------------
@@ -384,7 +384,7 @@ pub(crate) fn number_pick(items: &[(&str, &str)]) -> Result<String, String> {
     let w = items.len().to_string().len();
     let bw = items.iter().map(|(b, _)| b.chars().count()).max().unwrap_or(0);
     for (i, (b, age)) in items.iter().enumerate() {
-        let meta = paint(age, crate::ui::DIM, color && !age.is_empty());
+        let meta = paint(age, DIM, color && !age.is_empty());
         eprintln!("  {:>w$}  {:<bw$}  {}", i + 1, b, meta, w = w, bw = bw);
     }
     eprint!("Select a branch [1-{}], or Enter to cancel: ", items.len());
@@ -404,28 +404,6 @@ pub(crate) fn number_pick(items: &[(&str, &str)]) -> Result<String, String> {
     }
     Ok(items[n - 1].0.to_string())
 }
-
-// ---------------------------------------------------------------------------
-// Prompt
-// ---------------------------------------------------------------------------
-
-/// Print a prompt to stderr and read a yes/no answer from stdin. Requires the
-/// user to type and press Enter; empty or anything but y/yes is No. EOF / no
-/// tty is No.
-pub(crate) fn confirm(prompt: &str) -> Result<bool, String> {
-    eprint!("{prompt}");
-    std::io::stderr().flush().ok();
-    let mut line = String::new();
-    let n = std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| e.to_string())?;
-    if n == 0 {
-        return Ok(false); // EOF / no tty -> treat as No
-    }
-    let a = line.trim().to_ascii_lowercase();
-    Ok(a == "y" || a == "yes")
-}
-
 
 #[cfg(test)]
 mod tests {

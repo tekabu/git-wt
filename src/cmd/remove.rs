@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cmd::add::confirm;
+use crate::ui::confirm;
 use crate::git::git_run;
 use crate::ui::{color_enabled, paint, GREEN};
 use crate::worktree::{canon, label, leaf_of, Worktree};

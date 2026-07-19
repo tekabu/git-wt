@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cmd::add::confirm;
+use crate::ui::confirm;
 use crate::git::{git_cmd, git_quiet, git_run, git_run_no_editor, git_stdout};
 use crate::ui::{color_enabled, paint, GREEN};
 use crate::worktree::{label, leaf_of, Worktree};

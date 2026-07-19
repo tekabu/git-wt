@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 // ---------------------------------------------------------------------------
@@ -188,6 +189,45 @@ pub(crate) fn wrap_wide(s: &str, max: usize, lines: usize) -> Vec<String> {
 }
 
 
+// ---------------------------------------------------------------------------
+// Prompt
+// ---------------------------------------------------------------------------
+
+/// Print a prompt to stderr and read a yes/no answer from stdin. Requires the
+/// user to type and press Enter; empty or anything but y/yes is No. EOF / no
+/// tty is No.
+pub(crate) fn confirm(prompt: &str) -> Result<bool, String> {
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    let n = std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Ok(false); // EOF / no tty -> treat as No
+    }
+    let a = line.trim().to_ascii_lowercase();
+    Ok(a == "y" || a == "yes")
+}
+
+// ---------------------------------------------------------------------------
+// Text matching
+// ---------------------------------------------------------------------------
+
+/// True when every char of `needle` appears in `hay`, in order.
+pub(crate) fn is_subseq(hay: &str, needle: &str) -> bool {
+    let mut chars = hay.chars();
+    'outer: for nc in needle.chars() {
+        for hc in chars.by_ref() {
+            if hc == nc {
+                continue 'outer;
+            }
+        }
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +331,14 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn subseq_matches_in_order() {
+        assert!(is_subseq("feature-login", "flogin"));
+        assert!(is_subseq("feature-login", "feat"));
+        assert!(!is_subseq("feature-login", "zzz"));
+        assert!(!is_subseq("abc", "cba"));
+    }
 
     #[test]
     fn a_piped_table_has_no_width_to_fit() {

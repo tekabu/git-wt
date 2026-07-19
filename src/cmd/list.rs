@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::git::git_stdout;
 use crate::cmd::merged::{merged_text, merged_text_at};
-use crate::ui::{color_enabled, ellipsize, paint, term_width, BRANCH_MIN, DIM};
+use crate::ui::{color_enabled, ellipsize, is_subseq, paint, term_width, BRANCH_MIN, DIM};
 use crate::worktree::{
     current_ref, label, status_color, status_text, worktree_status, worktrees, Status, Worktree,
 };
@@ -318,32 +318,9 @@ pub(crate) fn fuzzy_match(w: &Worktree, needle: &str) -> bool {
     is_subseq(&hay, &needle.to_lowercase())
 }
 
-/// True when every char of `needle` appears in `hay`, in order.
-pub(crate) fn is_subseq(hay: &str, needle: &str) -> bool {
-    let mut chars = hay.chars();
-    'outer: for nc in needle.chars() {
-        for hc in chars.by_ref() {
-            if hc == nc {
-                continue 'outer;
-            }
-        }
-        return false;
-    }
-    true
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn subseq_matches_in_order() {
-        assert!(is_subseq("feature-login", "flogin"));
-        assert!(is_subseq("feature-login", "feat"));
-        assert!(!is_subseq("feature-login", "zzz"));
-        assert!(!is_subseq("abc", "cba"));
-    }
 
 
     #[test]

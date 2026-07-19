@@ -10,6 +10,7 @@ use crate::cmd::remove::cmd_remove;
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp};
 use crate::worktree::{current_ref, here_index, label, ref_of, worktrees};
 
+/// Message for a leading word that is neither a number nor a known verb.
 /// Legacy verb-first forms get a migration hint; branch-like words get an
 /// `add` suggestion.
 pub(crate) fn unknown_command_msg(tok: &str) -> String {

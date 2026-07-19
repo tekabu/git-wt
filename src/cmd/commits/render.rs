@@ -152,24 +152,39 @@ pub(crate) fn render_commits(
     // With no mark columns -- one worktree, so nothing to compare against --
     // there are no glyphs to name, and the legend is dropped with them.
     if !names.is_empty() {
-        let mut legend = format!(
-            "{} {}",
-            paint(CHECK, GREEN, color),
-            paint("has commit", DIM, color),
-        );
-        if equiv.iter().any(|e| !e.is_empty()) {
+        let mut legend = String::new();
+        // Same rule for '✓', and it is `merge --review` that needs it: its rows
+        // are the range the destination is *missing*, so its one column cannot
+        // carry a check by construction. Asked of the rows rather than the sets
+        // -- a set is non-empty there and still holds none of them.
+        if rows.iter().any(|(r, _)| sets.iter().any(|s| s.contains(&r.sha))) {
             legend.push_str(&format!(
-                "   {} {}",
+                "{} {}",
+                paint(CHECK, GREEN, color),
+                paint("has commit", DIM, color),
+            ));
+        }
+        if equiv.iter().any(|e| !e.is_empty()) {
+            if !legend.is_empty() {
+                legend.push_str("   ");
+            }
+            legend.push_str(&format!(
+                "{} {}",
                 paint(EQUIV, YELLOW, color),
                 paint("same patch, other sha", DIM, color),
             ));
         }
-        legend.push_str(&format!(
-            "   {} {}",
-            paint(MISS, DIM, color),
-            paint("neither", DIM, color),
-        ));
-        println!("{}", legend);
+        // '·' is defined by contrast -- "neither of the above" -- so on its own
+        // it names nothing. That is the all-'·' review, where every row is new
+        // to the destination and the column header already says so.
+        if !legend.is_empty() {
+            legend.push_str(&format!(
+                "   {} {}",
+                paint(MISS, DIM, color),
+                paint("neither", DIM, color),
+            ));
+            println!("{}", legend);
+        }
     }
 
     let mut head = format!("{:<shaw$}  ", "commit");

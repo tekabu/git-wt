@@ -42,6 +42,7 @@ USAGE:
     git-wt <N> remove [-y] [-f]  Remove worktree N
     git-wt <N>,<M> merge         Merge M into N
     git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
+    git-wt <N>,<M> merge review  What would that merge bring over?
     git-wt <N> merge continue|abort
     git-wt <N>,<M> merged        Is M's branch already in N's branch?
     git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
@@ -119,7 +120,7 @@ COMMITS OPTIONS:
     -a, --all             Full log of the first worktree (default is the
                           range the other worktrees are missing)
         --union           Rows from every worktree listed, not just the
-                          first one's range (alias: --any)
+                          first one's range
         --merges          Keep merge commits; they are dropped by default
         --no-cherry       Skip the patch comparison behind '≈' (faster)
         --pick-id         Add a 'pick' column: the sha the '≈' copy of the
@@ -227,7 +228,7 @@ COMMITS FILTERS:
 
     --date compares the date the table prints, which is the AUTHOR date;
     git's own --since/--until read committer dates and would disagree
-    with the column. --author is a fuzzy subsequence, case-folded, the
+    with the column, so they are not flags here. --author is a fuzzy subsequence, case-folded, the
     same match 'git-wt list SEARCH' uses: 'nes' finds 'Nino Escalera'.
 
     Date bounds are whole days: '--date 2026-07-17' takes every commit
@@ -433,6 +434,7 @@ MERGE WORDS:            (each takes an optional '--': 'abort' == '--abort')
     -o, ours              On a conflicting hunk, keep worktree N's side
     -t, theirs            On a conflicting hunk, take the source's side
     -d, dry-run           Report whether it would merge; change nothing
+        review            Show the commits it would bring over; change nothing
 
 MERGE OPTIONS:
     -m, --message MSG     Merge commit message
@@ -463,6 +465,46 @@ MERGE:
     them in worktree N, then run 'git-wt N merge continue' (or abort).
     Merge commits never open an editor: without -m, git's default message is
     taken as-is.
+
+MERGE REVIEW:
+    'dry-run' answers whether a merge conflicts. '--review' answers what it
+    would bring: the same verdict as a header, then the commit table for
+    'dest..src'. It merges nothing and keeps dry-run's exit codes, 0 clean
+    and 1 on conflict.
+
+        git-wt 1,2 merge --review        # what would 2 bring into 1?
+        git-wt 1,2 merge --review -f     # + the files under each commit
+        git-wt 1,2 merge --review -n 5 --author nino
+
+    '--review' ends merge's own flags. Everything after it is a 'commits'
+    flag and is passed through untouched, which is the only way both can keep
+    the letters they share: '-f' after '--review' is --files, not --force.
+    Merge options before it are an error rather than a silent claim, so put
+    them after -- or drop them, since nothing is being merged. After it they
+    are an error too, and one that says which: '--review --dry-run' is told
+    the two answer the same question, not that '--dry-run' is unexpected.
+
+    '--all' and '--union' are refused as well, though they are commits flags:
+    both name a row source, and a review's is already the range 'dest..src'.
+    ('-a' is '--all', so it is refused under that name -- '-fn 5' is the
+    bundle that still works here.)
+
+    The single mark column is the DESTINATION's, and it has two answers:
+
+        ·  the commit is new to the destination
+        ≈  its patch is already there under a different sha
+
+    The second is what a cherry-picked hotfix leaves behind: the row is
+    genuinely absent by sha, so the merge still lists it, but the work has
+    landed. There is no check column -- every row is in the source by
+    definition, so it would say nothing.
+
+    Merge commits are shown, unlike in 'commits', where they are dropped: a
+    review range is bounded by the merge about to happen, so a merge inside
+    it is the cargo rather than the noise. '--review --no-merges' drops them.
+    A merge carries no patch of its own, so it can never be marked '≈' and
+    '--review --pick-id' leaves its cell empty; that is the mark saying
+    nothing about merges, not a missing answer.
 
     'ours'/'theirs' are git's -X strategy options, so they settle only the
     hunks that actually collide -- the rest of both sides still merges. They

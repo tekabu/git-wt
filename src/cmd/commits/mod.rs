@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cmd::commits::args::{parse_commits_args, DateFilter, DateOp, Order};
-use crate::cmd::commits::md::{md_filename, write_md};
+use crate::cmd::commits::args::{parse_commits_args_with, DateFilter, DateOp, Order};
+use crate::cmd::commits::md::{md_filename, write_md, MdHead};
 use crate::cmd::commits::render::{render_commits, Highlight};
 use crate::cmd::commits::rows::{
     body_hits, commit_day, commit_files, commit_of, commit_rows, divergent_set, equivalents,
@@ -30,7 +30,59 @@ pub(crate) fn cmd_commits(
     idxs: &[usize],
     rest: &[String],
 ) -> Result<(), String> {
-    if idxs.is_empty() {
+    commits_view(root, trees, idxs, rest, None)
+}
+
+/// Print the `dest..src` table for `merge --review`. See `commits_view`.
+pub(crate) fn cmd_commits_review(
+    root: &Path,
+    trees: &[Worktree],
+    rest: &[String],
+    ctx: ReviewCtx,
+) -> Result<(), String> {
+    commits_view(root, trees, &[], rest, Some(ctx))
+}
+
+/// The two refs a `merge --review` table is about.
+///
+/// `merge` owns the argument order (dest first) and resolves both sides to
+/// refs; this module only needs to know which is which. Labels are carried
+/// alongside because the destination may be a worktree and the source a bare
+/// branch name, so neither can be recovered from the ref alone.
+pub(crate) struct ReviewCtx<'a> {
+    pub(crate) dest_ref: &'a str,
+    pub(crate) dest_label: &'a str,
+    pub(crate) src_ref: &'a str,
+    pub(crate) src_label: &'a str,
+    /// The verdict line printed above the table.
+    ///
+    /// Carried in rather than printed by the caller so that it lands *after*
+    /// the tail has parsed: `merge --review --dry-run` is a rejected flag, and
+    /// a header claiming a clean merge above that error would be reporting on a
+    /// command that never ran.
+    pub(crate) header: &'a str,
+}
+
+/// `cmd_commits`, plus the review mode `merge --review` renders through.
+///
+/// A review differs in four places and nowhere else, which is why it is a
+/// parameter rather than a second command: the rows are the range `dest..src`
+/// instead of a branch's log, there is exactly one mark column (the
+/// destination's), merge commits are kept by default, and `idxs` is empty
+/// because a merge source need not be a worktree at all.
+///
+/// Everything between -- the filters, the file blocks, the `--md` writer, the
+/// renderer -- is the same code the plain table runs. It has been rewritten
+/// once already for being duplicated (`cmd_list_with_ref`, commit `9c3237e`),
+/// and a third copy is not worth a flag.
+fn commits_view(
+    root: &Path,
+    trees: &[Worktree],
+    idxs: &[usize],
+    rest: &[String],
+    review: Option<ReviewCtx>,
+) -> Result<(), String> {
+    if idxs.is_empty() && review.is_none() {
         return Err("commits needs a worktree, e.g. 'git-wt 1,2,3 commits'".into());
     }
     for (i, a) in idxs.iter().enumerate() {
@@ -38,12 +90,24 @@ pub(crate) fn cmd_commits(
             return Err(format!("worktree #{} listed twice", a + 1));
         }
     }
-    let args = parse_commits_args(rest)?;
+    // Merges are kept under --review and dropped elsewhere: a review range is
+    // bounded by the merge about to happen, so a merge inside it is the cargo
+    // rather than the noise it is on a long-lived branch.
+    let args = parse_commits_args_with(rest, review.is_some())?;
+    if let Some(r) = &review {
+        eprintln!("{}", r.header);
+    }
 
-    let refs: Vec<String> = idxs
-        .iter()
-        .map(|&i| ref_of(&trees[i]))
-        .collect::<Result<_, _>>()?;
+    // The rows' source. One ref under --review -- the merge source -- with the
+    // destination supplied as a `--not` base further down, which is what makes
+    // the rows `dest..src`.
+    let refs: Vec<String> = match &review {
+        Some(r) => vec![r.src_ref.to_string()],
+        None => idxs
+            .iter()
+            .map(|&i| ref_of(&trees[i]))
+            .collect::<Result<_, _>>()?,
+    };
 
     // Three row-source modes:
     //   --union: every branch contributes rows (full logs, unioned).
@@ -62,12 +126,31 @@ pub(crate) fn cmd_commits(
     let row_refs: &[String] = if args.union { &refs } else { &refs[..1] };
     // One worktree is a log, not a comparison: there is no other branch to be
     // ahead of, so the rows are that branch's whole history and there are no
-    // mark columns to compute.
-    let solo = refs.len() == 1;
+    // mark columns to compute. A review names one ref too, but it is a
+    // comparison -- see `mark_refs`.
+    let solo = refs.len() == 1 && review.is_none();
+
+    // The refs the mark columns answer for, which is not always the refs the
+    // rows came from.
+    //
+    // A review has exactly one, the destination, and it carries the only
+    // question worth a column: every row is in the source by construction, so a
+    // source column would be a `✓` repeating the range's own definition, while
+    // the destination's cannot be `✓` at all. What is left there is the split
+    // that matters -- `·` for a commit that is genuinely new, `≈` for one whose
+    // patch is already in the destination under another sha, which is what a
+    // cherry-picked hotfix leaves behind.
+    let mark_refs: Vec<String> = match &review {
+        Some(r) => vec![r.dest_ref.to_string()],
+        None if solo => Vec::new(),
+        None => refs.clone(),
+    };
     // The set whose earliest member is the default view's floor: commits the
     // first branch has that at least one other is missing. `None` under --union
     // or --all, where the whole log is the rows and nothing is trimmed.
-    let divergent = if solo || args.union || args.all {
+    // A review needs no floor: `dest..src` is already exactly the cut the
+    // default view approximates with a date threshold.
+    let divergent = if solo || args.union || args.all || review.is_some() {
         None
     } else {
         let d = divergent_set(root, &refs[0], &refs[1..])?;
@@ -95,7 +178,8 @@ pub(crate) fn cmd_commits(
     let all_rows = commit_rows(
         root,
         row_refs,
-        None,
+        // `--not dest`: the rows become what the merge would bring over.
+        review.as_ref().map(|r| r.dest_ref),
         git_limit,
         order,
         args.fmt,
@@ -228,7 +312,9 @@ pub(crate) fn cmd_commits(
             // These rows are a slice, and an upper bound or an author filter
             // never widened it -- so the commits being asked about may simply
             // be older than the floor rather than absent.
-            if !solo && !args.all && !args.union {
+            // Not under --review: its rows are `dest..src` exactly, so nothing
+            // was trimmed by a floor and there is no wider source to suggest.
+            if !solo && !args.all && !args.union && review.is_none() {
                 // Suggest the lower bound in the vocabulary they were already
                 // speaking: a commit bound is answered by a commit bound.
                 let back = if args.commit_until.is_some() && args.dates.is_empty() {
@@ -243,6 +329,12 @@ pub(crate) fn cmd_commits(
                 ));
             }
             m
+        } else if review.is_some() {
+            // The range itself is empty -- no filter took these rows, there
+            // were none. `merge --review` says so in its header, which has
+            // already printed, so repeating it here would be the same fact
+            // twice in two different wordings.
+            return Ok(());
         } else if args.union {
             "no commits".to_string()
         } else if solo || args.all {
@@ -260,13 +352,10 @@ pub(crate) fn cmd_commits(
     //
     // Solo has none: a lone column would be a ✓ on every row, which is only the
     // table repeating that these are that branch's commits.
-    let sets: Vec<HashSet<String>> = if solo {
-        Vec::new()
-    } else {
-        refs.iter()
-            .map(|r| ref_shas(root, r, None))
-            .collect::<Result<_, _>>()?
-    };
+    let sets: Vec<HashSet<String>> = mark_refs
+        .iter()
+        .map(|r| ref_shas(root, r, None))
+        .collect::<Result<_, _>>()?;
 
     // Patch equivalence is what tells "not merged yet" from "already there,
     // under a different sha" -- the difference between work to do and work
@@ -274,30 +363,63 @@ pub(crate) fn cmd_commits(
     // walk per ordered pair, so --no-cherry buys the old, cheaper answer back
     // on a repo whose branches have diverged enormously.
     // Nothing to be equivalent to with one branch, so solo skips the walk too.
+    //
+    // The pair the patch comparison runs over is not always the mark columns: a
+    // review has one column but two refs to compare, so it walks `[dest, src]`
+    // and keeps the destination's answer. `equivalents` indexes by upstream, so
+    // that answer is entry 0 -- the source commits whose patch `dest` already
+    // carries -- and truncating to `mark_refs` picks it out.
+    let cherry_refs: Vec<String> = match &review {
+        Some(r) => vec![r.dest_ref.to_string(), r.src_ref.to_string()],
+        None => refs.clone(),
+    };
     let equiv = if solo || args.no_cherry {
         vec![HashSet::new(); sets.len()]
     } else {
-        equivalents(root, &refs)
+        let mut e = equivalents(root, &cherry_refs);
+        e.truncate(mark_refs.len());
+        e
     };
 
     // Which sha the '≈' is pointing at, asked only when the column will print
     // it: it is a second patch-id walk over the same divergence.
-    let picks = (args.pick && !solo).then(|| pick_ids(root, &refs));
+    let picks = (args.pick && !solo).then(|| pick_ids(root, &cherry_refs));
 
     // Two lists: `labels` is who the table is about, `names` is the mark
     // columns. They are the same until there is only one worktree, which has a
-    // subject but nothing to compare it against.
-    let labels: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
-    let names: Vec<String> = if solo { Vec::new() } else { labels.clone() };
+    // subject but nothing to compare it against -- and under --review, where
+    // the table is about the source and the one column answers for the
+    // destination.
+    let labels: Vec<String> = match &review {
+        Some(r) => vec![r.src_label.to_string()],
+        None => idxs.iter().map(|&i| label(&trees[i])).collect(),
+    };
+    let names: Vec<String> = match &review {
+        Some(r) => vec![r.dest_label.to_string()],
+        None if solo => Vec::new(),
+        None => labels.clone(),
+    };
 
     if let Some(path) = &args.md {
         let file = path.clone().unwrap_or_else(md_filename);
-        let cmd = format!(
-            "git-wt {} commits{}{}",
-            idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
-            if rest.is_empty() { "" } else { " " },
-            rest.join(" ")
-        );
+        // The command as typed, so the file says how to regenerate itself. A
+        // review was not spelled `commits`, and echoing it as one would name a
+        // command that prints a different table.
+        let cmd = match &review {
+            Some(r) => format!(
+                "git-wt <dest> merge --review{}{}   # {} -> {}",
+                if rest.is_empty() { "" } else { " " },
+                rest.join(" "),
+                r.src_label,
+                r.dest_label
+            ),
+            None => format!(
+                "git-wt {} commits{}{}",
+                idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
+                if rest.is_empty() { "" } else { " " },
+                rest.join(" ")
+            ),
+        };
         return write_md(
             Path::new(&file),
             &rows,
@@ -309,6 +431,7 @@ pub(crate) fn cmd_commits(
             &equiv,
             picks.as_ref(),
             &cmd,
+            &if review.is_some() { MdHead::review() } else { MdHead::commits() },
         );
     }
 

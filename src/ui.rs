@@ -10,10 +10,15 @@ pub(crate) const GREEN: &str = "32";
 pub(crate) const YELLOW: &str = "33";
 pub(crate) const RED: &str = "31";
 pub(crate) const DIM: &str = "2";
-/// The cell a filter acted on. Cyan because nothing else in a table uses it:
-/// green and yellow already mean "present" and "same patch" in the marks, and
-/// a highlight that reused either would read as one of those answers.
-pub(crate) const MATCH: &str = "36";
+/// The cell a filter acted on: amber, bold.
+///
+/// Yellow is the right family -- it is the warmest thing on a dark terminal and
+/// the first color the eye finds -- but plain yellow is spent on '≈'. So this is
+/// a step over into amber (256-color 214), which reads as the same family
+/// without being the same color, and is bold so it carries on a light
+/// background too. Terminals that cannot do 256 colors fall back to their
+/// nearest yellow, which is exactly the right failure.
+pub(crate) const MATCH: &str = "1;38;5;214";
 
 /// Whether to emit ANSI for a stream that is (or isn't) a terminal. Honors the
 /// `NO_COLOR` (any value disables) and `CLICOLOR_FORCE` (nonzero forces on)

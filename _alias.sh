@@ -79,7 +79,10 @@ $alias_name() {
 # <<< git-wt alias <<<
 EOF
 
-  mv "$tmp" "$rc"
+  # Write through rather than `mv`: the rc is often a symlink into a dotfile
+  # manager (chezmoi/stow/yadm), and `mv` would replace the link with a plain
+  # file. This also preserves the rc's existing permissions.
+  cat "$tmp" > "$rc" && rm -f "$tmp"
   if [ "$had_block" = yes ]; then
     echo "Refreshed '$alias_name' in $rc"
   else

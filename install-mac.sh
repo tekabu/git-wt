@@ -25,8 +25,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+[ "$(uname -s)" = "Darwin" ] || echo "warning: this script targets macOS; on Linux use ./install-linux.sh" >&2
+
 command -v cargo >/dev/null || {
   echo "error: cargo not found; install Rust, or use the one-file installer (see README)" >&2
+  exit 1
+}
+
+# cargo needs a linker; without the Xcode command line tools the build fails deep
+# inside rustc with a confusing message. Check up front.
+command -v cc >/dev/null || {
+  echo "error: no C linker found (cc); rustc needs one to link the binary." >&2
+  echo "       run 'xcode-select --install'" >&2
   exit 1
 }
 
@@ -48,12 +58,7 @@ echo "Ensure $(dirname "$bin") is on your PATH."
 # with no branch) uses fzf's fuzzy search instead of a numbered prompt. Not a
 # build dependency and not required — just hint how to get the nicer picker.
 if ! command -v fzf >/dev/null; then
-  case "$(uname -s)" in
-    Darwin) hint="brew install fzf" ;;
-    Linux)  hint="your package manager, e.g. 'apt install fzf' or 'dnf install fzf'" ;;
-    *)      hint="https://github.com/junegunn/fzf" ;;
-  esac
-  echo "Tip: install fzf for a fuzzy branch picker ($hint). Optional."
+  echo "Tip: install fzf for a fuzzy branch picker ('brew install fzf'). Optional."
 fi
 
 # --- optional shell alias ---------------------------------------------------
@@ -62,7 +67,3 @@ fi
 # shellcheck source=_alias.sh
 . "$here/_alias.sh"
 gitwt_write_alias "$alias_name"
-
-# Load the alias function into the caller's shell right now, so `wt` works
-# without opening a new terminal or re-sourcing the rc by hand.
-eval "$(sed -n '/# >>> git-wt alias >>>/,/# <<< git-wt alias <<</p' "/Users/$USER/.zshrc")"

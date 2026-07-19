@@ -317,12 +317,13 @@ pub(crate) fn show_path_from_rest(args: &[String]) -> bool {
 }
 
 /// Parse `list` arguments (an optional SEARCH plus `--col`) then list. Shared
-/// by `list`/`ls`, the no-args default, and a bare leading `--col`.
+/// by `list`/`ls`, the no-args default, and a bare leading `--col`/`--files`.
 pub(crate) fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
     let mut search: Option<String> = None;
     let mut cols: Option<Vec<usize>> = None;
     let mut mode = ListMode::Normal;
     let mut show_path = false;
+    let mut files = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -334,6 +335,7 @@ pub(crate) fn list_from_args(root: &Path, args: &[String]) -> Result<(), String>
             "--long" | "-l" => mode = ListMode::Long,
             "--short" | "-s" => mode = ListMode::Short,
             "--show-path" | "-p" => show_path = true,
+            "--files" | "-f" => files = true,
             s if s.starts_with('-') && s != "-" => {
                 return Err(format!("unknown option '{s}'\nTry 'git-wt --help'"));
             }
@@ -345,7 +347,7 @@ pub(crate) fn list_from_args(root: &Path, args: &[String]) -> Result<(), String>
             }
         }
     }
-    cmd_list(root, search.as_deref(), cols, mode, show_path)
+    cmd_list(root, search.as_deref(), cols, mode, show_path, files)
 }
 
 

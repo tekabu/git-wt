@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::cmd::commits::args::{SubjectWidth, Wrap};
-use crate::cmd::commits::rows::{CommitRow, FileStat, Mark};
+use crate::cmd::commits::rows::{file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
-    abbrev, ellipsize, paint, width_bound, wrap_wide, AUTHOR_MAX, CHECK, DIM, EQUIV, GREEN,
+    abbrev, ellipsize, paint, wrap_wide, AUTHOR_MAX, CHECK, DIM, EQUIV, GREEN,
     MIN_TEXTW, MISS, PICK_HEAD, YELLOW,
 };
 
@@ -184,46 +184,8 @@ pub(crate) fn render_commits(
         // rows remain the primary scan target.
         if let Some(file_stats) = row_files.get(i) {
             if !file_stats.is_empty() {
-                let pathw = file_stats
-                    .iter()
-                    .map(|f| f.path.chars().count())
-                    .max()
-                    .unwrap_or(0);
-                let added_strs: Vec<String> = file_stats
-                    .iter()
-                    .map(|f| {
-                        f.added
-                            .map(|n| format!("+{}", n))
-                            .unwrap_or_else(|| "-".to_string())
-                    })
-                    .collect();
-                let removed_strs: Vec<String> = file_stats
-                    .iter()
-                    .map(|f| {
-                        f.removed
-                            .map(|n| format!("-{}", n))
-                            .unwrap_or_else(|| "-".to_string())
-                    })
-                    .collect();
-                let addw = added_strs
-                    .iter()
-                    .map(|s| width_bound(s))
-                    .max()
-                    .unwrap_or(1);
-                let remw = removed_strs
-                    .iter()
-                    .map(|s| width_bound(s))
-                    .max()
-                    .unwrap_or(1);
                 println!();
-                for (f, (add_s, rem_s)) in file_stats
-                    .iter()
-                    .zip(added_strs.iter().zip(removed_strs.iter()))
-                {
-                    let file_line = format!(
-                        "\t{}  {:<pathw$}  {:>addw$}  {:>remw$}",
-                        f.status, f.path, add_s, rem_s
-                    );
+                for file_line in file_stat_lines(file_stats) {
                     println!("{}", paint(&file_line, DIM, color));
                 }
                 println!();

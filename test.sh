@@ -719,6 +719,33 @@ check "hunks rejects --stat"         exit=1 err="cannot combine" -- "1,$lidx" di
 check "--live dashed form works"     exit=0 out="shared.txt" -- "1,$lidx" diff --live --name-only
 check "hunks works without live"     exit=0 out="committed state" -- "1,$didx" diff hunks
 
+# --- list --files -----------------------------------------------------------
+# The live worktree is already dirty in all three interesting ways: a tracked
+# edit, an untracked file, and an ignored one. --files must show the first two
+# under the branch row and never the third.
+check "list --files shows edit"      exit=0 out="M  shared.txt" -- list --files
+check "list --files counts lines"    exit=0 out="+2  -1" -- list --files
+check "list --files shows untracked" exit=0 out="?  untracked.txt" -- list --files
+check "list --files counts untracked" exit=0 out="+1  -0" -- list --files
+check "bare --files (no list word)"  exit=0 out="M  shared.txt" -- --files
+check "list -f short flag"           exit=0 out="M  shared.txt" -- -f
+check "--files combines with --col"  exit=0 out="M  shared.txt" -- list --col 2 --files
+
+fign="$("$BIN" list --files 2>/dev/null)"
+fcmd="$(fmt_cmd list --files)"
+case "$fign" in
+  *ignoreme*) report FAIL HAPPY "list --files honors .gitignore" "$fcmd" "ignored file listed" ;;
+  *)          report PASS HAPPY "list --files honors .gitignore" "$fcmd" ;;
+esac
+
+# Without the flag the listing stays a table: no file block at all.
+fplain="$("$BIN" list 2>/dev/null)"
+pcmd="$(fmt_cmd list)"
+case "$fplain" in
+  *shared.txt*) report FAIL HAPPY "list without --files has no block" "$pcmd" "file block leaked" ;;
+  *)            report PASS HAPPY "list without --files has no block" "$pcmd" ;;
+esac
+
 # --- meld -------------------------------------------------------------------
 # A stub 'meld' on PATH echoes its argv and lists the files inside each
 # directory it receives, so we can assert on both the pane order and the

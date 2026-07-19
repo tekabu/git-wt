@@ -172,6 +172,37 @@ git-wt list --col 1,2,6      # id + branch + merged status
 git-wt list --col 1,2 feat   # combine with a filter
 ```
 
+### `--files`
+
+`--files` (`-f`) prints a file block under each worktree row, in the same shape
+`git-wt <N>,<M> commits --files` prints under a commit: status, path, added
+lines, removed lines. **Every worktree that is not clean gets one** -- staged and
+unstaged changes counted together, untracked files listed with `?` (ignored ones
+never are). A clean worktree keeps its row and adds no block, so the flag reads
+as "show me what is in flight, everywhere".
+
+```
+1  main                  /code/myapp
+
+2  feat/files-flag       /code/myapp-feat-files-flag
+
+	?  scratch.txt   +2   -0
+	M  src/list.rs  +19   -2
+
+3  feat/windows-support  /code/myapp-feat-windows-support
+
+	?  docs/PLAN.md  +130   -0
+```
+
+It combines with everything else `list` takes:
+
+```sh
+git-wt --files                # the default listing, plus the file blocks
+git-wt list --files           # same
+git-wt ls -f feat             # combines with a filter
+git-wt list --col 2 --files   # and with --col
+```
+
 ## Switch / path
 
 ```sh
@@ -933,6 +964,8 @@ Every form the CLI accepts. Examples assume:
 | `git-wt list zzz` (no match) | Error `no worktree matches 'zzz'`, exit 1 |
 | `git-wt list --col 2,3` | Show only branch + dir columns (1=id, 2=branch, 3=dir) |
 | `git-wt list --col 3,2,1 feat` | Reorder columns; combines with a filter |
+| `git-wt list --files` | Add each worktree's uncommitted files under its row (`-f`) |
+| `git-wt --files` | Same, without the `list` word |
 
 ### Target — `git-wt <N> [action]`
 

@@ -4,7 +4,7 @@ use std::process::Stdio;
 
 use crate::cmd::commits::args::{DateFmt, Order};
 use crate::git::{git_cmd, git_stdout};
-use crate::ui::{CHECK, DIM, EQUIV, GREEN, MISS, YELLOW};
+use crate::ui::{width_bound, CHECK, DIM, EQUIV, GREEN, MISS, YELLOW};
 
 /// One table row: a commit, its short name, who wrote it when, and its subject.
 #[derive(Clone)]
@@ -139,6 +139,32 @@ pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, Stri
 
     stats.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(stats)
+}
+
+/// The lines of a file block: one tab-indented `status  path  +added  -removed`
+/// per file, with the path and both counts padded to the block's own widths.
+/// Binary files (and anything git gave no count for) print `-` in place of a
+/// number. Shared by the commit table and `list --files` so the two blocks read
+/// the same.
+pub(crate) fn file_stat_lines(files: &[FileStat]) -> Vec<String> {
+    let pathw = files.iter().map(|f| f.path.chars().count()).max().unwrap_or(0);
+    let count = |n: Option<usize>, sign: char| {
+        n.map(|n| format!("{sign}{n}")).unwrap_or_else(|| "-".to_string())
+    };
+    let added: Vec<String> = files.iter().map(|f| count(f.added, '+')).collect();
+    let removed: Vec<String> = files.iter().map(|f| count(f.removed, '-')).collect();
+    let addw = added.iter().map(|s| width_bound(s)).max().unwrap_or(1);
+    let remw = removed.iter().map(|s| width_bound(s)).max().unwrap_or(1);
+    files
+        .iter()
+        .zip(added.iter().zip(removed.iter()))
+        .map(|(f, (a, r))| {
+            format!(
+                "\t{}  {:<pathw$}  {:>addw$}  {:>remw$}",
+                f.status, f.path, a, r
+            )
+        })
+        .collect()
 }
 
 /// Rows for the table: every commit reachable from any ref, newest first.
@@ -463,6 +489,24 @@ impl Mark {
 mod tests {
     use super::*;
     use crate::cmd::commits::args::{parse_date_filter, DateFmt};
+
+    #[test]
+    fn file_stat_lines_pads_paths_and_counts() {
+        let files = vec![
+            FileStat { status: 'M', path: "a.rs".into(), added: Some(4), removed: Some(1) },
+            FileStat { status: 'A', path: "long/name.rs".into(), added: Some(11), removed: Some(0) },
+            // Binary: no counts to print on either side.
+            FileStat { status: 'M', path: "logo.png".into(), added: None, removed: None },
+        ];
+        assert_eq!(
+            file_stat_lines(&files),
+            vec![
+                "\tM  a.rs           +4  -1".to_string(),
+                "\tA  long/name.rs  +11  -0".to_string(),
+                "\tM  logo.png        -   -".to_string(),
+            ]
+        );
+    }
 
     /// The default spelling: what `commits` prints without a format flag.
     const ISO: DateFmt = DateFmt { human: false, time: false };

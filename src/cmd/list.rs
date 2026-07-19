@@ -1,9 +1,13 @@
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::git::git_stdout;
+use crate::cmd::commits::rows::{file_stat_lines, FileStat};
 use crate::cmd::merged::{merged_text, merged_text_at};
-use crate::ui::{color_enabled, ellipsize, is_subseq, paint, term_width, BRANCH_MIN, DIM};
+use crate::ui::{
+    color_enabled, ellipsize, is_subseq, paint, term_width, BRANCH_MIN, DIM,
+};
 use crate::worktree::{
     current_ref, label, status_color, status_text, worktree_status, worktrees, Status, Worktree,
 };
@@ -91,6 +95,105 @@ pub(crate) fn last_commit(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// The uncommitted files in a worktree, with status and line counts -- the
+/// working-tree answer to `commits --files`' per-commit one.
+///
+/// Statuses come from `git status --porcelain` so untracked files are included;
+/// the counts come from `git diff --numstat HEAD`, which covers staged and
+/// unstaged changes together. An untracked file has no diff to count, so its
+/// added lines are counted from the file itself and nothing is removed.
+///
+/// A bare worktree has no working tree at all, and a git failure means we have
+/// nothing to say: both give an empty block rather than a wrong one.
+pub(crate) fn worktree_files(w: &Worktree) -> Vec<FileStat> {
+    if w.bare {
+        return Vec::new();
+    }
+    let Ok(porcelain) = git_stdout(&w.path, &["status", "--porcelain"]) else {
+        return Vec::new();
+    };
+
+    // path -> status char. The index column wins when it has one, so a staged
+    // add that was then edited still reads as an add.
+    let mut status_by_path: HashMap<String, char> = HashMap::new();
+    let mut untracked: Vec<String> = Vec::new();
+    for line in porcelain.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let mut chars = line.chars();
+        let x = chars.next().unwrap_or(' ');
+        let y = chars.next().unwrap_or(' ');
+        let rest = &line[3..];
+        if x == '?' {
+            untracked.push(rest.to_string());
+            status_by_path.insert(rest.to_string(), '?');
+            continue;
+        }
+        let status = if x != ' ' { x } else { y };
+        // "R  old -> new": the new path is the one that exists now, and numstat
+        // spells the same change "old => new", so both look it up.
+        match rest.split_once(" -> ") {
+            Some((old, new)) => {
+                status_by_path.insert(new.to_string(), status);
+                status_by_path.insert(format!("{old} => {new}"), status);
+            }
+            None => {
+                status_by_path.insert(rest.to_string(), status);
+            }
+        }
+    }
+
+    let mut stats: Vec<FileStat> = Vec::new();
+    let mut counted: HashSet<String> = HashSet::new();
+    if let Ok(numstat) = git_stdout(&w.path, &["diff", "--numstat", "HEAD"]) {
+        for line in numstat.lines() {
+            let mut parts = line.splitn(3, '\t');
+            let (Some(added_field), Some(removed_field), Some(path)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            // A binary file has no line counts; git spells that "-".
+            let added = (added_field != "-").then(|| added_field.parse().ok()).flatten();
+            let removed = (removed_field != "-").then(|| removed_field.parse().ok()).flatten();
+            let status = status_by_path.get(path).copied().unwrap_or('M');
+            counted.insert(path.to_string());
+            stats.push(FileStat {
+                status,
+                path: path.to_string(),
+                added,
+                removed,
+            });
+        }
+    }
+
+    // Untracked files are absent from every diff, so they are added here with
+    // their own line count. A trailing '/' is a whole untracked directory,
+    // which git collapses to one entry and we leave uncounted.
+    for path in untracked {
+        if counted.contains(&path) {
+            continue;
+        }
+        let added = if path.ends_with('/') {
+            None
+        } else {
+            std::fs::read_to_string(w.path.join(&path))
+                .ok()
+                .map(|s| s.lines().count())
+        };
+        stats.push(FileStat {
+            status: '?',
+            path,
+            added,
+            removed: added.map(|_| 0),
+        });
+    }
+
+    stats.sort_by(|a, b| a.path.cmp(&b.path));
+    stats
+}
+
 /// Verbosity for `list`. Normal enriches to status + last-commit only on a
 /// terminal; on a pipe it stays the plain id/branch/dir contract.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,6 +209,7 @@ pub(crate) fn cmd_list(
     cols: Option<Vec<usize>>,
     mode: ListMode,
     show_path: bool,
+    files: bool,
 ) -> Result<(), String> {
     let trees = worktrees(root)?;
 
@@ -273,9 +377,30 @@ pub(crate) fn cmd_list(
         println!("{}", paint(&line, DIM, color));
     }
 
-    for (row, (st, _, _, _, _, _, _)) in cells.iter().zip(&meta) {
+    // With file blocks the listing stops being a table and becomes a series of
+    // groups, so each worktree is fenced off by a blank line -- including the
+    // ones with no files to show, which would otherwise huddle against the
+    // block above them and read as part of it.
+    for (i, ((row, (st, _, _, _, _, _, _)), (_, w))) in
+        cells.iter().zip(&meta).zip(&rows).enumerate()
+    {
+        if files && i > 0 {
+            println!();
+        }
         let line = render_row(row, &cols, &widths, *st, color);
         println!("{line}");
+        // The same file block `commits --files` prints under a commit, here
+        // under the branch it belongs to: every worktree that is not clean gets
+        // one, and a clean one gets nothing.
+        if files {
+            let stats = worktree_files(w);
+            if !stats.is_empty() {
+                println!();
+                for file_line in file_stat_lines(&stats) {
+                    println!("{}", paint(&file_line, DIM, color));
+                }
+            }
+        }
     }
     Ok(())
 }

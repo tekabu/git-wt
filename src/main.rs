@@ -26,7 +26,7 @@ git-wt — worktrees in sibling directories named <repo>-<branch>
 
 USAGE:
     git-wt                       List worktrees, numbered from 1
-    git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path]
+    git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path] [--files]
                                  List, optional fuzzy filter; --col picks/orders
                                  columns (1=id, 2=branch, 3=dir, 4=status,
                                  5=last-commit, 6=merged, 7=merged-ref, 8=merged-at,
@@ -34,7 +34,8 @@ USAGE:
                                  and behind the branch's upstream, as of the last fetch.
                                  --show-path (-p) adds the dir column, which a terminal
                                  leaves out; --long shows id/branch/dir/status/last/push/pull; --short
-                                 id+branch+status summary.
+                                 id+branch+status summary. --files (-f) lists each
+                                 worktree's uncommitted files under its row.
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
@@ -509,7 +510,7 @@ fn run() -> Result<(), String> {
             return list_from_args(&root, &[]);
         }
         // A leading list flag with no `list` word: `git-wt --col 1,2`.
-        Some("--col") | Some("-c") => {
+        Some("--col") | Some("-c") | Some("--files") | Some("-f") => {
             let root = repo_root()?;
             return list_from_args(&root, &args);
         }

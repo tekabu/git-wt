@@ -1,8 +1,27 @@
 # `merge --review`: see what is about to come over
 
-> **Status: planned** on `feat/merge-review`. Nothing implemented yet. Branched
-> from `fix/review-round-findings` (`9c3237e`) — the stable line — so the
+> **Status: built** on `feat/merge-review`. Branched from
+> `fix/review-round-findings` (`9c3237e`) — the stable line — so the
 > review-round fixes are in the base.
+>
+> Four things landed that this document did not call for:
+>
+> - The `✓` legend now prints only when a displayed row actually carries one —
+>   the rule `≈` already followed — because a review's column cannot carry a
+>   check at all. Both the terminal renderer and the `--md` writer.
+> - `--md` names the command it came from: heading `git-wt merge --review`,
+>   and `Merging:` rather than `Worktrees:`, since a review's label is a branch.
+> - `--all` and `--union` are refused rather than silently ignored. See the
+>   section below; this is the one deviation that changes what the command
+>   accepts, and it retired the draft's `--review -af` example, `-a` being
+>   `--all`.
+> - A bug the review header surfaced: `merge-tree --write-tree` writes its own
+>   commentary after a blank line, and the probe was listing `Auto-merging f`
+>   as a conflicting path. `--dry-run` had been doing it since it was written.
+>
+> `--review --dry-run` also errors in its own words rather than as an
+> unexpected `commits` argument, which the "Hand the tail to
+> `parse_commits_args`" section covers.
 
 ## Context
 
@@ -39,10 +58,10 @@ nothing.
 $ wt 1,5 merge --review
 fix/review-round-findings -> main   3 commits, merges cleanly
 
-commit   author  date        subject
-9c3237e  Nino    2026-07-19  fix: six review findings
-267a002  Nino    2026-07-19  refactor(commits): --matched-files is --match-only
-2c7b804  Nino    2026-07-19  fix(commits): --filename missed the merges
+commit   author  date        main  subject
+9c3237e  Nino    2026-07-19   ·    fix: six review findings
+267a002  Nino    2026-07-19   ≈    refactor(commits): --matched-files is --match-only
+2c7b804  Nino    2026-07-19   ·    fix(commits): --filename missed the merges
 ```
 
 ### It inherits the `commits` flag set
@@ -51,8 +70,12 @@ commit   author  date        subject
 wt 1,5 merge --review -f                  # file blocks under each commit
 wt 1,5 merge --review -n 5 --files
 wt 1,5 merge --review --author Nino -f
-wt 1,5 merge --review -af                 # bundles work, see step 2
+wt 1,5 merge --review -fn 5               # bundles work, see step 2
 ```
+
+Not `--all` or `--union` either — see "Refused: the flags that name a row
+source" below. They are why the bundle example is `-fn 5` and not `-af`: `-a`
+is `--all`.
 
 Not `--stat` — that is a `diff` flag (`diff.rs:70`), and `commits` rejects it
 (`commits/args.rs:671`; confirmed: `error: unexpected argument '--stat' for
@@ -101,17 +124,58 @@ today.
   `-n`, `-d` land on their `commits` meanings intact.
 
 Handing off the tail verbatim also gets `expand_short_bundles`
-(`commits/args.rs:200`) for free, so `--review -af` works — another thing
+(`commits/args.rs:200`) for free, so `--review -fn 5` works — another thing
 merge's parser cannot do, and a further reason not to re-parse in `merge`.
+(The draft wrote `-af` here. Bundling is what that example was about and it
+still holds; `-a` is `--all`, which a review refuses on separate grounds.)
 
 The long forms were never in conflict: the full-name intersection between the
 two flag sets is exactly one member, `--message`, and the handoff settles it.
+
+### Refused: the flags that name a row source
+
+`--all` ("this branch's whole log") and `--union` ("every branch listed") are
+`commits` flags, and `--review` still refuses them. Both answer the question
+the range has already answered: the rows are `dest..src`, there is no wider log
+to widen to, and there is no second branch to union in.
+
+Accepting them as no-ops was the first implementation, and it is the worse
+half of the trade — the table comes back looking like an answer to the question
+that was asked, when the flag was silently dropped. `--stat` errors here; so
+should these.
+
+Checked on what was typed, before `names_a_floor` folds in the *implied*
+`--all`, so `--review --commits <sha>` still works: that implication exists to
+reach past the default view's floor, and a review has no floor to reach past.
 
 ### Range
 
 One-directional: `dest..src`, what the merge would bring *over*. Not the
 two-column presence table `wt 5,1 commits` prints — that view answers "how do
 these two branches compare", and a review asks the narrower question.
+
+### One mark column, and it is the destination's
+
+`commits` prints one mark column per worktree in the list. A review has two refs
+but only one of them can say anything: the range is `dest..src`, so **every row
+is in `src` by construction** — that column would be `✓` all the way down,
+which is the table repeating its own definition.
+
+The destination's column is the opposite. `✓` is impossible there for the same
+reason (the range excluded them), so the column is exactly the `·` / `≈` split:
+
+- `·` — genuinely new. This commit's patch is not in `dest` in any form.
+- `≈` — **already in `dest` under a different sha.** The row is not new cargo.
+
+That second mark is not a corner case. A fix cherry-picked out of `src` straight
+onto `dest` — the hotfix path — leaves `dest` holding the patch under a new sha
+while `src` keeps the original, and `dest..src` still lists the original because
+it is genuinely absent *by sha*. Without the mark that row reads as work about
+to land; the merge will resolve it to a no-op, or conflict against the copy.
+Telling those two apart is the question a review is asking.
+
+So `--review` renders with a single mark column, labelled with the destination,
+and `--pick-id` / `--no-cherry` keep their `commits` meanings over it.
 
 ### Exit code
 
@@ -129,14 +193,25 @@ reports.
 
 ### 2. Hand the tail to `parse_commits_args`
 
-Unchanged and uninspected, per the rule above. Unknown flags keep producing the
-`commits` error, which already names the right help.
+Unchanged and uninspected, per the rule above.
+
+Unknown flags keep producing the `commits` error — except a *merge* option,
+which is a collision rather than a typo and gets named as one. `merge --review
+--dry-run` reporting `unexpected argument '--dry-run' for commits` blames a
+command the user never typed and calls a redundancy "unexpected".
+
+This does not weaken the handoff. The message is chosen in the parser's final
+arm, reached only once the token has failed every `commits` spelling, so it can
+never intercept a flag `commits` accepts — the shared short letters least of
+all. It changes what the error says, never which arguments are legal, and a test
+pins exactly that (`review_names_the_merge_options_it_cannot_take`).
 
 ### 3. Render through the existing `commits` path
 
-Reuse `commit_rows` + the render module over the `dest..src` range. **No new
-table code** — `commits/render.rs` is 289 lines and `rows.rs` 1518; a third copy
-of the row/file-block rendering is not on the table.
+Reuse `commit_rows` + the render module over the `dest..src` range, with one
+mark column for the destination (see above). **No new table code** —
+`commits/render.rs` is 289 lines and `rows.rs` 1518; a third copy of the
+row/file-block rendering is not on the table.
 
 This is the house rule, not a preference. Commit `9c3237e` closed *two*
 duplications, each with a named bug caused by the copy:
@@ -209,19 +284,31 @@ a parameterised inner function and the existing entry point stays a one-liner
 over it, so no call site changes and there is no second parser. Six call sites
 in total (`commits/mod.rs:41` plus five in tests), all unaffected.
 
+**Built as `parse_commits_args_with(args, review: bool)`,** and the rename is
+the point. The parameter began as the merges default and ended up gating four
+things: the merges default, whether `--no-merges` is refused, whether merge
+vocabulary gets a named message, and whether `--all`/`--union` are refused.
+Only the first two are about merges — `if merges_default { reject --all }` reads
+as a non-sequitur, because it is one. The question the parser is actually asking
+is *am I a review*, so that is what the parameter is called. Its doc comment
+lists all four and what each follows from.
+
+The thin `parse_commits_args` caller was dropped rather than kept: once
+`commits_view` took the parameter it had no non-test caller, and a wrapper
+existing only to be dead is worse than five explicit `false`s in the tests.
+
 ### Watch the polarity
 
 `CommitsArgs.merges` is the **positive** ("keep them"), but `commit_rows` takes
 **`no_merges: bool`** (`rows.rs:262`) and pushes `--no-merges` from it
-(`rows.rs:280`). So `merges_default` crosses an inversion between parse and
-rows.
+(`rows.rs:280`). So the default crosses an inversion between parse and rows.
 
 This is the failure mode where a refactor flips the sense once, and the test
 asserts against the same wrong constant and passes. Two guards, both cheap:
 
-- Name the polarity in the signature — `merges_default` stays positive
-  throughout the parse layer, and the single inversion happens at the one call
-  into `commit_rows`, not scattered.
+- Name the polarity in the signature — the merges default stays positive
+  throughout the parse layer (`CommitsArgs.merges`, "keep them"), and the single
+  inversion happens at the one call into `commit_rows`, not scattered.
 - **Assert both directions** in step 5, not just the new one. The existing
   `no_merges_drops_only_the_merge_commits` (`rows.rs:1427`) already
   parameterises on `no_merges` (`:1456-1457`) — reuse that shape rather than
@@ -233,12 +320,18 @@ asserts against the same wrong constant and passes. Two guards, both cheap:
 "Merges carry no patch of their own, and `git cherry` skips them too." That
 stays unconditional.
 
-Consequence of the Q4 flip: `--review` puts merge rows into a table whose
-`≈` / `--no-cherry` column structurally cannot speak about them. This is right
-behaviour, but it is **new** — `commits` never showed a merge row by default, so
-the gap has never been visible. It needs a line in the help (and should not be
-read as a bug on first sighting), and `--review --pick-id` on a merge row wants
-a documented answer rather than a surprising one.
+Consequence of the Q4 flip: `--review` puts merge rows into a table whose one
+mark column structurally cannot speak about them — the destination column is
+the `·`/`≈` split, and a merge is neither. This is right behaviour, but it is
+**new** — `commits` never showed a merge row by default, so the gap has never
+been visible. It needs a line in the help (and should not be read as a bug on
+first sighting), and `--review --pick-id` on a merge row wants a documented
+answer rather than a surprising one.
+
+A merge row therefore prints `·` in that column, the same mark a commit with no
+copy gets. The alternative — a blank cell meaning "not applicable" — invents a
+third state for one row type in a column that has only ever had two, and the
+help line covers the ambiguity more cheaply than a new glyph would.
 
 ### The flip makes one empty-output path *less* likely
 
@@ -279,10 +372,10 @@ solving it in the wrong place.
 
 Each step is independently testable and lands before the one that needs it.
 
-1. **`parse_commits_args_with(args, merges_default)`** — thin-caller refactor.
+1. **`parse_commits_args_with(args, review)`** — thin-caller refactor.
    `parse_commits_args` passes `false`, so no call site changes and no
    behaviour change *on that path*. **Includes making the `NO_MERGES_MSG` guard
-   (`args.rs:267`) conditional on `merges_default`** — without it the `true`
+   (`args.rs:267`) conditional on the parameter** — without it the `true`
    path rejects `--no-merges` with a message that is false under `--review`,
    and the failure surfaces two steps from its cause (step 4, when `true` is
    first passed).
@@ -306,7 +399,7 @@ Each step is independently testable and lands before the one that needs it.
      `--review` keeps merge rows, `--review --no-merges` drops them, plain
      `commits` is untouched.
    - **The handoff boundary** — `--review -f` means files (not force),
-     `--review -af` bundles, `merge -f --review` errors, and
+     `--review -fn 5` bundles, `merge -f --review` errors, and
      `wt 1 merge feat/x --review` still consumes its positional.
 
 ## Settled

@@ -392,7 +392,7 @@ case "$lonly" in
   *)           report PASS HAPPY "commits anchors on the first" "$lcmd" ;;
 esac
 check "commits --union adds the rest" exit=0 out="loginside" -- "1,$didx" commits --union
-check "commits --any spells --union"  exit=0 out="loginside" -- "1,$didx" commits --any
+check "commits --any is gone"         exit=1 err="unexpected argument '--any'" -- "1,$didx" commits --any
 check "commits heads the author col" exit=0 out="author" -- "1,$didx" commits
 check "commits names the author"     exit=0 out="Test" -- "1,$didx" commits
 check "commits heads the subject col" exit=0 out="subject" -- "1,$didx" commits
@@ -664,14 +664,16 @@ esac
 check "commits --commit-since bad commit"  exit=1 err="--commit-since: no commit 'zzz9'" -- "1,$didx" commits --commit-since zzz9
 check "commits --commit-until needs a value" exit=1 err="--commit-until needs a commit" -- "1,$didx" commits --commit-until
 # A bare --from names neither bound; git's date words point at ours.
-check "commits rejects bare --from"   exit=1 err="'--commit-since' takes a commit" -- "1,$didx" commits --from x
-check "commits rejects --since"       exit=1 err="use '--date-since" -- "1,$didx" commits --since 2026-01-01
+check "commits rejects bare --from"   exit=1 err="unexpected argument '--from'" -- "1,$didx" commits --from x
+check "commits rejects --since"       exit=1 err="unexpected argument '--since'" -- "1,$didx" commits --since 2026-01-01
 # The old spellings say their new name rather than reading as a typo.
-check "commits --from-date renamed"   exit=1 err="'--from-date' is now '--date-since'" -- "1,$didx" commits --from-date 2026-01-01
-check "commits --to-date renamed"     exit=1 err="'--to-date' is now '--date-until'" -- "1,$didx" commits --to-date 2026-01-01
-check "commits --from-id renamed"     exit=1 err="'--from-id' is now '--commit-since'" -- "1,$didx" commits --from-id HEAD
-check "commits --to-id renamed"       exit=1 err="'--to-id' is now '--commit-until'" -- "1,$didx" commits --to-id HEAD
-check "commits --show-time renamed"   exit=1 err="'--show-time' is now '--time'" -- "1,$didx" commits --show-time
+# The old spellings carry no pointer to the new one -- they are words the
+# parser does not know, like any flag that was never there.
+check "commits --from-date is gone"   exit=1 err="unexpected argument '--from-date'" -- "1,$didx" commits --from-date 2026-01-01
+check "commits --to-date is gone"     exit=1 err="unexpected argument '--to-date'" -- "1,$didx" commits --to-date 2026-01-01
+check "commits --from-id is gone"     exit=1 err="unexpected argument '--from-id'" -- "1,$didx" commits --from-id HEAD
+check "commits --to-id is gone"       exit=1 err="unexpected argument '--to-id'" -- "1,$didx" commits --to-id HEAD
+check "commits --show-time is gone"   exit=1 err="unexpected argument '--show-time'" -- "1,$didx" commits --show-time
 # --commits names the rows outright, and resolves every id before filtering.
 check "commits --commits one sha"     exit=0 out="$mainsha" -- "1,$didx" commits --commits "$mainsha"
 check "commits -c short flag"         exit=0 out="$mainsha" -- "1,$didx" commits -c "$mainsha"
@@ -687,7 +689,7 @@ if [ "$conly" = 1 ] && [ "$call" -gt 1 ]; then
 else
   report FAIL HAPPY "commits --commits keeps only those" "$ccmd" "wanted 1 row of $call, got $conly"
 fi
-check "commits rejects --until"       exit=1 err="use '--date-until" -- "1,$didx" commits --until 2026-01-01
+check "commits rejects --until"       exit=1 err="unexpected argument '--until'" -- "1,$didx" commits --until 2026-01-01
 
 # Merges are dropped by default and --merges puts them back. Needs a merge with
 # something to merge: a branch main already contains is "Already up to date"
@@ -707,8 +709,7 @@ else
   report FAIL HAPPY "commits hides merges by default" "$nmc" "merge row survived the default"
 fi
 # --no-merges is retired: the default already drops them, and the error says so.
-check "commits --no-merges is gone"  exit=1 err="no '--no-merges'" -- "1,$didx" commits --no-merges
-check "commits --no-merges names fix" exit=1 err="--merges" -- "1,$didx" commits --no-merges
+check "commits --no-merges is gone"  exit=1 err="unexpected argument '--no-merges'" -- "1,$didx" commits --no-merges
 # The work the merge joined must survive: only the merge row goes.
 check "commits default keeps work"   exit=0 out="mainside" -- "1,$didx" commits
 
@@ -834,14 +835,11 @@ check "commits --all-files widens"     exit=0 out="blockother.txt" -- "1,$didx" 
 check "commits --all-files keeps match" exit=0 out="blockmatch.txt" -- "1,$didx" commits --filename blockmatch --all --all-files
 check "commits --all-files alone errors" exit=1 err="--all-files needs" -- "1,$didx" commits --all-files
 # --match-only is retired: --filename does its job, and the error says so.
-check "commits --match-only is gone"   exit=1 err="no '--match-only'" -- "1,$didx" commits --filename blockmatch --match-only
-check "commits --match-only names the fix" exit=1 err="--all-files" -- "1,$didx" commits --match-only
+check "commits --match-only is gone"   exit=1 err="unexpected argument '--match-only'" -- "1,$didx" commits --filename blockmatch --match-only
 # The flags these two get confused with, each naming the one that is here.
-check "commits --subject names --message" exit=1 err="--message" -- "1,$didx" commits --subject fix
-check "commits --subject keeps the width" exit=1 err="--subject-width" -- "1,$didx" commits --subject fix
-check "commits --grep names --message"    exit=1 err="--message" -- "1,$didx" commits --grep "^fix"
-check "commits --file names --filename"   exit=1 err="--filename" -- "1,$didx" commits --file x
-check "commits --file names --files"      exit=1 err="--files" -- "1,$didx" commits --file x
+check "commits --subject is gone"         exit=1 err="unexpected argument '--subject'" -- "1,$didx" commits --subject fix
+check "commits --grep is gone"            exit=1 err="unexpected argument '--grep'" -- "1,$didx" commits --grep "^fix"
+check "commits --file is gone"            exit=1 err="unexpected argument '--file'" -- "1,$didx" commits --file x
 
 check "commits rejects a dup target" exit=1 err="listed twice" -- "1,1" commits
 check "commits bad index errors"     exit=1 err="no worktree #99" -- "1,99" commits
@@ -1167,6 +1165,62 @@ if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
     "MERGE_HEAD exists after a dry run"
 else
   report PASS HAPPY "dry-run leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2"
+fi
+
+# --review: dry-run's verdict, plus the commits behind it. Same exit contract,
+# so these mirror the dry-run cases above rather than inventing a new one.
+check "review clean merge"           exit=0 err="merges cleanly" -- "$LM,$A" merge --review
+# Nothing to bring: there is no merge to have a verdict about, so it says the
+# one true thing in 'merged's words rather than "0 commits, merges cleanly"
+# above an empty table -- which reads as though a merge just ran.
+check "review of an empty range"     exit=0 err="is already in" -- "$C2,$FF2" merge --review
+# ...and says only that: no verdict line, no count, no table. `check` asserts
+# what output contains, so the absence is checked here.
+emptyrev="$("$BIN" "$C2,$FF2" merge --review 2>&1)"
+emptycmd="git-wt $C2,$FF2 merge --review"
+if [[ "$emptyrev" == *"merges cleanly"* || "$emptyrev" == *"0 commits"* ]]; then
+  report FAIL HAPPY "review empty says it once" "$emptycmd" \
+    "an empty range still printed a verdict (got '$emptyrev')"
+else
+  report PASS HAPPY "review empty says it once" "$emptycmd"
+fi
+# An empty range is still parsed: the flags are rejected on their own terms,
+# not skipped because there happened to be nothing to report.
+check "review empty still parses"    exit=1 err="unexpected argument" -- "$C2,$FF2" merge --review --bogus
+check "review empty refuses --all"   exit=1 err="no '--all' under '--review'" -- "$C2,$FF2" merge --review --all
+check "review names both branches"   exit=0 err="->" -- "$LM,$A" merge --review
+check "review reports a conflict"    exit=1 err="does NOT merge cleanly" -- "$C2,$M3" merge --review
+check "review lists the conflict"    exit=1 err="shared.txt" -- "$C2,$M3" merge --review
+check "review says it touched none"  exit=1 err="nothing was changed" -- "$C2,$M3" merge --review
+# The handoff: past --review, merge stops parsing and 'commits' takes over, so
+# -f is --files and not --force. A wrong answer here runs a real merge.
+check "review -f is files not force" exit=0 err="merges cleanly" -- "$LM,$A" merge --review -f
+check "review takes -n"              exit=0 err="merges cleanly" -- "$LM,$A" merge --review -n 1
+check "review takes --author"        exit=0 err="merges cleanly" -- "$LM,$A" merge --review --author t
+# --no-merges is a hard error in 'commits' and a real flag under --review; the
+# default flipped, so the message that refused it would no longer be true.
+check "review takes --no-merges"     exit=0 err="merges cleanly" -- "$LM,$A" merge --review --no-merges
+check "commits still rejects it"     exit=1 err="unexpected argument '--no-merges'" -- "$LM,$A" commits --no-merges
+# A merge flag before --review was already claimed, so it errors rather than
+# quietly shaping a merge that never runs.
+check "merge flag before --review"   exit=1 err="review takes no merge options" -- "$LM,$A" merge -f --review
+# A merge option after --review reached the commits parser, which would have
+# blamed a command the user never typed. It names the collision instead.
+check "review + dry-run is an error" exit=1 err="answer the same question" -- "$LM,$A" merge --review --dry-run
+check "review + squash is an error"  exit=1 err="shapes a merge commit" -- "$LM,$A" merge --review --squash
+check "review twice is an error"     exit=1 err="already in effect" -- "$LM,$A" merge --review --review
+check "review keeps typo errors"     exit=1 err="unexpected argument" -- "$LM,$A" merge --review --bogus
+# --all/--union are commits flags, and still refused: both name a row source,
+# and a review's is the range. '-a' is '--all', so it goes under that name.
+check "review refuses --all"         exit=1 err="no '--all' under '--review'" -- "$LM,$A" merge --review --all
+check "review refuses -a as --all"   exit=1 err="no '--all' under '--review'" -- "$LM,$A" merge --review -a
+check "review refuses --union"       exit=1 err="no '--union' under '--review'" -- "$LM,$A" merge --review --union
+# Proof it wrote nothing, exactly as the dry-run block above proves it.
+if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+  report FAIL HAPPY "review leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2" \
+    "MERGE_HEAD exists after a review"
+else
+  report PASS HAPPY "review leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2"
 fi
 
 # --- merged -----------------------------------------------------------------

@@ -45,6 +45,7 @@ Replace branch switching with separate folders next door.
 | Jump back to another task | `wt 1` | Your terminal moves to that task’s folder |
 | Peek at a branch without disturbing your current work | `git-wt add bugfix/123 --stay` | The folder is created; you stay where you are |
 | Fold one task's work into another | `wt 1,2 merge` | Task 2's branch is merged into task 1's, without leaving your shell |
+| Check what a merge would bring first | `wt 1,2 merge --review` | The commits about to land, and whether they'd conflict — nothing is changed |
 | See which tasks have which commits | `wt 1,2,3 commits` | A table: one row per commit, a check under every task that has it |
 | Catch every task up with the server | `wt pull --all` | Each folder pulls its own branch; the last line counts what worked |
 | Clean up a finished task | `wt 1 remove` | The extra folder disappears; the branch stays in Git |
@@ -118,6 +119,7 @@ git-wt <N> path              Print worktree N's path only (alias: show)
 git-wt <N> remove [-y] [-f]  Remove worktree N
 git-wt <N>,<M> merge         Merge M into N
 git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
+git-wt <N>,<M> merge review  What would that merge bring over?
 git-wt <N> merge continue|abort
 git-wt <N>,<M> merged        Is M's branch already in N's branch?
 git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
@@ -411,7 +413,7 @@ default as *what of mine has landed elsewhere*.
 
 ### The other question: `--union`
 
-`--union` (alias `--any`) asks *who is out of sync with who*. Every worktree
+`--union` asks *who is out of sync with who*. Every worktree
 listed contributes rows, so the table becomes the union of their logs and a
 commit the first one lacks gets a row with a `·` under it:
 
@@ -472,6 +474,11 @@ reproduce itself:
 | `b1eb4c5` | Nino | 2026-07-17 | ✓ | · | build: bump version to 1.2.4 |
 ```
 
+`merge --review --md` writes through the same code, and says so: the heading
+reads `# git-wt merge --review` and the label is `Merging:` rather than
+`Worktrees:`, since a review's subject is one branch coming over rather than a
+set of worktrees being compared.
+
 The default name is stamped to the second, so a re-run never eats the last
 report; a name you pass is yours, and is overwritten. The path is optional, so
 a flag may follow `--md` — `commits --md --topo` writes the default name *and*
@@ -501,9 +508,14 @@ they're most of the table — so they're dropped by default. The commits they
 joined all stay either way: only the merge's own row goes, and the marks are
 untouched. `--merges` puts those rows back.
 
-`--no-merges` is retired — it named the drop back when merges were kept by
-default, so it now has nothing left to ask for. Typing it says so and points at
-`--merges`.
+`--no-merges` does not exist **here** — it named the drop back when merges were
+kept by default, so in `commits` it has nothing left to ask for. Typing it is an
+unknown-argument error, like any flag that was never there.
+
+It is a real flag under [`merge --review`](#--review), where the default is the
+other way round: a review range is bounded by the merge about to happen, so a
+merge inside it is the cargo. The guard follows the actual default rather than
+being unconditional, so the message never claims a drop that isn't happening.
 
 ### Filtering the rows
 
@@ -660,8 +672,8 @@ Cost in git calls is linear and cheap: one `git log` for the rows, plus one
 
 `--date` and its bounds compare the date the table prints, the **author** date.
 git's own `--since`/`--until` filter on *committer* dates and would quietly
-disagree with the column, so git-wt does the comparison itself and rejects
-those two spellings with a pointer to `--date-since`/`--date-until`.
+disagree with the column, so git-wt does the comparison itself. Those two
+spellings are not flags here — use `--date-since`/`--date-until`.
 
 **Days and times.** The column shows a day, but the rows are ordered by the
 full timestamp — commits from one day sort by time of day, so a busy afternoon
@@ -815,8 +827,8 @@ asking otherwise says so.
 
 ### Words and options
 
-The five verb-ish words take an **optional `--`**, plus a short form — `abort`,
-`--abort` and `-a` are the same thing:
+The verb-ish words take an **optional `--`**, and all but one a short form —
+`abort`, `--abort` and `-a` are the same thing:
 
 | Word | Short | Does |
 |---|---|---|
@@ -825,9 +837,14 @@ The five verb-ish words take an **optional `--`**, plus a short form — `abort`
 | `ours` | `-o` | On a conflicting hunk, keep worktree N's side |
 | `theirs` | `-t` | On a conflicting hunk, take the source's side |
 | `dry-run` | `-d` | Report whether it would merge; change nothing |
+| `review` | — | Report the verdict **and** the commits it would bring; change nothing |
 
 These words win over a branch of the same name, so to merge a branch actually
 called `theirs`, spell it `heads/theirs`.
+
+`review` is the one with no short form, deliberately: every letter it could
+take is already a `commits` flag on the far side of the handoff, and `--review`
+is where merge stops reading.
 
 The flags that mirror git's own spelling keep their dashes, so muscle memory
 carries over:
@@ -892,6 +909,97 @@ there is no commit; `--ff-only` and `-f` gate whether the merge may run at all,
 and nothing runs. (In particular `merge-tree` resolves in memory and never
 fast-forwards, so `--ff-only` could not be honored even in principle.) A side is
 allowed, since it changes the answer.
+
+### `--review`
+
+`dry-run` answers *would this merge?* `--review` answers *what would it bring?*
+— the same verdict as a header, then the commits about to land. It merges
+nothing either.
+
+```sh
+git-wt 1,2 merge --review          # what would 2 bring into 1?
+git-wt 1,2 merge --review -f       # + the files under each commit
+git-wt 1,2 merge --review -n 5 --author nino
+```
+
+```
+$ git-wt 1,2 merge --review
+feat/login -> main   3 commits, merges cleanly
+
+commit   author  date        main  subject
+9c3237e  Nino    2026-07-19   ·    fix: six review findings
+267a002  Nino    2026-07-19   ≈    refactor: --matched-files is --match-only
+2c7b804  Nino    2026-07-19   ·    fix: --filename missed the merges
+```
+
+This is the question `commits` could already answer, in a different command and
+a **reversed argument order** — `git-wt 2,1 commits` for a merge you'd spell
+`1,2`. `merge` reads dest-first, `commits` reads column order. `--review` takes
+*merge's* order and does the translation, so you never do it in your head.
+
+Exit codes are `dry-run`'s: **0** clean, **1** conflict with the paths listed.
+
+```sh
+if git-wt 1,2 merge --review; then git-wt 1,2 merge; fi
+```
+
+#### The one column is the destination's
+
+Every row is in the source by definition — the range is "what the source has
+that the destination lacks" — so a source column would be a `✓` on every row,
+repeating the range's own definition. The destination's column is the useful
+one, and it has two answers:
+
+| Mark | Meaning |
+|---|---|
+| `·` | Genuinely new to the destination |
+| `≈` | Its **patch** is already there, under a different sha |
+
+`≈` is what a cherry-picked hotfix leaves behind. Pick a fix straight from
+`feat/login` onto `main` and `main` holds that patch under a new sha, while
+`feat/login` keeps the original — which is still absent *by sha*, so the merge
+still lists it. Without the mark that row reads as work about to land; in fact
+it has landed, and the merge will resolve it to a no-op or conflict against the
+copy. Telling those apart is what a review is for.
+
+A merge commit carries no patch of its own, so it can never be `≈` and
+`--review --pick-id` leaves its cell empty. That is the column declining to
+speak about merges, not a missing answer.
+
+#### It inherits the `commits` flags
+
+`--review` **ends merge's own flags**. Everything after it is a `commits` flag,
+passed through untouched — which is the only way both commands keep the letters
+they share:
+
+```sh
+git-wt 1,2 merge --review -f     # --files (NOT --force: merge never sees it)
+git-wt 1,2 merge --review -fn 5  # bundles, like commits
+git-wt 1,2 merge --review --filename api.php
+```
+
+So put merge's own options *before* `--review` and they are an error, not a
+silent claim — `merge -f --review` would otherwise have set force before
+`--review` was ever read. And a merge option typed *after* it says which:
+
+```
+$ git-wt 1,2 merge --review --dry-run
+error: '--dry-run' and '--review' answer the same question
+hint: '--review' already reports the verdict '--dry-run' prints, plus the commits behind it
+```
+
+Two `commits` flags are refused as well, though: `--all` and `--union`. Both
+name a row *source*, and a review's is already the range. (`-a` is `--all`, so
+it goes under that name; `-fn 5` is the bundle that works here.)
+
+**Merge commits are shown**, unlike in `commits` — a review range is bounded by
+the merge about to happen, so a merge inside it is the cargo rather than the
+noise it is on a long-lived branch. `--review --no-merges` drops them, and it
+is a real flag here for exactly that reason.
+
+A merge already in progress needs no special case: it has not committed, so the
+destination is still where it was and the range still names what has yet to
+land. `--review` reports before that check, like `dry-run`.
 
 Merges never open an editor: without `-m`, git's default message is taken as-is.
 A destination with uncommitted changes to **tracked** files is refused without
@@ -1088,6 +1196,10 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 merge theirs` | Merge, letting 2 win every collision (`-X theirs`) |
 | `git-wt 1,2 merge ours` | Merge, letting 1 win every collision (`-X ours`) |
 | `git-wt 1,2 merge dry-run` | Report whether it would merge; change nothing |
+| `git-wt 1,2 merge --review` | The verdict **plus** the commits it would bring; change nothing |
+| `git-wt 1,2 merge --review -f` | Same, with each commit's files (`-f` is `--files` past `--review`) |
+| `git-wt 1,2 merge --review --no-merges` | Drop the merge rows a review keeps by default |
+| `git-wt 1 merge feat/x --review` | Review a branch source; the positional still belongs to `merge` |
 | `git-wt 1 merge continue` | Conclude a conflicted merge (`--continue`, `-c`) |
 | `git-wt 1 merge abort` | Undo a conflicted merge (`--abort`, `-a`) |
 | `git-wt 1 merge 2` | `merge takes a worktree list: 'git-wt 1,2 merge' (or use 'heads/2' for a branch of the same name)` |
@@ -1145,7 +1257,7 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2,3 commits` | Same, cut at the earliest commit *any* other branch is missing; one more check column |
 | `git-wt 2 commits` | Worktree 2's own log — one branch, no check columns |
 | `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
-| `git-wt 1,2 commits --union` | Rows from both branches, whole logs, not just 1's range (also `--any`) |
+| `git-wt 1,2 commits --union` | Rows from both branches, whole logs, not just 1's range |
 | `git-wt 1,2 commits --all` (`-a`) | Worktree 1's whole log, no cut at the divergence; other branches stay check columns |
 | `git-wt 1,2,3 commits --topo` | Group each branch's commits instead of interleaving by date |
 | `git-wt 1,2 commits --merges` | Keep merge rows; they're dropped by default |
@@ -1168,17 +1280,17 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits --commit-since 5568a21` | Commit `5568a21` and everything after it |
 | `git-wt 1,2 commits --commit-until HEAD~3` | `HEAD~3` and everything it can reach |
 | `git-wt 1,2 commits --date '>=2026-01-01'` | Error — no operators in `--date`; use `--date-since` |
-| `git-wt 1,2 commits --from 5568a21` | Error — `--commit-since` takes a commit, `--date-since` takes a date |
-| `git-wt 1,2 commits --since 2026-01-01` | Error — git's word; use `--date-since` |
+| `git-wt 1,2 commits --from 5568a21` | Error — unknown argument; `--commit-since` takes a commit, `--date-since` a date |
+| `git-wt 1,2 commits --since 2026-01-01` | Error — unknown argument; `--date-since` is the flag here |
 | `git-wt 1,2 commits --commit-since zzz9` | Error `--commit-since: no commit 'zzz9'` |
 | `git-wt 1,2 commits` (empty branch) | `no commits on <worktree 1>`, exit 0 |
 | `git-wt 1,1 commits` | Error `worktree #1 listed twice` |
 | `git-wt 1,2 commits -n 0` | Error `-n 0 would show nothing` |
 | `git-wt 1,2 commits --stat` | Error — unknown argument; `commits` takes no git flags |
-| `git-wt 1,2 commits --no-merges` | Error — merges are dropped already; `--merges` keeps them |
-| `git-wt 1,2 commits --match-only` | Error — `--filename` already cuts the block; `--all-files` widens it |
+| `git-wt 1,2 commits --no-merges` | Error — unknown argument here; merges are dropped already, and `--merges` keeps them |
+| `git-wt 1,2 commits --match-only` | Error — unknown argument; `--filename` already cuts the block, `--all-files` widens it |
 | `git-wt 1,2 commits --all-files` | Error — needs a `--filename` to widen |
-| `git-wt 1,2 commits --grep x` | Error — git's word; use `--message` |
+| `git-wt 1,2 commits --grep x` | Error — unknown argument; `--message` is the flag here |
 
 ### Multi-target — `git-wt <N>,<N>[,<N>] meld`
 
@@ -1266,6 +1378,11 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | `git-wt 1,2 merge ours theirs` | `ours and theirs conflict` |
 | `git-wt 1 merge theirs continue` | `continue takes no merge options` + why, and the abort/redo route |
 | `git-wt 1,2 merge dry-run --no-ff` | `dry-run takes no merge options` |
+| `git-wt 1,2 merge -f --review` | `review takes no merge options (got -f)` — it was claimed before `--review` was read |
+| `git-wt 1,2 merge --review --dry-run` | `'--dry-run' and '--review' answer the same question` |
+| `git-wt 1,2 merge --review --squash` | `'--squash' shapes a merge commit` + drop-one hint |
+| `git-wt 1,2 merge --review --all` | `no '--all' under '--review'` — the rows are the range `dest..src` |
+| `git-wt 1,2 merge --review -a` | Same; `-a` is `--all`, refused under its full name |
 | `git-wt 1,2 merge dry-run` (git < 2.38) | `dry-run needs git 2.38 or newer (git merge-tree --write-tree)` |
 | `git-wt merged` (bare word) | `unknown command 'merged'; use 'git-wt 1 merged' or 'git-wt 1,2 merged'` |
 | `git-wt 1 merged 2` | `merged takes a worktree list: 'git-wt 1,2 merged' (or use 'heads/2' for a branch of the same name)` |

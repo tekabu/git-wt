@@ -39,6 +39,26 @@ pub(crate) fn md_cell(s: &str) -> String {
     s.replace('\\', "\\\\").replace('|', "\\|")
 }
 
+/// What the report calls itself, since two commands render through `write_md`
+/// and a review is not a `commits` run: its heading names the merge, and its
+/// `labels` list is the branch coming over rather than worktrees being
+/// compared. The mark column is named by `names`, as ever.
+pub(crate) struct MdHead {
+    pub(crate) title: &'static str,
+    /// The word before the `labels` list.
+    pub(crate) labels: &'static str,
+}
+
+impl MdHead {
+    pub(crate) fn commits() -> Self {
+        MdHead { title: "git-wt commits", labels: "Worktrees" }
+    }
+
+    pub(crate) fn review() -> Self {
+        MdHead { title: "git-wt merge --review", labels: "Merging" }
+    }
+}
+
 /// Write the table as a markdown file, and say where it went.
 ///
 /// Subjects are never truncated here: a file has no right edge to run out of,
@@ -54,26 +74,41 @@ pub(crate) fn write_md(
     equiv: &[HashSet<String>],
     picks: Option<&HashMap<String, String>>,
     cmd: &str,
+    head: &MdHead,
 ) -> Result<(), String> {
     let mut out = String::new();
-    out.push_str("# git-wt commits\n\n");
+    // Named by the caller, because `merge --review` renders through here too:
+    // a heading saying `commits` would contradict the Command line two lines
+    // below it, and its `labels` is one branch being merged rather than the
+    // worktrees a comparison is between.
+    out.push_str(&format!("# {}\n\n", head.title));
     out.push_str(&format!("- Command: `{}`\n", md_cell(cmd)));
     // The labels, not the column names: one worktree has no mark columns, and
     // the report still has to say whose log this is.
-    out.push_str(&format!("- Worktrees: {}\n", labels.iter()
+    out.push_str(&format!("- {}: {}\n", head.labels, labels.iter()
         .map(|n| format!("`{}`", md_cell(n)))
         .collect::<Vec<_>>()
         .join(", ")));
     out.push_str(&format!("- Commits: {}\n", rows.len()));
     // The glyphs are the whole content of the table; a reader who was not at
-    // the terminal has nowhere else to learn them. '≈' is named only when the
-    // table can carry it -- see the same rule in render_commits. No columns,
-    // no glyphs: a one-worktree report has nothing to explain.
+    // the terminal has nowhere else to learn them. Each is named only when the
+    // table can carry it -- the same rule, and the same two predicates, as
+    // render_commits. '✓' asks the rows rather than the sets, because a
+    // `merge --review` table is the range its one column is *missing*: the set
+    // is full and holds none of these rows. No columns, no glyphs: a
+    // one-worktree report has nothing to explain.
     if !names.is_empty() {
+        let mut legend: Vec<&str> = Vec::new();
+        if rows.iter().any(|r| sets.iter().any(|s| s.contains(&r.sha))) {
+            legend.push("`✓` has the commit");
+        }
         if equiv.iter().any(|e| !e.is_empty()) {
-            out.push_str("- Legend: `✓` has the commit · `≈` has the same patch under another sha · `·` has neither\n");
-        } else {
-            out.push_str("- Legend: `✓` has the commit · `·` has neither\n");
+            legend.push("`≈` has the same patch under another sha");
+        }
+        // '·' is "neither of the above", so on its own it names nothing.
+        if !legend.is_empty() {
+            legend.push("`·` has neither");
+            out.push_str(&format!("- Legend: {}\n", legend.join(" · ")));
         }
     }
     if picks.is_some() {

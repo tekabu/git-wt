@@ -1423,6 +1423,183 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// `merge --review`'s range, on the case that regresses silently.
+    ///
+    /// `--review` shows `dest..src` and keeps merge commits, so an inherited
+    /// `--filename` lands on exactly the bug commit `2c7b804` was written for:
+    /// `git log -- <path>` prunes merges, so a merge whose block lists thirty
+    /// matching files used to match nothing. The `commits` suite pins that over
+    /// a whole branch; this pins it over a range, which is where a future
+    /// narrowing of the review window would quietly undo it.
+    #[test]
+    fn a_review_range_matches_the_merge_that_carried_the_files() {
+        let tmp =
+            std::env::temp_dir().join(format!("git-wt-reviewpath-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2026-07-17T10:00:00")
+                .env("GIT_COMMITTER_DATE", "2026-07-17T10:00:00")
+                .env("GIT_MERGE_AUTOEDIT", "no")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+        }
+        fn write(dir: &std::path::Path, path: &str, text: &str) {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        write(&tmp, "base.txt", "base");
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "base"]);
+
+        // The review source: a branch that merged a sub-branch into itself, so
+        // the range `main..release` carries a merge commit.
+        git(&tmp, &["checkout", "--quiet", "-b", "release"]);
+        git(&tmp, &["checkout", "--quiet", "-b", "feature"]);
+        write(&tmp, "app/Expense/Report.php", "x");
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "add expense report"]);
+        git(&tmp, &["checkout", "--quiet", "release"]);
+        git(&tmp, &["merge", "--no-ff", "-m", "merge-expense", "feature"]);
+        // One more on the source, so the range is not merely the merge.
+        write(&tmp, "notes.txt", "n");
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "notes"]);
+        git(&tmp, &["checkout", "--quiet", "main"]);
+
+        let refs = vec!["release".to_string()];
+        // What `--review` runs: the source's log, cut at the destination.
+        let subjects = |merges: bool| -> Vec<String> {
+            commit_rows(&tmp, &refs, Some("main"), None, Order::Date, ISO, !merges, false)
+                .unwrap()
+                .iter()
+                .map(|r| r.text.clone())
+                .collect()
+        };
+
+        // The merges default flips under --review, and both directions are
+        // asserted: a test that only pinned the new one would pass just as well
+        // against an inverted flag.
+        let kept = subjects(true);
+        assert!(kept.contains(&"merge-expense".to_string()), "{kept:?}");
+        assert_eq!(kept.len(), 3, "{kept:?}");
+        let dropped = subjects(false);
+        assert!(!dropped.contains(&"merge-expense".to_string()), "{dropped:?}");
+        assert_eq!(dropped.len(), 2, "{dropped:?}");
+        // The destination's own history is never in the range, either way.
+        for s in [&kept, &dropped] {
+            assert!(!s.contains(&"base".to_string()), "{s:?}");
+        }
+
+        // The filter, over the rows the range produced: the merge matches
+        // because its block will list the file, which is the whole fix.
+        let hits = path_shas(&tmp, &refs, "expense").unwrap();
+        let by_sha: HashMap<String, String> = commit_rows(
+            &tmp, &refs, Some("main"), None, Order::Date, ISO, false, false,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.sha, r.text))
+        .collect();
+        let matched: HashSet<&String> = by_sha
+            .iter()
+            .filter(|(sha, _)| hits.contains(*sha))
+            .map(|(_, text)| text)
+            .collect();
+        assert!(matched.contains(&"merge-expense".to_string()), "{matched:?}");
+        assert!(matched.contains(&"add expense report".to_string()), "{matched:?}");
+        assert!(!matched.contains(&"notes".to_string()), "{matched:?}");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The destination column's `≈`, which is the reason `--review` has a
+    /// column at all: a commit cherry-picked onto the destination is absent
+    /// from it *by sha*, so the range still lists it even though the work has
+    /// landed. `equivalents` indexes by upstream, so the destination's answer
+    /// is entry 0 of `[dest, src]` -- the index `commits_view` truncates to.
+    #[test]
+    fn a_review_marks_the_commit_the_destination_already_cherry_picked() {
+        let tmp =
+            std::env::temp_dir().join(format!("git-wt-reviewpick-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2026-07-17T10:00:00")
+                .env("GIT_COMMITTER_DATE", "2026-07-17T10:00:00")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        std::fs::write(tmp.join("base.txt"), "base\n").unwrap();
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "base"]);
+
+        git(&tmp, &["checkout", "--quiet", "-b", "feature"]);
+        std::fs::write(tmp.join("fix.txt"), "the fix\n").unwrap();
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "the urgent fix"]);
+        let fix = git(&tmp, &["rev-parse", "HEAD"]);
+        std::fs::write(tmp.join("later.txt"), "later\n").unwrap();
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "later work"]);
+
+        // The hotfix path: the fix is picked straight onto main, so main holds
+        // the patch under a new sha while feature keeps the original.
+        //
+        // main commits first so the pick lands on a different parent. Onto the
+        // same parent, with this fixture's pinned dates, the copy would hash to
+        // the very same sha -- a real cherry-pick, and not the case this test
+        // is about.
+        git(&tmp, &["checkout", "--quiet", "main"]);
+        std::fs::write(tmp.join("base.txt"), "base\nmoved on\n").unwrap();
+        git(&tmp, &["commit", "--quiet", "-am", "main moves on"]);
+        git(&tmp, &["cherry-pick", &fix]);
+
+        let rows = commit_rows(
+            &tmp,
+            &["feature".to_string()],
+            Some("main"),
+            None,
+            Order::Date,
+            ISO,
+            false,
+            false,
+        )
+        .unwrap();
+        // Absent by sha, so the merge would still bring it: that is why the
+        // row is there to be marked in the first place.
+        let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+        assert!(rows.iter().any(|r| r.sha == fix), "{subjects:?}");
+
+        let equiv = equivalents(&tmp, &["main".to_string(), "feature".to_string()]);
+        let dest = &equiv[0];
+        assert!(dest.contains(&fix), "the picked commit should be '≈' in main");
+        let later = rows.iter().find(|r| r.text == "later work").unwrap();
+        assert!(!dest.contains(&later.sha), "genuinely new work should be '·'");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn no_merges_drops_only_the_merge_commits() {
         let tmp = std::env::temp_dir().join(format!("git-wt-merges-test-{}", std::process::id()));

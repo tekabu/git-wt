@@ -1,10 +1,11 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use crate::cmd::commits::{cmd_commits_review, ReviewCtx};
 use crate::ui::confirm;
 use crate::git::{git_cmd, git_quiet, git_run, git_run_no_editor, git_stdout};
 use crate::ui::{color_enabled, paint, GREEN};
-use crate::worktree::{label, leaf_of, Worktree};
+use crate::worktree::{label, leaf_of, ref_of, Worktree};
 
 // ---------------------------------------------------------------------------
 // Merge: git-wt <N>,<M> merge | --continue | --abort
@@ -54,6 +55,14 @@ pub(crate) struct MergeArgs {
     pub(crate) force: bool,
     pub(crate) side: Option<Side>,
     pub(crate) dry_run: bool,
+    /// `--review` and everything typed after it, untouched.
+    ///
+    /// `Some(tail)` is the flag; the tail is handed to `commits`' parser
+    /// verbatim, which is the whole point -- `merge` and `commits` claim the
+    /// same short letters for different things (`-f` is force here and files
+    /// there), so the only way both keep their meanings is for `merge` to stop
+    /// looking. `Some(vec![])` is a bare `--review`.
+    pub(crate) review: Option<Vec<String>>,
 }
 
 /// Parse the words after a `merge` verb, in either target form.
@@ -81,9 +90,17 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
     let (mut no_ff, mut ff_only, mut squash, mut force, mut dry_run) =
         (false, false, false, false, false);
 
+    let mut review: Option<Vec<String>> = None;
+
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            // Ends merge's parsing. Everything left belongs to `commits`, which
+            // is why nothing below this line ever sees it.
+            "review" | "--review" => {
+                review = Some(it.by_ref().cloned().collect());
+                break;
+            }
             "continue" | "--continue" | "-c" => set_merge_op(&mut op, MergeOp::Continue)?,
             "abort" | "--abort" | "-a" => set_merge_op(&mut op, MergeOp::Abort)?,
             "ours" | "--ours" | "-o" => set_side(&mut side, Side::Ours)?,
@@ -108,6 +125,33 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
                 }
                 source = Some(s.to_string());
             }
+        }
+    }
+
+    // `--review` merges nothing, so every merge option is meaningless under it.
+    // Saying so is not pedantry: they were *claimed* before `--review` was
+    // reached -- `merge -f --review` has already set force, and `-a` an abort --
+    // so accepting them silently would report on a merge shaped by flags that
+    // never ran. The fix is always the same, and it is a keystroke: move them
+    // after `--review`, where they read as the `commits` flags they look like.
+    if review.is_some() {
+        let mut bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
+        if dry_run {
+            bad.push("dry-run");
+        }
+        if let Some(sd) = side {
+            bad.push(sd.word());
+        }
+        if let Some(o) = &op {
+            bad.push(if *o == MergeOp::Continue { "continue" } else { "abort" });
+        }
+        if !bad.is_empty() {
+            return Err(format!(
+                "review takes no merge options (got {})\n\
+                 hint: '--review' ends merge's own flags -- anything meant for the \
+                 commit table goes after it, e.g. 'merge --review -f'",
+                bad.join(", ")
+            ));
         }
     }
 
@@ -152,6 +196,7 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
             force: false,
             side: None,
             dry_run: false,
+            review: None,
         });
     }
 
@@ -168,7 +213,10 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
         "merge needs a source: 'git-wt <N>,<M> merge' \
          (or 'git-wt <N> merge <BRANCH>', or continue/abort)",
     )?;
-    Ok(MergeArgs { op: MergeOp::Start(source), message, no_ff, ff_only, squash, force, side, dry_run })
+    Ok(MergeArgs {
+        op: MergeOp::Start(source),
+        message, no_ff, ff_only, squash, force, side, dry_run, review,
+    })
 }
 
 /// Record `ours`/`theirs`. They are opposite answers to one question, so asking
@@ -286,6 +334,14 @@ pub(crate) fn cmd_merge(
         return merge_dry_run(dir, &src_branch, &label(dest), color);
     }
 
+    // Same reasoning, and the same position: --review only reads. It reports
+    // ahead of the in-progress guard too, because a stopped merge has not
+    // committed -- HEAD is still where it was when the merge began, so
+    // `dest..src` still names exactly the commits that have yet to land.
+    if let Some(tail) = &args.review {
+        return cmd_merge_review(root, trees, dest, dir, &src_branch, tail, color);
+    }
+
     if in_progress {
         // `ours`/`theirs` are applied while the merge is computed, so they can't
         // join one that has already stopped. Redoing it from a clean state is
@@ -383,6 +439,82 @@ pub(crate) fn cmd_merge(
     Ok(())
 }
 
+/// `merge --review`: what this merge would bring over, and whether it lands.
+///
+/// A header from the same `merge-tree` probe `--dry-run` uses, then the commit
+/// table for `dest..src`. The order is the point -- a reviewer wants the verdict
+/// before the list -- and it is why `merge_probe` exists separately from
+/// `merge_dry_run`: a conflict has to be held as a value while the table
+/// prints, where an `Err` would have ended the command before it.
+///
+/// Exit codes match `--dry-run`: 0 clean, 1 conflict, so
+/// `if git-wt 1,2 merge --review; then` keeps its meaning.
+fn cmd_merge_review(
+    root: &Path,
+    trees: &[Worktree],
+    dest: &Worktree,
+    dir: &Path,
+    src: &str,
+    tail: &[String],
+    color: bool,
+) -> Result<(), String> {
+    let dest_ref = ref_of(dest)?;
+    let dest_label = label(dest);
+    let verdict = merge_probe(dir, src)?;
+
+    // The range's own size, not the table's: filters cut what is shown, and the
+    // header is answering what the merge would carry.
+    let range = format!("{dest_ref}..{src}");
+    let n: usize = git_stdout(dir, &["rev-list", "--count", &range])?
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    // Nothing to bring over means there is no merge to have a verdict about:
+    // "0 commits, merges cleanly" is true only the way an empty statement is,
+    // and reads as though a merge just ran. The one fact worth printing is
+    // that the destination already has everything, in `merged`'s words.
+    //
+    // Still a header rather than an early return, so the tail is parsed first:
+    // `merge --review --bogus` has to be an error whether or not the range
+    // happens to be empty, and returning here would exit 0 on a rejected flag.
+    let plural = if n == 1 { "commit" } else { "commits" };
+    let how = match &verdict {
+        MergeVerdict::Clean => paint("merges cleanly", GREEN, color),
+        MergeVerdict::Conflict(_) => "does NOT merge cleanly".to_string(),
+    };
+    let header = if n == 0 {
+        format!("{} {src} is already in {dest_label}", paint("Merged", GREEN, color))
+    } else {
+        format!("{src} -> {dest_label}   {n} {plural}, {how}")
+    };
+
+    cmd_commits_review(
+        root,
+        trees,
+        tail,
+        ReviewCtx {
+            dest_ref: &dest_ref,
+            dest_label: &dest_label,
+            src_ref: src,
+            src_label: src,
+            header: &header,
+        },
+    )?;
+
+    match verdict {
+        MergeVerdict::Clean => Ok(()),
+        MergeVerdict::Conflict(files) => {
+            let mut m = format!("{} conflicting {}:\n", files.len(), if files.len() == 1 { "path" } else { "paths" });
+            for f in &files {
+                m.push_str(&format!("  {f}\n"));
+            }
+            m.push_str("hint: nothing was changed — this was a review\n");
+            m.push_str("hint: 'ours' or 'theirs' would settle these automatically");
+            Err(m)
+        }
+    }
+}
+
 /// Report whether `src` would merge into the worktree's HEAD, touching nothing.
 ///
 /// `git merge-tree --write-tree` does the whole job: it resolves the merge into
@@ -390,29 +522,17 @@ pub(crate) fn cmd_merge(
 /// and nothing to clean up afterwards. It needs git 2.38+, which is checked by
 /// running it rather than by parsing `git --version`.
 pub(crate) fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> Result<(), String> {
-    let out = git_cmd(dir, &["merge-tree", "--write-tree", "--name-only", "HEAD", src])
-        .output()
-        .map_err(|e| format!("failed to run git: {e}"))?;
-
-    match out.status.code() {
-        Some(0) => {
+    match merge_probe(dir, src)? {
+        MergeVerdict::Clean => {
             eprintln!(
                 "{} {src} merges into {into} cleanly",
                 paint("Clean", GREEN, color)
             );
             Ok(())
         }
-        // Conflicts. stdout is the resulting tree's oid, then the paths that
-        // collided. Exiting nonzero keeps `if git-wt 1,2 merge dry-run; then`
-        // meaningful, and mirrors what a real merge does on a conflict.
-        Some(1) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let files: Vec<String> = stdout
-                .lines()
-                .skip(1)
-                .filter(|l| !l.trim().is_empty())
-                .map(str::to_string)
-                .collect();
+        // Exiting nonzero keeps `if git-wt 1,2 merge dry-run; then` meaningful,
+        // and mirrors what a real merge does on a conflict.
+        MergeVerdict::Conflict(files) => {
             let mut m = format!("{src} does NOT merge into {into} cleanly\n");
             for f in &files {
                 m.push_str(&format!("  {f}\n"));
@@ -420,6 +540,50 @@ pub(crate) fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> R
             m.push_str("hint: nothing was changed — this was a dry run\n");
             m.push_str("hint: 'ours' or 'theirs' would settle these automatically");
             Err(m)
+        }
+    }
+}
+
+/// What the probe found: a merge that resolves, or the paths that collide.
+///
+/// Separate from any wording because two callers need the same answer in
+/// opposite shapes: `merge_dry_run` turns a conflict into an `Err` and lets the
+/// caller print it, while `--review` has to print its header and table *before*
+/// deciding the exit code. An `Err` cannot be held open like that.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum MergeVerdict {
+    Clean,
+    Conflict(Vec<String>),
+}
+
+/// Would `src` merge into the worktree's HEAD? Touches nothing.
+///
+/// `git merge-tree --write-tree` does the whole job: it resolves the merge into
+/// a tree object and exits 1 when a path conflicts, with no index, no checkout
+/// and nothing to clean up afterwards. It needs git 2.38+, which is checked by
+/// running it rather than by parsing `git --version`.
+pub(crate) fn merge_probe(dir: &Path, src: &str) -> Result<MergeVerdict, String> {
+    let out = git_cmd(dir, &["merge-tree", "--write-tree", "--name-only", "HEAD", src])
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+
+    match out.status.code() {
+        Some(0) => Ok(MergeVerdict::Clean),
+        // stdout is the resulting tree's oid, then the paths that collided,
+        // then a blank line and git's own commentary ("Auto-merging f",
+        // "CONFLICT (content): ..."). The blank line is the only boundary, so
+        // the list has to stop at it -- taking every non-empty line instead
+        // reported those messages as though they were paths.
+        Some(1) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            Ok(MergeVerdict::Conflict(
+                stdout
+                    .lines()
+                    .skip(1)
+                    .take_while(|l| !l.trim().is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            ))
         }
         _ => {
             let err = String::from_utf8_lossy(&out.stderr);
@@ -628,6 +792,59 @@ mod tests {
         assert!(merge_args(&["2", "dry-run", "theirs"]).is_ok());
     }
 
+
+    /// The handoff: `--review` ends merge's parsing, so the tail keeps its
+    /// `commits` meanings. `-f` is the one that matters -- it is force here and
+    /// files there, and getting it wrong runs a merge instead of printing a
+    /// table.
+    #[test]
+    fn review_hands_the_tail_over_untouched() {
+        let a = merge_args(&["2", "--review"]).unwrap();
+        assert_eq!(a.review.as_deref(), Some(&[][..]));
+        assert!(!a.force);
+
+        // Every one of these is a merge flag before --review and a commits flag
+        // after it. None of them is claimed.
+        let a = merge_args(&["2", "--review", "-f", "-n", "5", "-af", "-m", "x", "-d", "1"])
+            .unwrap();
+        assert!(!a.force && !a.dry_run && a.message.is_none());
+        assert_eq!(
+            a.review.unwrap(),
+            ["-f", "-n", "5", "-af", "-m", "x", "-d", "1"]
+        );
+
+        // The bare word, like every other verb-ish word in this grammar.
+        assert!(merge_args(&["2", "review"]).unwrap().review.is_some());
+
+        // The positional source is exempt: it is not a flag, and merge still
+        // needs it. Only one, as ever.
+        let a = merge_args(&["feat/x", "--review", "-f"]).unwrap();
+        assert_eq!(a.op, MergeOp::Start("feat/x".into()));
+        assert_eq!(a.review.unwrap(), ["-f"]);
+        // A second positional after --review is the commits parser's problem,
+        // not a 'too many arguments' here -- which is the handoff working.
+        assert_eq!(merge_args(&["1", "2", "--review"]).unwrap_err(), "too many arguments\nTry 'git-wt --help'");
+    }
+
+    /// A merge flag *before* `--review` was already claimed by the time the
+    /// handoff was reached, so accepting it would report on a merge shaped by
+    /// options that never ran.
+    #[test]
+    fn review_rejects_merge_flags_typed_before_it() {
+        for (args, want) in [
+            (vec!["2", "-f", "--review"], "-f"),
+            (vec!["2", "-m", "x", "--review"], "-m"),
+            (vec!["2", "--squash", "--review"], "--squash"),
+            (vec!["2", "dry-run", "--review"], "dry-run"),
+            (vec!["2", "theirs", "--review"], "theirs"),
+            (vec!["-a", "--review"], "abort"),
+        ] {
+            let e = merge_args(&args).unwrap_err();
+            assert!(e.starts_with("review takes no merge options"), "{args:?}: {e}");
+            assert!(e.contains(want), "{args:?}: {e}");
+            assert!(e.contains("ends merge's own flags"), "{args:?}: {e}");
+        }
+    }
 
     #[test]
     fn merge_rejects_bad_combinations() {

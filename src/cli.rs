@@ -210,7 +210,12 @@ pub(crate) fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Re
             // it: there is nothing for `continue` to take a source from.
             // Check this before the count so an over-long list with `continue`
             // gets the more useful resume-word message.
-            if let Some(word) = rest[1..].iter().find_map(|a| resume_word(a)) {
+            // Only what `merge` itself will parse: `--review` ends that, and
+            // past it `-c` is `--commits`, not `continue`.
+            let mut mine = rest[1..]
+                .iter()
+                .take_while(|a| *a != "review" && *a != "--review");
+            if let Some(word) = mine.find_map(|a| resume_word(a)) {
                 return Err(format!(
                     "'{word}' takes no source, so a worktree list has nothing to name\n\
                      hint: 'git-wt {n} merge {word}'",

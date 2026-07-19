@@ -44,7 +44,7 @@ if [ "$native" = 1 ]; then
   echo "Running unit + live tests natively (no Docker)..."
   cd "$here"
   cargo test --release
-  exec ./test.sh
+  exec ./test-mac.sh
 fi
 
 command -v docker >/dev/null 2>&1 || {
@@ -55,7 +55,7 @@ echo "Building image '$image' (Linux)..."
 docker build ${build_args[@]+"${build_args[@]}"} -t "$image" "$here"
 
 if [ "$mode" = "shell" ]; then
-  echo "Dropping into container shell. Run: cargo test --release && ./test.sh"
+  echo "Dropping into container shell. Run: cargo test --release && ./test-mac.sh"
   exec docker run --rm -it "$image" bash
 fi
 

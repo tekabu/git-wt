@@ -1281,17 +1281,22 @@ cd "$APP" || exit 1
 #   lonely  no upstream at all   (the failure a sweep must survive)
 #   detached                     (skipped: no branch to sync)
 SR="$ROOT/syn/origin.git"; SA="$ROOT/syn/app"; mkdir -p "$ROOT/syn"
-( git init -q --bare "$SR"
+( set -e
+  git init -q --bare "$SR"
   # A bare repo's HEAD is init.defaultBranch: 'master' on stock Linux. Only
   # 'main' is ever pushed here, so a later clone of this origin would resolve
   # HEAD to a ref that does not exist, check out nothing, and leave the second
-  # clone empty. Pin the bare HEAD to the branch that will actually be there.
-  git symbolic-ref HEAD refs/heads/main
+  # clone empty. Pin the bare HEAD to the branch that will actually be there
+  # -- with -C, or it retargets the fixture repo we happen to be standing in.
+  git -C "$SR" symbolic-ref HEAD refs/heads/main
   git clone -q "$SR" "$SA" 2>/dev/null
   cd "$SA"
   git config user.email t@t; git config user.name t
-  git checkout -q -b main 2>/dev/null
-  echo s > s.txt; git add .; git commit -q -m init; git push -q -u origin main
+  # The clone of an empty repo names its unborn branch from the *local*
+  # init.defaultBranch, so it can still land on 'master'. Renaming an unborn
+  # HEAD is a symbolic-ref, not a checkout.
+  git symbolic-ref HEAD refs/heads/main
+  echo s > s.txt; git add s.txt; git commit -q -m init; git push -q -u origin main
   git branch feat-s; git branch lonely
   "$BIN" add feat-s --dirname w-feat-s >/dev/null 2>&1
   git -C "$ROOT/syn/w-feat-s" push -q -u origin feat-s
@@ -1302,7 +1307,8 @@ SR="$ROOT/syn/origin.git"; SA="$ROOT/syn/app"; mkdir -p "$ROOT/syn"
   git clone -q "$SR" "$ROOT/syn/other" 2>/dev/null
   cd "$ROOT/syn/other"
   git config user.email t@t; git config user.name t
-  echo upstream >> s.txt; git commit -q -am "upstream work"; git push -q origin main )
+  echo upstream >> s.txt; git commit -q -am "upstream work"; git push -q origin main ) ||
+  { echo "fixture: sync setup failed -- the pull/push checks below cannot mean anything" >&2; exit 1; }
 
 cd "$SA" || exit 1
 sidx() { "$BIN" list | awk -v b="$1" '$2==b{print $1}'; }

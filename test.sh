@@ -801,9 +801,9 @@ check "commits --message no match"    exit=0 err="no commits match those filters
 check "commits --message needs a term" exit=1 err="--message needs a term" -- "1,$didx" commits --message
 check "commits --message rejects empty" exit=1 err="--message needs a term" -- "1,$didx" commits --message ""
 check "commits --filename needs a term" exit=1 err="--filename needs a term" -- "1,$didx" commits --filename
-# The block is the whole commit by default; --matched-files cuts it to the hits.
-check "commits --matched-files trims"  exit=0 out="onlymain.txt" -- "1,$didx" commits --filename onlymain --all --matched-files
-check "commits --matched-files alone errors" exit=1 err="--matched-files needs" -- "1,$didx" commits --matched-files
+# The block is the whole commit by default; --match-only cuts it to the hits.
+check "commits --match-only trims"     exit=0 out="onlymain.txt" -- "1,$didx" commits --filename onlymain --all --match-only
+check "commits --match-only alone errors" exit=1 err="--match-only needs" -- "1,$didx" commits --match-only
 # The flags these two get confused with, each naming the one that is here.
 check "commits --subject names --message" exit=1 err="--message" -- "1,$didx" commits --subject fix
 check "commits --subject keeps the width" exit=1 err="--subject-width" -- "1,$didx" commits --subject fix

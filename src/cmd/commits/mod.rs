@@ -198,9 +198,9 @@ pub(crate) fn cmd_commits(
     };
     // --filename shows the whole block by default: the filter chose the row,
     // and the block answers what that commit did. On a merge carrying a hundred
-    // files that answer buries the three that matched, so --matched-files cuts
+    // files that answer buries the three that matched, so --match-only cuts
     // it to them -- at the cost of counts that no longer sum to the commit.
-    if args.matched_files {
+    if args.match_only {
         if let Some(t) = &args.filename.as_ref().map(|s| s.to_lowercase()) {
             for files in &mut row_files {
                 files.retain(|f| f.path.to_lowercase().contains(t));

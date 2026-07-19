@@ -30,8 +30,8 @@ pub(crate) fn cmd_commits(
     idxs: &[usize],
     rest: &[String],
 ) -> Result<(), String> {
-    if idxs.len() < 2 {
-        return Err("commits needs 2 or more worktrees, e.g. 'git-wt 1,2,3 commits'".into());
+    if idxs.is_empty() {
+        return Err("commits needs a worktree, e.g. 'git-wt 1,2,3 commits'".into());
     }
     for (i, a) in idxs.iter().enumerate() {
         if idxs[i + 1..].contains(a) {
@@ -60,10 +60,14 @@ pub(crate) fn cmd_commits(
     // so a shared commit inside the range still shows as present in the other
     // columns.
     let row_refs: &[String] = if args.union { &refs } else { &refs[..1] };
+    // One worktree is a log, not a comparison: there is no other branch to be
+    // ahead of, so the rows are that branch's whole history and there are no
+    // mark columns to compute.
+    let solo = refs.len() == 1;
     // The set whose earliest member is the default view's floor: commits the
     // first branch has that at least one other is missing. `None` under --union
     // or --all, where the whole log is the rows and nothing is trimmed.
-    let divergent = if args.union || args.all {
+    let divergent = if solo || args.union || args.all {
         None
     } else {
         let d = divergent_set(root, &refs[0], &refs[1..])?;
@@ -95,7 +99,7 @@ pub(crate) fn cmd_commits(
         git_limit,
         order,
         args.fmt,
-        args.no_merges,
+        !args.merges,
         // The body is fetched only for the filter that reads it: every other
         // run would be paying for text the table never prints.
         args.message.is_some(),
@@ -196,11 +200,11 @@ pub(crate) fn cmd_commits(
     } else {
         Vec::new()
     };
-    // --filename shows the whole block by default: the filter chose the row,
-    // and the block answers what that commit did. On a merge carrying a hundred
-    // files that answer buries the three that matched, so --match-only cuts
-    // it to them -- at the cost of counts that no longer sum to the commit.
-    if args.match_only {
+    // --filename cuts the block to the paths it matched: a merge can carry a
+    // hundred files and match on three, and the whole list buries the answer.
+    // --all-files widens it back to everything the commit touched, which is the
+    // only way the counts sum to the commit again.
+    if !args.all_files {
         if let Some(t) = &args.filename.as_ref().map(|s| s.to_lowercase()) {
             for files in &mut row_files {
                 files.retain(|f| f.path.to_lowercase().contains(t));
@@ -224,7 +228,7 @@ pub(crate) fn cmd_commits(
             // These rows are a slice, and an upper bound or an author filter
             // never widened it -- so the commits being asked about may simply
             // be older than the floor rather than absent.
-            if !args.all && !args.union {
+            if !solo && !args.all && !args.union {
                 // Suggest the lower bound in the vocabulary they were already
                 // speaking: a commit bound is answered by a commit bound.
                 let back = if args.commit_until.is_some() && args.dates.is_empty() {
@@ -241,7 +245,7 @@ pub(crate) fn cmd_commits(
             m
         } else if args.union {
             "no commits".to_string()
-        } else if args.all {
+        } else if solo || args.all {
             format!("no commits on {}", label(&trees[idxs[0]]))
         } else {
             format!("no commits ahead of {}", label(&trees[idxs[0]]))
@@ -253,27 +257,38 @@ pub(crate) fn cmd_commits(
     // A row is checked when the ref's own walk contains it. The walks are whole,
     // like the rows: the marks answer for a branch's entire history, so a row is
     // checked wherever that commit really is.
-    let sets: Vec<HashSet<String>> = refs
-        .iter()
-        .map(|r| ref_shas(root, r, None))
-        .collect::<Result<_, _>>()?;
+    //
+    // Solo has none: a lone column would be a ✓ on every row, which is only the
+    // table repeating that these are that branch's commits.
+    let sets: Vec<HashSet<String>> = if solo {
+        Vec::new()
+    } else {
+        refs.iter()
+            .map(|r| ref_shas(root, r, None))
+            .collect::<Result<_, _>>()?
+    };
 
     // Patch equivalence is what tells "not merged yet" from "already there,
     // under a different sha" -- the difference between work to do and work
     // done, which a bare '·' reports as the same thing. It costs a patch-id
     // walk per ordered pair, so --no-cherry buys the old, cheaper answer back
     // on a repo whose branches have diverged enormously.
-    let equiv = if args.no_cherry {
-        vec![HashSet::new(); refs.len()]
+    // Nothing to be equivalent to with one branch, so solo skips the walk too.
+    let equiv = if solo || args.no_cherry {
+        vec![HashSet::new(); sets.len()]
     } else {
         equivalents(root, &refs)
     };
 
     // Which sha the '≈' is pointing at, asked only when the column will print
     // it: it is a second patch-id walk over the same divergence.
-    let picks = args.pick.then(|| pick_ids(root, &refs));
+    let picks = (args.pick && !solo).then(|| pick_ids(root, &refs));
 
-    let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
+    // Two lists: `labels` is who the table is about, `names` is the mark
+    // columns. They are the same until there is only one worktree, which has a
+    // subject but nothing to compare it against.
+    let labels: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
+    let names: Vec<String> = if solo { Vec::new() } else { labels.clone() };
 
     if let Some(path) = &args.md {
         let file = path.clone().unwrap_or_else(md_filename);
@@ -288,6 +303,7 @@ pub(crate) fn cmd_commits(
             &rows,
             &row_files,
             &row_bodies,
+            &labels,
             &names,
             &sets,
             &equiv,

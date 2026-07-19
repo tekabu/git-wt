@@ -8,7 +8,7 @@ use crate::cmd::merge::{cmd_merge, parse_merge_args, resolve_merge_source, Merge
 use crate::cmd::merged::{cmd_merged, cmd_merged_others};
 use crate::cmd::remove::cmd_remove;
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp};
-use crate::worktree::{current_ref, here_index, label, ref_of, worktrees};
+use crate::worktree::{current_ref, label, ref_of, worktrees};
 
 /// Message for a leading word that is neither a number nor a known verb.
 /// Legacy verb-first forms get a migration hint; branch-like words get an
@@ -73,24 +73,11 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
         "diff" => Err(format!(
             "diff takes a worktree list: 'git-wt {n},<M> diff'"
         )),
-        // The same reading 'merged' gives a single target: N against the
-        // worktree you are standing in. A one-column table would just be
-        // 'git log', so the second column is the one you are already in.
-        "commits" => {
-            let Some(here) = here_index(&trees) else {
-                return Err(format!(
-                    "not inside a worktree, so there is no second branch to compare \
-                     against\nhint: 'git-wt {n},<M> commits' names both"
-                ));
-            };
-            if here == idx {
-                return Err(format!(
-                    "worktree #{n} is the one you are standing in, so the table would \
-                     compare it with itself\nhint: 'git-wt {n},<M> commits' names both"
-                ));
-            }
-            cmd_commits(root, &trees, &[here, idx], &rest[1..])
-        }
+        // A single target is that worktree's own log, nothing else: naming one
+        // branch is asking about one branch, and quietly pulling in the
+        // worktree you happen to be standing in answers a wider question than
+        // was asked. 'git-wt {n},<M> commits' is still how you compare two.
+        "commits" => cmd_commits(root, &trees, &[idx], &rest[1..]),
         "merge" => {
             let args = parse_merge_args(&rest[1..])?;
             if let MergeOp::Start(src) = &args.op {

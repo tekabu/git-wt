@@ -86,20 +86,6 @@ pub(crate) fn ref_of(w: &Worktree) -> Result<String, String> {
     Ok(sha.trim().to_string())
 }
 
-/// The worktree the shell is standing in, if any.
-///
-/// The deepest match wins: `add --dirname` can put one worktree inside
-/// another's tree, and the innermost is the one you are actually in.
-pub(crate) fn here_index(trees: &[Worktree]) -> Option<usize> {
-    let cwd = canon(&std::env::current_dir().ok()?);
-    trees
-        .iter()
-        .enumerate()
-        .filter(|(_, w)| cwd.starts_with(canon(&w.path)))
-        .max_by_key(|(_, w)| canon(&w.path).components().count())
-        .map(|(i, _)| i)
-}
-
 // ---------------------------------------------------------------------------
 // Paths and naming
 // ---------------------------------------------------------------------------

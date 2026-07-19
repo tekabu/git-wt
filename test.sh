@@ -367,14 +367,20 @@ rm -f "$CODE/myapp-feature-login/uncommitted.txt"
 # Same divergence the diff cases built: 'mainside' on main, 'loginside' on
 # feature/login, 'init' shared by both. That makes every cell predictable --
 # one commit per column, and a shared one that must not appear at all.
-# A single target reads like 'merged' does: N against the worktree you are
-# standing in. The suite runs from $APP, which is worktree 1 -- so the rows are
-# main's log and login is the check column.
-check "commits single target"        exit=0 out="mainside" -- "$didx" commits
-check "commits single names both"    exit=0 out="feature/login" -- "$didx" commits
-check "commits single takes flags"   exit=0 out="mainside" -- "$didx" commits --author Test
-# Standing in the one you named, the table would compare it with itself.
-check "commits single self errors"   exit=1 err="standing in" -- 1 commits
+# A single target is that worktree alone: its own log, no check columns and
+# nothing to be ahead of. The worktree you are standing in is not pulled in.
+check "commits single target"        exit=0 out="loginside" -- "$didx" commits
+# No second branch means no mark columns, so the glyph legend goes with them.
+solo="$("$BIN" "$didx" commits 2>/dev/null | grep -c "has commit")"
+soloc="$(fmt_cmd "$didx" commits)"
+if [ "$solo" = 0 ]; then
+  report PASS HAPPY "commits single drops the legend" "$soloc"
+else
+  report FAIL HAPPY "commits single drops the legend" "$soloc" "legend printed with no columns"
+fi
+check "commits single takes flags"   exit=0 out="loginside" -- "$didx" commits --author Test
+# Naming the one you are standing in is a log like any other, not an error.
+check "commits single self is a log" exit=0 out="mainside" -- 1 commits
 
 check "commits heads the columns"    exit=0 out="feature/login" -- "1,$didx" commits
 check "commits lists its own side"   exit=0 out="mainside" -- "1,$didx" commits
@@ -683,7 +689,7 @@ else
 fi
 check "commits rejects --until"       exit=1 err="use '--date-until" -- "1,$didx" commits --until 2026-01-01
 
-# --no-merges drops the bookkeeping rows and keeps the work. Needs a merge with
+# Merges are dropped by default and --merges puts them back. Needs a merge with
 # something to merge: a branch main already contains is "Already up to date"
 # and --no-ff writes no commit at all.
 ( cd "$APP" \
@@ -691,17 +697,20 @@ check "commits rejects --until"       exit=1 err="use '--date-until" -- "1,$didx
   && git commit -q --allow-empty -m "nm-work" \
   && git checkout -q main \
   && git merge --no-ff -q -m "merge-for-nomerges" nm-src )
-check "commits shows merge rows"     exit=0 out="merge-for-nomerges" -- "1,$didx" commits
-check "commits --no-merges drops it" exit=0 err="" -- "1,$didx" commits --no-merges
-nm="$("$BIN" "1,$didx" commits --no-merges 2>/dev/null | grep -c "merge-for-nomerges")"
-nmc="$(fmt_cmd "1,$didx" commits --no-merges)"
+check "commits --merges shows them"  exit=0 out="merge-for-nomerges" -- "1,$didx" commits --merges
+check "commits drops merges"         exit=0 err="" -- "1,$didx" commits
+nm="$("$BIN" "1,$didx" commits 2>/dev/null | grep -c "merge-for-nomerges")"
+nmc="$(fmt_cmd "1,$didx" commits)"
 if [ "$nm" = 0 ]; then
-  report PASS HAPPY "commits --no-merges hides merges" "$nmc"
+  report PASS HAPPY "commits hides merges by default" "$nmc"
 else
-  report FAIL HAPPY "commits --no-merges hides merges" "$nmc" "merge row survived --no-merges"
+  report FAIL HAPPY "commits hides merges by default" "$nmc" "merge row survived the default"
 fi
+# --no-merges is retired: the default already drops them, and the error says so.
+check "commits --no-merges is gone"  exit=1 err="no '--no-merges'" -- "1,$didx" commits --no-merges
+check "commits --no-merges names fix" exit=1 err="--merges" -- "1,$didx" commits --no-merges
 # The work the merge joined must survive: only the merge row goes.
-check "commits --no-merges keeps work" exit=0 out="mainside" -- "1,$didx" commits --no-merges
+check "commits default keeps work"   exit=0 out="mainside" -- "1,$didx" commits
 
 # --reverse flips the display, and only the display: '-n 2 --reverse' is the
 # same two commits as '-n 2', read bottom-up -- not the two oldest.
@@ -801,9 +810,32 @@ check "commits --message no match"    exit=0 err="no commits match those filters
 check "commits --message needs a term" exit=1 err="--message needs a term" -- "1,$didx" commits --message
 check "commits --message rejects empty" exit=1 err="--message needs a term" -- "1,$didx" commits --message ""
 check "commits --filename needs a term" exit=1 err="--filename needs a term" -- "1,$didx" commits --filename
-# The block is the whole commit by default; --match-only cuts it to the hits.
-check "commits --match-only trims"     exit=0 out="onlymain.txt" -- "1,$didx" commits --filename onlymain --all --match-only
-check "commits --match-only alone errors" exit=1 err="--match-only needs" -- "1,$didx" commits --match-only
+# The block is cut to the matched paths by default; --all-files widens it back.
+#
+# Two files in one commit, only one of them matching the term: without the
+# second file both modes print the same block, and every assertion below would
+# hold just as well if the flag did the opposite of what it says.
+( cd "$APP" \
+  && echo a > blockmatch.txt && echo b > blockother.txt \
+  && git add -A && git commit -qm twofileblock )
+
+# Default: the matched path is kept and the other one is cut.
+check "commits --filename trims block" exit=0 out="blockmatch.txt" -- "1,$didx" commits --filename blockmatch --all
+trim="$("$BIN" "1,$didx" commits --filename blockmatch --all 2>/dev/null | grep -c "blockother.txt")"
+tcmd="$(fmt_cmd "1,$didx" commits --filename blockmatch --all)"
+if [ "$trim" = 0 ]; then
+  report PASS HAPPY "commits --filename cuts the rest" "$tcmd"
+else
+  report FAIL HAPPY "commits --filename cuts the rest" "$tcmd" "unmatched file survived the trim"
+fi
+# --all-files widens: the unmatched file comes back. This is the assertion the
+# one-file fixture could not make -- it fails if the flag is inverted.
+check "commits --all-files widens"     exit=0 out="blockother.txt" -- "1,$didx" commits --filename blockmatch --all --all-files
+check "commits --all-files keeps match" exit=0 out="blockmatch.txt" -- "1,$didx" commits --filename blockmatch --all --all-files
+check "commits --all-files alone errors" exit=1 err="--all-files needs" -- "1,$didx" commits --all-files
+# --match-only is retired: --filename does its job, and the error says so.
+check "commits --match-only is gone"   exit=1 err="no '--match-only'" -- "1,$didx" commits --filename blockmatch --match-only
+check "commits --match-only names the fix" exit=1 err="--all-files" -- "1,$didx" commits --match-only
 # The flags these two get confused with, each naming the one that is here.
 check "commits --subject names --message" exit=1 err="--message" -- "1,$didx" commits --subject fix
 check "commits --subject keeps the width" exit=1 err="--subject-width" -- "1,$didx" commits --subject fix

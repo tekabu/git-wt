@@ -123,7 +123,8 @@ git-wt <N>,<M> merged        Is M's branch already in N's branch?
 git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
 git-wt <N> merged            Is N's branch already in the current branch?
 git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
-git-wt <N>,<M>[,...] commits Table: which commit is on which branch
+git-wt <N>[,<M>...] commits  Table: which commit is on which branch
+git-wt <N> commits           One worktree's own log, nothing compared
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt <N> fetch|pull|push   Run it in worktree N
 git-wt <N>,<M> pull          Run it in each worktree listed
@@ -363,12 +364,13 @@ The first worktree's log, counter-checked against any number of others:
 
 ```sh
 git-wt 1,2,3 commits    # worktree 1's log; 2 and 3 are check columns
-git-wt 2 commits        # worktree 2 against the one you're standing in
+git-wt 2 commits        # worktree 2's own log, nothing compared
 ```
 
-A single target reads the way `merged` does: the worktree you're in becomes the
-other column, so `git-wt 2 commits` is `git-wt <here>,2 commits`. Naming the
-one you're standing in is an error rather than a column of guaranteed checks.
+A single target is that worktree alone: its whole log, no check columns, and
+nothing it has to be ahead of — for when the question is about one branch's
+history rather than two branches' difference. Name a second worktree and the
+comparison comes back.
 
 ```
 commit   author  date        main  feat/login  bugfix-123  subject
@@ -451,7 +453,7 @@ shape, whatever the column is spelled as — the two are independent.
 ```sh
 git-wt 1,2 commits --md              # -> commits_2026-07-17_14-30-05.md
 git-wt 1,2 commits --md report.md    # -> that path
-git-wt 1,2,3 commits --no-merges --md   # filters apply as usual
+git-wt 1,2,3 commits --merges --md      # filters apply as usual
 ```
 
 `--md` writes the table as markdown instead of printing it. The file records
@@ -488,16 +490,20 @@ git-wt 1,2 commits --reverse        # alias: --oldest-first
 Applied after the `-n` cap, so `-n 10 --reverse` is the same ten commits as
 `-n 10`, read bottom-up — not the ten *oldest*.
 
-### Dropping merge commits
+### Merge commits
 
 ```sh
-git-wt 1,2 commits --no-merges
+git-wt 1,2 commits --merges
 ```
 
 Merge commits carry no work of their own, and on a branch that merges often
-they're most of the table. `--no-merges` drops those rows and keeps every
-commit they joined — only the merge's own row goes, and the marks are untouched
-either way.
+they're most of the table — so they're dropped by default. The commits they
+joined all stay either way: only the merge's own row goes, and the marks are
+untouched. `--merges` puts those rows back.
+
+`--no-merges` is retired — it named the drop back when merges were kept by
+default, so it now has nothing left to ask for. Typing it says so and points at
+`--merges`.
 
 ### Filtering the rows
 
@@ -511,6 +517,8 @@ git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30
 git-wt 1,2 commits --date 2026-01-31                # exactly that day
 git-wt 1,2 commits --commit-since 5568a21           # 5568a21's day, and after
 git-wt 1,2 commits --commits af48509,f9e2427        # just these rows
+git-wt 1,2 commits --message oauth                  # subject or body
+git-wt 1,2 commits --filename api.php               # commits touching that path
 ```
 
 Two vocabularies, one shape. The `--commit-` bounds take a **commit** — a sha, a
@@ -527,6 +535,8 @@ more.
 | `--commit-since C` | The day C was authored, and after |
 | `--commit-until C` | The day C was authored, and before |
 | `--commits A,B` (`-c`) | Only these commits, named by sha |
+| `--message TERM` (`-m`) | Only commits with TERM in the subject **or** the body; plain substring, case-folded |
+| `--filename TERM` | Only commits touching a path containing TERM, case-folded |
 
 **A lower bound widens the rows, an upper bound does not.** The default rows
 are cut at the bottom, at the earliest divergent commit — so `--commits`,
@@ -552,6 +562,73 @@ commit's whole day, and `--date-since 2026-01-01` takes that whole day. That's
 why there's no `>` or `<`: the day either side of a bound is just the inclusive bound next
 door, and a strict comparison would be a second spelling of the same thing —
 costing a character the shell wants for itself.
+
+### Searching the message — `--message`
+
+```sh
+git-wt 1,2 commits --message oauth   # alias: -m
+```
+
+A plain substring, case-folded, matched against the subject **and** the body —
+a term you remember from a commit is as likely to be in the explanation as in
+the one line summarizing it. Not the fuzzy subsequence `--author` uses: a name
+is one word typed from memory, where a message is prose, and a subsequence over
+prose matches nearly all of it.
+
+When the match is in the body, the matching lines are printed under the row —
+otherwise the table would assert a match it never shows. `--message` also
+implies `--wrap full`, since a row kept for a word past the terminal's cut has
+to show that word.
+
+```
+commit   author  date        main  feat  subject
+a1b2c3d  Nino    2026-09-15   ✓     ·    fix token expiry
+
+                                         Refresh tokens were compared with the
+                                         oauth scope table before expiry.
+```
+
+### Searching the files — `--filename`
+
+```sh
+git-wt 1,2 commits --filename api.php               # rows that touched it
+git-wt 1,2 commits --filename api.php --all-files   # + every other file they touched
+```
+
+Keeps only commits touching a path that contains the term, case-folded. It
+implies `--files`, for the same reason `--message` shows body lines: a row kept
+for a file it touched has to name that file. The matched paths are highlighted
+where they sit.
+
+**The block is cut to the matches.** A merge can carry a hundred files and match
+on three, and the whole list buries the answer you asked for. `--all-files`
+widens it back to everything each commit touched — which is also the only way
+the `+`/`-` counts sum to the commit again.
+
+```
+$ git-wt 1 commits --filename Cargo.toml -n 1
+commit   author        date  subject
+c43f151  Nino    2026-07-19  fix: only a lower bound widens the rows
+
+	M  Cargo.toml  +1  -1
+
+$ git-wt 1 commits --filename Cargo.toml -n 1 --all-files
+commit   author        date  subject
+c43f151  Nino    2026-07-19  fix: only a lower bound widens the rows
+
+	M  Cargo.lock                +1   -1
+	M  Cargo.toml                +1   -1
+	M  README.md                +10   -0
+	M  src/cmd/commits/args.rs  +32  -17
+	M  src/cmd/commits/mod.rs   +19   -1
+	M  src/main.rs               +8   -5
+	M  test.sh                  +46   -0
+```
+
+Merges are the reason this is not just `git log -- <path>`: git prunes merges
+from a pathspec walk, so a merge that brought a whole feature in would list none
+of its files. `commits` keeps them and attributes each merge's files against its
+first parent.
 
 ### How many branches can it compare?
 
@@ -1066,19 +1143,21 @@ Every form the CLI accepts. Examples assume:
 |---|---|
 | `git-wt 1,2 commits` | Worktree 1's commits down to its earliest one that 2 is missing, with a column saying whether 2 has each |
 | `git-wt 1,2,3 commits` | Same, cut at the earliest commit *any* other branch is missing; one more check column |
-| `git-wt 2 commits` | Worktree 2 against the worktree you're standing in |
-| `git-wt 2 commits` (from worktree 2) | Error — it would compare 2 with itself |
+| `git-wt 2 commits` | Worktree 2's own log — one branch, no check columns |
 | `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
 | `git-wt 1,2 commits --union` | Rows from both branches, whole logs, not just 1's range (also `--any`) |
 | `git-wt 1,2 commits --all` (`-a`) | Worktree 1's whole log, no cut at the divergence; other branches stay check columns |
 | `git-wt 1,2,3 commits --topo` | Group each branch's commits instead of interleaving by date |
-| `git-wt 1,2 commits --no-merges` | Drop merge rows; keep the commits they joined |
+| `git-wt 1,2 commits --merges` | Keep merge rows; they're dropped by default |
 | `git-wt 1,2 commits --time` | Add the time to the date column, 24-hour |
 | `git-wt 1,2 commits --date-human` | `Jan. 31, 2026` instead of the default `2026-01-31` |
 | `git-wt 1,2 commits --reverse` | Newest last (also `--oldest-first`) |
 | `git-wt 1,2 commits --md` | Write `commits_<date>_<time>.md` in the current directory |
 | `git-wt 1,2 commits --md report.md` | Write that path, overwriting it |
 | `git-wt 1,2 commits --author nes` | Only commits whose author fuzzy-matches `nes` |
+| `git-wt 1,2 commits -m oauth` | Only commits with `oauth` in the subject or body (also `--message`) |
+| `git-wt 1,2 commits --filename api.php` | Only commits touching a matching path; implies `--files`, block cut to the matches |
+| `git-wt 1,2 commits --filename api.php --all-files` | Same rows, but each block is the commit's whole file list |
 | `git-wt 1,2 commits --date 2026-01-31` | Commits on exactly that day (also `-d`) |
 | `git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30` | A date range, inclusive, no quoting |
 | `git-wt 1,2 commits --commit-since 5568a21` | The day that commit was authored, and after |
@@ -1093,10 +1172,13 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits --since 2026-01-01` | Error — git's word; use `--date-since` |
 | `git-wt 1,2 commits --commit-since zzz9` | Error `--commit-since: no commit 'zzz9'` |
 | `git-wt 1,2 commits` (empty branch) | `no commits on <worktree 1>`, exit 0 |
-| `git-wt 1 commits` | Error — `commits` takes a worktree list |
 | `git-wt 1,1 commits` | Error `worktree #1 listed twice` |
 | `git-wt 1,2 commits -n 0` | Error `-n 0 would show nothing` |
 | `git-wt 1,2 commits --stat` | Error — unknown argument; `commits` takes no git flags |
+| `git-wt 1,2 commits --no-merges` | Error — merges are dropped already; `--merges` keeps them |
+| `git-wt 1,2 commits --match-only` | Error — `--filename` already cuts the block; `--all-files` widens it |
+| `git-wt 1,2 commits --all-files` | Error — needs a `--filename` to widen |
+| `git-wt 1,2 commits --grep x` | Error — git's word; use `--message` |
 
 ### Multi-target — `git-wt <N>,<N>[,<N>] meld`
 

@@ -48,6 +48,7 @@ pub(crate) fn write_md(
     rows: &[CommitRow],
     row_files: &[Vec<FileStat>],
     row_bodies: &[(Vec<String>, usize)],
+    labels: &[String],
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
@@ -57,18 +58,23 @@ pub(crate) fn write_md(
     let mut out = String::new();
     out.push_str("# git-wt commits\n\n");
     out.push_str(&format!("- Command: `{}`\n", md_cell(cmd)));
-    out.push_str(&format!("- Worktrees: {}\n", names.iter()
+    // The labels, not the column names: one worktree has no mark columns, and
+    // the report still has to say whose log this is.
+    out.push_str(&format!("- Worktrees: {}\n", labels.iter()
         .map(|n| format!("`{}`", md_cell(n)))
         .collect::<Vec<_>>()
         .join(", ")));
     out.push_str(&format!("- Commits: {}\n", rows.len()));
     // The glyphs are the whole content of the table; a reader who was not at
     // the terminal has nowhere else to learn them. '≈' is named only when the
-    // table can carry it -- see the same rule in render_commits.
-    if equiv.iter().any(|e| !e.is_empty()) {
-        out.push_str("- Legend: `✓` has the commit · `≈` has the same patch under another sha · `·` has neither\n");
-    } else {
-        out.push_str("- Legend: `✓` has the commit · `·` has neither\n");
+    // table can carry it -- see the same rule in render_commits. No columns,
+    // no glyphs: a one-worktree report has nothing to explain.
+    if !names.is_empty() {
+        if equiv.iter().any(|e| !e.is_empty()) {
+            out.push_str("- Legend: `✓` has the commit · `≈` has the same patch under another sha · `·` has neither\n");
+        } else {
+            out.push_str("- Legend: `✓` has the commit · `·` has neither\n");
+        }
     }
     if picks.is_some() {
         out.push_str("- `pick`: the sha that other copy of the patch was committed under\n");

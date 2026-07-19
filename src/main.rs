@@ -120,7 +120,7 @@ COMMITS OPTIONS:
                           range the other worktrees are missing)
         --union           Rows from every worktree listed, not just the
                           first one's range (alias: --any)
-        --no-merges       Drop merge commits; keep the work they joined
+        --merges          Keep merge commits; they are dropped by default
         --no-cherry       Skip the patch comparison behind '≈' (faster)
         --pick-id         Add a 'pick' column: the sha the '≈' copy of the
                           commit carries elsewhere
@@ -144,6 +144,11 @@ COMMITS OPTIONS:
         --commit-since C  Same bound, dated by commit C: C's day, and after
         --commit-until C  Same bound, dated by commit C: C's day, and before
     -c, --commits IDS     Only these commits, comma-separated shas
+    -m, --message TERM    Only commits whose subject or body contains TERM
+        --filename TERM   Only commits touching a path containing TERM;
+                          implies --files, and cuts the block to the matches
+        --all-files       With --filename, show every file each commit
+                          touched, not only the matched paths
 
 COMMITS:
     A merge-request-style view of the first worktree, counter-checked
@@ -155,10 +160,10 @@ COMMITS:
 
         git-wt 1,2,3 commits         # branch 1's range the others miss
         git-wt 1,2,3 commits --all   # 1's full log, checked against 2 and 3
-        git-wt 2 commits             # worktree 2 vs the one you stand in
+        git-wt 2 commits             # worktree 2's own log, no comparison
         git-wt 1,2 commits -n 20     # newest 20 rows of the range
         git-wt 1,2,3 commits --union # every branch's commits as rows
-        git-wt 1,2 commits --no-merges   # only the commits someone wrote
+        git-wt 1,2 commits --merges  # add the merge commits back
         git-wt 1,2 commits -af       # short flags bundle: == --all --files
         git-wt 1,2 commits -fn 20    # a value-taking flag ends the bundle
 
@@ -173,15 +178,15 @@ COMMITS:
     with a '·' under it.
 
     '-n' caps the rows after the range is chosen; filters apply the same
-    way. '--no-merges' drops merge commits: they carry no work of their own,
-    and on a branch that merges often they are most of the table. The
-    commits a merge joined all stay -- only the merge's own row goes,
-    and the marks are untouched either way.
+    way. Merge commits are dropped: they carry no work of their own, and on
+    a branch that merges often they are most of the table. The commits a
+    merge joined all stay either way -- only the merge's own row goes, and
+    the marks are untouched. '--merges' puts those rows back.
 
-    A single target reads the way 'merged' does: the worktree you are in
-    is the other column, so 'git-wt 2 commits' == 'git-wt <here>,2
-    commits'. Standing in the one you named is an error, not a column of
-    guaranteed checks.
+    A single target is that worktree alone: 'git-wt 2 commits' is 2's own
+    log, with no mark columns and nothing to be ahead of, for when the
+    question is about one branch's history rather than two branches'
+    difference. Name a second worktree to get the comparison back.
 
     Any number of worktrees can be columns -- there is no cap, unlike
     diff's two or meld's three. The terminal is the real limit: each
@@ -240,7 +245,7 @@ COMMITS MD:
 
         git-wt 1,2 commits --md              -> commits_<date>_<time>.md
         git-wt 1,2 commits --md report.md    -> that path, overwritten
-        git-wt 1,2 commits --no-merges --md  # filters apply as usual
+        git-wt 1,2 commits --merges --md  # filters apply as usual
 
     The default name is stamped to the second, so a re-run never eats the
     last report; a name you pass is yours, and is overwritten. The path is

@@ -138,10 +138,14 @@ pub(crate) struct CommitsArgs {
     pub(crate) message: Option<String>,
     /// Only commits touching a path containing this, case-folded.
     pub(crate) filename: Option<String>,
-    /// Cut the file block down to the paths --filename matched.
-    pub(crate) match_only: bool,
+    /// Show every file a commit touched, not only the paths --filename
+    /// matched. Off by default: the filter named a path, so the block answers
+    /// with that path.
+    pub(crate) all_files: bool,
     pub(crate) topo: bool,
-    pub(crate) no_merges: bool,
+    /// Keep merge commits. Off by default: a merge carries no work of its own,
+    /// and on a branch that merges often they are most of the table.
+    pub(crate) merges: bool,
     pub(crate) fmt: DateFmt,
     /// `Some(None)` is `--md` with no path: a timestamped name in the cwd.
     pub(crate) md: Option<Option<String>>,
@@ -235,9 +239,9 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     let mut author = None;
     let mut message = None;
     let mut filename = None;
-    let mut match_only = false;
+    let mut all_files = false;
     let mut topo = false;
-    let mut no_merges = false;
+    let mut merges = false;
     let mut fmt = DateFmt { human: false, time: false };
     let mut md = None;
     let mut reverse = false;
@@ -257,7 +261,10 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             }
             s if s.starts_with("--limit=") => limit = Some(parse_limit(&s["--limit=".len()..])?),
             "--topo" | "--topo-order" => topo = true,
-            "--no-merges" => no_merges = true,
+            "--merges" => merges = true,
+            // It named the drop back when merges were kept by default. Now the
+            // drop is the default, so the flag has nothing left to ask for.
+            "--no-merges" => return Err(NO_MERGES_MSG.into()),
             "--reverse" | "--oldest-first" => reverse = true,
             "--no-cherry" => no_cherry = true,
             "--pick-id" => pick = true,
@@ -331,9 +338,13 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             s if s.starts_with("--message=") => {
                 message = Some(term_of(&s["--message=".len()..], MESSAGE_MISSING)?);
             }
-            // A merge can carry a hundred files and match on three; when the
-            // matches are the point, the rest is the haystack.
-            "--match-only" => match_only = true,
+            // A merge can carry a hundred files and match on three, so the
+            // block is cut to the matches by default. --all-files buys the
+            // whole list back when the question is what the commit did.
+            "--all-files" => all_files = true,
+            // It named the cut back when the whole block was the default. Now
+            // the cut is the default, so the flag has nothing left to ask for.
+            "--match-only" => return Err(MATCH_ONLY_MSG.into()),
             "--filename" => filename = Some(term(it.next(), FILENAME_MISSING)?),
             s if s.starts_with("--filename=") => {
                 filename = Some(term_of(&s["--filename=".len()..], FILENAME_MISSING)?);
@@ -433,15 +444,15 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     let wrap = wrap.unwrap_or(if message.is_some() { Wrap::Full } else { Wrap::Lines(1) });
     // Same rule for a path: a row kept for a file it touched has to name it.
     let files = files || filename.is_some();
-    // Trimming the block to the matches only means anything when there are
-    // matches to trim to: without --filename there is no match to keep.
-    if match_only && filename.is_none() {
-        return Err(MATCH_ONLY_MSG.into());
+    // Asking for every file only means anything when something was trimming
+    // them: without --filename the block is already whole.
+    if all_files && filename.is_none() {
+        return Err(ALL_FILES_MSG.into());
     }
 
     Ok(CommitsArgs {
-        limit, dates, commit_since, commit_until, commits, author, message, filename, match_only,
-        topo, no_merges, fmt, md,
+        limit, dates, commit_since, commit_until, commits, author, message, filename, all_files,
+        topo, merges, fmt, md,
         reverse, no_cherry, pick, union,
         all, files, wrap, subjectw,
     })
@@ -504,8 +515,14 @@ pub(crate) const MESSAGE_MISSING: &str =
      hint: it searches the subject and the body";
 pub(crate) const FILENAME_MISSING: &str =
     "--filename needs a term, e.g. '--filename render.rs'";
+pub(crate) const ALL_FILES_MSG: &str =
+    "--all-files needs a '--filename TERM' to widen: on its own the file block is already whole";
+pub(crate) const NO_MERGES_MSG: &str =
+    "no '--no-merges' for commits: merge commits are dropped already\n\
+     hint: '--merges' is the flag for the other direction, keeping their rows";
 pub(crate) const MATCH_ONLY_MSG: &str =
-    "--match-only needs a '--filename TERM' to match: on its own there is nothing to keep";
+    "no '--match-only' for commits: --filename already cuts the block to what it matched\n\
+     hint: '--all-files' is the flag for the other direction, the commit's whole file list";
 pub(crate) const FILE_MSG: &str =
     "no '--file' for commits: '--filename TERM' filters rows, '--files' shows the file block";
 pub(crate) const GREP_MSG: &str =
@@ -739,8 +756,14 @@ mod tests {
         assert!(!parse(&[]).unwrap().topo);
         assert!(parse(&["--topo"]).unwrap().topo);
         assert!(parse(&["--topo-order"]).unwrap().topo);
-        assert!(!parse(&[]).unwrap().no_merges);
-        assert!(parse(&["--no-merges"]).unwrap().no_merges);
+        // Merges are dropped by default; --merges asks for them back, and
+        // --no-merges still parses as the default it now names.
+        assert!(!parse(&[]).unwrap().merges);
+        assert!(parse(&["--merges"]).unwrap().merges);
+        // --no-merges is gone: dropping them is what the default already does.
+        // The message names --merges, the flag that still changes something.
+        let err = parse(&["--no-merges"]).unwrap_err();
+        assert!(err.contains("--merges"), "{err}");
 
         // ISO, no time, unless asked; the flags are independent.
         assert_eq!(parse(&[]).unwrap().fmt, DateFmt { human: false, time: false });
@@ -910,13 +933,21 @@ mod tests {
     }
 
     #[test]
-    fn match_only_needs_something_to_match() {
-        assert!(!parse(&[]).unwrap().match_only);
-        assert!(parse(&["--filename", "ui.rs", "--match-only"]).unwrap().match_only);
-        // On its own it names no term, so there is nothing to keep and nothing
-        // to cut -- say so rather than print an empty block.
-        let err = parse(&["--match-only"]).unwrap_err();
+    fn all_files_needs_something_to_widen() {
+        // Trimming to the matches is the default, so --match-only names what it
+        // already gets and --all-files is the one that changes anything.
+        assert!(!parse(&[]).unwrap().all_files);
+        assert!(!parse(&["--filename", "ui.rs"]).unwrap().all_files);
+        assert!(parse(&["--filename", "ui.rs", "--all-files"]).unwrap().all_files);
+        // On its own it widens nothing: with no --filename the block is already
+        // every file the commit touched.
+        let err = parse(&["--all-files"]).unwrap_err();
         assert!(err.contains("--filename"), "{err}");
+        // --match-only is gone: the cut it asked for is what --filename does.
+        // The message names --all-files, the flag that still changes something.
+        let err = parse(&["--filename", "ui.rs", "--match-only"]).unwrap_err();
+        assert!(err.contains("--all-files"), "{err}");
+        assert!(parse(&["--match-only"]).unwrap_err().contains("--all-files"));
     }
 
     #[test]

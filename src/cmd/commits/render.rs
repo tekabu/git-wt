@@ -148,24 +148,29 @@ pub(crate) fn render_commits(
     // '≈' is named only when it can appear: --no-cherry skips the patch-id walk
     // and leaves every equivalence set empty, so advertising the glyph there
     // promises a mark the table can never carry.
-    let mut legend = format!(
-        "{} {}",
-        paint(CHECK, GREEN, color),
-        paint("has commit", DIM, color),
-    );
-    if equiv.iter().any(|e| !e.is_empty()) {
+    //
+    // With no mark columns -- one worktree, so nothing to compare against --
+    // there are no glyphs to name, and the legend is dropped with them.
+    if !names.is_empty() {
+        let mut legend = format!(
+            "{} {}",
+            paint(CHECK, GREEN, color),
+            paint("has commit", DIM, color),
+        );
+        if equiv.iter().any(|e| !e.is_empty()) {
+            legend.push_str(&format!(
+                "   {} {}",
+                paint(EQUIV, YELLOW, color),
+                paint("same patch, other sha", DIM, color),
+            ));
+        }
         legend.push_str(&format!(
             "   {} {}",
-            paint(EQUIV, YELLOW, color),
-            paint("same patch, other sha", DIM, color),
+            paint(MISS, DIM, color),
+            paint("neither", DIM, color),
         ));
+        println!("{}", legend);
     }
-    legend.push_str(&format!(
-        "   {} {}",
-        paint(MISS, DIM, color),
-        paint("neither", DIM, color),
-    ));
-    println!("{}", legend);
 
     let mut head = format!("{:<shaw$}  ", "commit");
     if let Some(w) = pickw {

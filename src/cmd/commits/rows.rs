@@ -960,11 +960,11 @@ mod tests {
         assert_eq!(seen, ["feat-21h", "main-17h", "feat-13h", "main-09h", "base"]);
         assert!(rows[..4].iter().all(|r| r.date == "2026-07-17"));
 
-        // The filter key is the day, so one '=' bound takes every hour in it.
-        let day = parse_date_filter("=2026-07-17").unwrap();
+        // The filter key is the day, so one --date takes every hour in it.
+        let day = parse_date_filter("2026-07-17").unwrap();
         assert_eq!(rows.iter().filter(|r| day.admits(&r.key)).count(), 4);
 
-        // --show-time is what tells those four rows apart, 24-hour so they sort
+        // --time is what tells those four rows apart, 24-hour so they sort
         // the way they read; the day stays ISO beside it.
         let timed = DateFmt { human: false, time: true };
         let rows = commit_rows(&tmp, &refs, None, None, Order::Date, timed, false).unwrap();

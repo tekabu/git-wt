@@ -138,11 +138,9 @@ COMMITS OPTIONS:
         --time            Add the time to the date column, 24-hour
         --date-human      'Jan. 31, 2026' instead of '2026-01-31'
         --author NAME     Only NAME's commits (fuzzy, like list's SEARCH)
-    -d, --date CMP        Only commits on a date: '=', '>=' or '<=' a
-                          YYYY-MM-DD, e.g. --date '>=2026-01-01'. Repeat
-                          for a range. QUOTE IT: '>' is a shell redirect
-        --date-since DATE Same as --date '>=DATE', no quoting needed
-        --date-until DATE Same as --date '<=DATE', no quoting needed
+    -d, --date DATE       Only commits on exactly this YYYY-MM-DD day
+        --date-since DATE That day and after
+        --date-until DATE That day and before
         --commit-since C  Same bound, dated by commit C: C's day, and after
         --commit-until C  Same bound, dated by commit C: C's day, and before
     -c, --commits IDS     Only these commits, comma-separated shas
@@ -195,23 +193,29 @@ COMMITS FILTERS:
     named. They AND together, and -n counts what survives them.
 
         git-wt 1,2 commits --author nino
-        git-wt 1,2 commits --date '>=2026-01-01' --date '<=2026-06-30'
+        git-wt 1,2 commits --date 2026-01-31        # exactly that day
         git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30
         git-wt 1,2 commits --commit-since 5568a21 --commit-until HEAD
         git-wt 1,2 commits --commits af48509,f9e2427
 
-    Two vocabularies, one shape: '-id' bounds take a commit -- a sha, a
-    branch, a tag, 'HEAD~3' -- and '-date' bounds take a YYYY-MM-DD.
-    Both ends include what they name: '--commit-since X' takes X's whole
-    day, and '--date-since 2026-01-01' takes that whole day. So no '>' or
-    '<': the day either side of a bound is the inclusive one next door.
+    Two vocabularies, one shape: '--commit-' bounds take a commit -- a
+    sha, a branch, a tag, 'HEAD~3' -- and '--date-' bounds take a
+    YYYY-MM-DD. A commit bound is read for its DAY and nothing else.
+    Both ends include what they name, and '--date' is one exact day: no
+    operators anywhere, so nothing here needs quoting against the shell.
+
+    --commits and the date filters widen the rows to the full log on
+    their own: they name something in the history, not something in the
+    default slice, so a commit outside it would otherwise read as absent.
+    --author does not -- it matches many commits and named none of them,
+    so add --all yourself when you mean the whole log.
 
     --date compares the date the table prints, which is the AUTHOR date;
     git's own --since/--until read committer dates and would disagree
     with the column. --author is a fuzzy subsequence, case-folded, the
     same match 'git-wt list SEARCH' uses: 'nes' finds 'Nino Escalera'.
 
-    Date bounds are whole days: '--date =2026-07-17' takes every commit
+    Date bounds are whole days: '--date 2026-07-17' takes every commit
     of that day, 09:00 and 23:30 alike. The day is the author's own --
     a commit written at 23:30 +0800 belongs to the day it was there, not
     to yours -- so a bound never contradicts the printed column. Rows are

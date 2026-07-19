@@ -370,6 +370,23 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     if all && union {
         return Err("--all and --union are two different row sources: use one of them".into());
     }
+    // A commit or a date names something that exists in the history, not
+    // something that exists in the default range -- and the default range is a
+    // slice, so naming a commit outside it would answer "no such commit" when
+    // the real answer is "not in these rows". Those two filters therefore widen
+    // the source to the full log on their own.
+    //
+    // --author does not: a name matches many commits and none of them was asked
+    // for by name, so "who wrote in this range" stays the question. Say --all
+    // when you mean the whole log.
+    //
+    // Checked after the conflict above, so an implied --all can never collide
+    // with a --union the user actually typed.
+    let selects_history = !commits.is_empty()
+        || commit_since.is_some()
+        || commit_until.is_some()
+        || !dates.is_empty();
+    let all = all || (selects_history && !union);
     Ok(CommitsArgs {
         limit, dates, commit_since, commit_until, commits, author, topo, no_merges, fmt, md,
         reverse, no_cherry, pick, union,
@@ -413,8 +430,9 @@ pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'fu
      hint: 'full' never cuts the subject, however wide it is";
 pub(crate) const SUBJECT_MSG: &str = "no '--subject' for commits: it would read as a filter, and it is a width\n\
      hint: '--subject-width 80' widens the column; '--author NAME' filters rows";
-pub(crate) const DATE_MISSING: &str = "--date needs a comparison, e.g. --date '>=2026-01-01'\n\
-     hint: quote it, or the shell reads '>' as a redirect";
+pub(crate) const DATE_MISSING: &str =
+    "--date needs a day, e.g. '--date 2026-01-01'\n\
+     hint: for a range use --date-since / --date-until";
 pub(crate) const FROM_DATE_MISSING: &str = "--date-since needs a date, e.g. '--date-since 2026-01-01'";
 pub(crate) const TO_DATE_MISSING: &str = "--date-until needs a date, e.g. '--date-until 2026-06-30'";
 pub(crate) const COMMIT_SINCE_MISSING: &str =
@@ -429,29 +447,25 @@ pub(crate) const UNTIL_MSG: &str = "no '--until' for commits; use '--date-until 
 
 /// Parse `>=2026-01-01`, `<=2026-06-30`, `=2026-01-01`, or a bare date (`=`).
 pub(crate) fn parse_date_filter(s: &str) -> Result<DateFilter, String> {
-    // Two-character operators first, or the bare-'>' arm below would claim
-    // '>=' and reject it as strict.
-    let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
-        (DateOp::Ge, r)
-    } else if let Some(r) = s.strip_prefix("<=") {
-        (DateOp::Le, r)
-    } else if let Some(r) = s.strip_prefix('=') {
-        (DateOp::Eq, r)
-    } else if s.starts_with('>') {
-        return Err(strict_msg('>', ">=", "--from-date"));
-    } else if s.starts_with('<') {
-        return Err(strict_msg('<', "<=", "--to-date"));
-    } else {
-        (DateOp::Eq, s)
-    };
-    Ok(DateFilter { op, date: iso_date(rest.trim())? })
+    // One day, named plainly. The comparisons live in --date-since and
+    // --date-until, which say which end they are and cost the shell nothing:
+    // an operator here would have to be quoted every single time, and '>' is
+    // eaten as a redirect the moment it is not.
+    let t = s.trim();
+    if let Some(op) = t.chars().next().filter(|c| matches!(c, '>' | '<' | '=')) {
+        return Err(operator_msg(op, t));
+    }
+    Ok(DateFilter { op: DateOp::Eq, date: iso_date(t)? })
 }
 
-/// A strict bound names a day the inclusive bounds already reach, one day over.
-pub(crate) fn strict_msg(op: char, incl: &str, flag: &str) -> String {
+/// A comparison in `--date`'s value names a bound that has its own flag.
+pub(crate) fn operator_msg(op: char, given: &str) -> String {
+    let bare = given.trim_start_matches(['>', '<', '=']).trim();
+    let flag = if op == '<' { "--date-until" } else { "--date-since" };
+    let shown = if bare.is_empty() { "2026-01-01" } else { bare };
     format!(
-        "no '{op}' comparison; bounds are inclusive: use '{incl}' (or {flag})\n\
-         hint: a day either side is '{incl}' on the next day"
+        "no '{op}' in --date; it takes one day, e.g. '--date {shown}'\n\
+         hint: for a bound use '{flag} {shown}'"
     )
 }
 
@@ -460,11 +474,14 @@ pub(crate) fn strict_msg(op: char, incl: &str, flag: &str) -> String {
 /// else.
 pub(crate) fn iso_date(s: &str) -> Result<String, String> {
     let bad = || {
-        // An empty value usually means the shell ate an unquoted '>'.
+        // An empty value usually means the shell ate an unquoted '>' -- which
+        // no longer belongs here at all, so say where the bounds live.
         if s.is_empty() {
-            format!("--date needs a date after the comparison\nhint: {QUOTE_HINT}")
+            "a date is missing; want YYYY-MM-DD\n\
+             hint: --date takes one day, --date-since / --date-until take bounds"
+                .to_string()
         } else {
-            format!("bad date '{s}'; want YYYY-MM-DD, e.g. '>=2026-01-01'")
+            format!("bad date '{s}'; want YYYY-MM-DD, e.g. '2026-01-01'")
         }
     };
     let b = s.as_bytes();
@@ -481,9 +498,6 @@ pub(crate) fn iso_date(s: &str) -> Result<String, String> {
     }
     Ok(s.to_string())
 }
-
-pub(crate) const QUOTE_HINT: &str =
-    "quote the comparison -- --date '>=2026-01-01' -- or the shell reads '>' as a redirect";
 
 pub(crate) fn parse_limit(s: &str) -> Result<usize, String> {
     match s.parse::<usize>() {
@@ -575,43 +589,50 @@ mod tests {
     }
 
     #[test]
-    fn date_filters_parse_every_comparison() {
+    fn date_takes_one_day_and_no_operator() {
         let f = |s: &str| parse_date_filter(s).unwrap();
-        assert_eq!(f(">=2026-01-01"), DateFilter { op: DateOp::Ge, date: "2026-01-01".into() });
-        assert_eq!(f("<=2026-01-01"), DateFilter { op: DateOp::Le, date: "2026-01-01".into() });
-        assert_eq!(f("=2026-01-01"), DateFilter { op: DateOp::Eq, date: "2026-01-01".into() });
-        // A bare date is the '=' everyone means by it.
+        // One day, and the filter that day makes: --date is exact, full stop.
         assert_eq!(f("2026-01-01"), DateFilter { op: DateOp::Eq, date: "2026-01-01".into() });
 
-        // Bounds are inclusive, so a strict comparison is refused rather than
-        // quietly rounded to the inclusive one next door. '>=' must still parse
-        // as '>=': the two-character check has to come first.
-        assert!(parse_date_filter(">2026-01-01").unwrap_err().contains("use '>='"));
-        assert!(parse_date_filter("<2026-01-01").unwrap_err().contains("use '<='"));
+        // The comparisons moved to their own flags, so an operator here names
+        // a bound that has a better spelling -- and the error says which.
+        for (given, flag) in [
+            (">=2026-01-01", "--date-since"),
+            (">2026-01-01", "--date-since"),
+            ("=2026-01-01", "--date-since"),
+            ("<=2026-01-01", "--date-until"),
+            ("<2026-01-01", "--date-until"),
+        ] {
+            let err = parse_date_filter(given).unwrap_err();
+            assert!(err.contains("in --date"), "{given}: {err}");
+            assert!(err.contains(flag), "{given}: {err}");
+            // The day survives into the hint, so the fix is copy-pasteable.
+            assert!(err.contains("2026-01-01"), "{given}: {err}");
+        }
 
         // Only YYYY-MM-DD: a short spelling would compare as a prefix and mean
         // something other than what it reads as.
-        assert!(parse_date_filter(">=2026-1-1").unwrap_err().contains("want YYYY-MM-DD"));
-        assert!(parse_date_filter(">=2026-01").unwrap_err().contains("want YYYY-MM-DD"));
+        assert!(parse_date_filter("2026-1-1").unwrap_err().contains("want YYYY-MM-DD"));
+        assert!(parse_date_filter("2026-01").unwrap_err().contains("want YYYY-MM-DD"));
         assert!(parse_date_filter("2026-13-01").unwrap_err().contains("no such date"));
         assert!(parse_date_filter("2026-01-32").unwrap_err().contains("no such date"));
         // An unquoted '>' is eaten by the shell, so the value arrives empty.
-        assert!(parse_date_filter(">=").unwrap_err().contains("redirect"));
+        assert!(parse_date_filter("").unwrap_err().contains("--date-since"));
     }
 
     #[test]
     fn date_filters_compare_iso_dates_as_text() {
-        let admits = |s: &str, key: &str| parse_date_filter(s).unwrap().admits(key);
+        let admits = |op: DateOp, d: &str, key: &str| DateFilter { op, date: d.into() }.admits(key);
         // A bound takes its own day, both ends.
-        assert!(admits(">=2026-03-01", "2026-03-01"));
-        assert!(admits("<=2026-03-01", "2026-03-01"));
-        assert!(!admits(">=2026-03-02", "2026-03-01"));
-        assert!(!admits("<=2026-02-28", "2026-03-01"));
+        assert!(admits(DateOp::Ge, "2026-03-01", "2026-03-01"));
+        assert!(admits(DateOp::Le, "2026-03-01", "2026-03-01"));
+        assert!(!admits(DateOp::Ge, "2026-03-02", "2026-03-01"));
+        assert!(!admits(DateOp::Le, "2026-02-28", "2026-03-01"));
         // Ordering is lexicographic, which for zero-padded ISO is chronological
         // -- across months and years, where a naive text compare could not be.
-        assert!(admits(">=2026-01-01", "2026-10-01"));
-        assert!(admits("<=2026-12-31", "2026-12-31"));
-        assert!(!admits(">=2026-01-01", "2025-12-31"));
+        assert!(admits(DateOp::Ge, "2026-01-01", "2026-10-01"));
+        assert!(admits(DateOp::Le, "2026-12-31", "2026-12-31"));
+        assert!(!admits(DateOp::Ge, "2026-01-01", "2025-12-31"));
     }
 
     #[test]
@@ -621,11 +642,9 @@ mod tests {
             parse_commits_args(&v)
         };
 
-        // Several --date bounds are an AND, which is how a range is spelled.
-        let a = parse(&["--date", ">=2026-01-01", "--date", "<=2026-06-01"]).unwrap();
-        assert_eq!(a.dates.len(), 2);
-        assert_eq!(a.dates[0].op, DateOp::Ge);
-        assert_eq!(a.dates[1].op, DateOp::Le);
+        // A range is --date-since plus --date-until; --date itself is one day.
+        let a = parse(&["--date", "2026-01-01"]).unwrap();
+        assert_eq!(a.dates, vec![DateFilter { op: DateOp::Eq, date: "2026-01-01".into() }]);
 
         // --date-since/--date-until are those same bounds, needing no quoting.
         let a = parse(&["--date-since", "2026-01-01", "--date-until=2026-06-01"]).unwrap();
@@ -693,6 +712,29 @@ mod tests {
             let err = parse(&[old]).unwrap_err();
             assert_eq!(err, format!("'{old}' is now '{new}'"));
         }
+    }
+
+    #[test]
+    fn history_selectors_widen_the_source_but_author_does_not() {
+        // A commit or a day names something in the history, not something in
+        // the default slice, so each widens the source on its own.
+        assert!(parse(&["--commits", "abc123"]).unwrap().all);
+        assert!(parse(&["--commit-since", "abc123"]).unwrap().all);
+        assert!(parse(&["--commit-until", "abc123"]).unwrap().all);
+        assert!(parse(&["--date", "2026-01-01"]).unwrap().all);
+        assert!(parse(&["--date-since", "2026-01-01"]).unwrap().all);
+        assert!(parse(&["--date-until", "2026-01-01"]).unwrap().all);
+
+        // --author matches many commits and named none of them, so the slice
+        // stays the question; --all is there to be typed.
+        assert!(!parse(&["--author", "nino"]).unwrap().all);
+        assert!(parse(&["--author", "nino", "--all"]).unwrap().all);
+
+        // Nothing is implied without a selector, and a --union the user typed
+        // is never overridden -- nor does the implied --all trip its guard.
+        assert!(!parse(&[]).unwrap().all);
+        let a = parse(&["--union", "--date", "2026-01-01"]).unwrap();
+        assert!(a.union && !a.all);
     }
 
     #[test]

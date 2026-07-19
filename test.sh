@@ -490,10 +490,9 @@ today="$(date +%F)"
 tomorrow="$(date -v+1d +%F 2>/dev/null || date -d tomorrow +%F)"
 yesterday="$(date -v-1d +%F 2>/dev/null || date -d yesterday +%F)"
 
-check "commits --date = today"        exit=0 out="mainside" -- "1,$didx" commits --date "=$today"
-check "commits --date >= today"       exit=0 out="mainside" -- "1,$didx" commits --date ">=$today"
-check "commits --date <= today"       exit=0 out="mainside" -- "1,$didx" commits --date "<=$today"
-check "commits --date bare = '='"     exit=0 out="mainside" -- "1,$didx" commits --date "$today"
+# --date is one exact day. The bounds are --date-since/--date-until.
+check "commits --date exact day"      exit=0 out="mainside" -- "1,$didx" commits --date "$today"
+check "commits --date other day"      exit=0 err="no commits match those filters" -- "1,$didx" commits --date "$tomorrow"
 check "commits --date-since today"     exit=0 out="mainside" -- "1,$didx" commits --date-since "$today"
 check "commits --date-until today"       exit=0 out="mainside" -- "1,$didx" commits --date-until "$today"
 # Two bounds are an AND, which is how a range is spelled.
@@ -502,14 +501,37 @@ check "commits date range brackets"   exit=0 out="mainside" -- "1,$didx" commits
 check "commits --date-since tomorrow"  exit=0 err="no commits match those filters" -- "1,$didx" commits --date-since "$tomorrow"
 check "commits --date-until yesterday"   exit=0 err="no commits match those filters" -- "1,$didx" commits --date-until "$yesterday"
 
-# Inclusive bounds only: a strict comparison names a day '>=' already reaches.
-check "commits --date rejects >"      exit=1 err="no '>' comparison" -- "1,$didx" commits --date ">$today"
-check "commits --date rejects <"      exit=1 err="no '<' comparison" -- "1,$didx" commits --date "<$today"
-check "commits --date bad shape"      exit=1 err="want YYYY-MM-DD" -- "1,$didx" commits --date ">=2026-1-1"
+# No operators in --date at all: each one names a bound that has its own flag,
+# and the error says which -- with the day carried into the hint.
+check "commits --date rejects >="     exit=1 err="no '>' in --date" -- "1,$didx" commits --date ">=$today"
+check "commits --date >= points on"   exit=1 err="--date-since $today" -- "1,$didx" commits --date ">=$today"
+check "commits --date rejects <="     exit=1 err="no '<' in --date" -- "1,$didx" commits --date "<=$today"
+check "commits --date <= points on"   exit=1 err="--date-until $today" -- "1,$didx" commits --date "<=$today"
+check "commits --date rejects ="      exit=1 err="no '=' in --date" -- "1,$didx" commits --date "=$today"
+check "commits --date bad shape"      exit=1 err="want YYYY-MM-DD" -- "1,$didx" commits --date "2026-1-1"
 check "commits --date impossible"     exit=1 err="no such date" -- "1,$didx" commits --date "2026-13-01"
-check "commits --date needs a value"  exit=1 err="redirect" -- "1,$didx" commits --date
+check "commits --date needs a value"  exit=1 err="--date needs a day" -- "1,$didx" commits --date
 # An unquoted '>' is eaten by the shell, so the value arrives bare: say why.
-check "commits --date eaten by shell" exit=1 err="redirect" -- "1,$didx" commits --date ">="
+check "commits --date eaten by shell" exit=1 err="--date-since" -- "1,$didx" commits --date ">="
+
+# A commit or a date filter widens the source to the full log by itself: it
+# names something in the history, not something in the default slice. 'init' is
+# the shared root, which the default slice always cuts.
+rootsha="$(cd "$APP" && git rev-list --max-parents=0 --abbrev-commit HEAD)"
+check "--commits implies --all"       exit=0 out="init" -- "1,$didx" commits --commits "$rootsha"
+check "--date implies --all"          exit=0 out="init" -- "1,$didx" commits --date "$today"
+check "--date-since implies --all"    exit=0 out="init" -- "1,$didx" commits --date-since "$yesterday"
+# --author does not: it matches many commits and named none of them.
+aonly="$("$BIN" "1,$didx" commits --author Test 2>/dev/null | grep -cw init || true)"
+acmd="$(fmt_cmd "1,$didx" commits --author Test)"
+if [ "$aonly" = 0 ]; then
+  report PASS HAPPY "--author keeps the default slice" "$acmd  # no init row"
+else
+  report FAIL HAPPY "--author keeps the default slice" "$acmd" "init leaked: --author widened the source"
+fi
+check "--author --all is the full log" exit=0 out="init" -- "1,$didx" commits --author Test --all
+# A --union the user typed still wins over the implied --all.
+check "--union survives a date filter" exit=0 out="loginside" -- "1,$didx" commits --union --date "$today"
 
 # --commit-since/--commit-until include the commit they name -- the point of the flags.
 mainsha="$(cd "$APP" && git rev-parse --short HEAD)"

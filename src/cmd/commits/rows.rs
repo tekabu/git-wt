@@ -137,8 +137,38 @@ pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, Stri
         });
     }
 
-    stats.sort_by(|a, b| a.path.cmp(&b.path));
+    sort_file_stats(&mut stats);
     Ok(stats)
+}
+
+/// Where a status letter sorts in a file block.
+///
+/// The life of a file, in order: it appears, it changes, it moves, it goes
+/// away -- with untracked last, since it is not in the history at all. Sorting
+/// on the letter itself would put 'D' between 'C' and 'M', and '?' ahead of
+/// every letter: alphabetical order pretending to be meaning.
+fn status_rank(c: char) -> u8 {
+    match c {
+        'A' => 0,
+        'M' => 1,
+        'R' => 2,
+        'C' => 3,
+        'T' => 4,
+        'D' => 5,
+        '?' => 7,
+        _ => 6,
+    }
+}
+
+/// Order a file block: status first, so every add sits with the adds and every
+/// delete with the deletes, then path within each group. Without it a block
+/// reads as one alphabetical run and the shape of the change is invisible.
+pub(crate) fn sort_file_stats(stats: &mut [FileStat]) {
+    stats.sort_by(|a, b| {
+        status_rank(a.status)
+            .cmp(&status_rank(b.status))
+            .then_with(|| a.path.cmp(&b.path))
+    });
 }
 
 /// The lines of a file block: one tab-indented `status  path  +added  -removed`
@@ -489,6 +519,40 @@ impl Mark {
 mod tests {
     use super::*;
     use crate::cmd::commits::args::{parse_date_filter, DateFmt};
+
+    #[test]
+    fn a_block_groups_by_status_then_path() {
+        let mut files: Vec<FileStat> = ["M docs/base.txt", "A src/cli.rs", "M src/main.rs",
+                                        "A src/ui.rs", "D old.rs", "? new.txt", "R moved.rs"]
+            .iter()
+            .map(|s| {
+                let (st, path) = s.split_once(' ').unwrap();
+                FileStat {
+                    status: st.chars().next().unwrap(),
+                    path: path.into(),
+                    added: Some(1),
+                    removed: Some(0),
+                }
+            })
+            .collect();
+        sort_file_stats(&mut files);
+        let got: Vec<String> = files.iter().map(|f| format!("{} {}", f.status, f.path)).collect();
+        // Adds, then modifications, then the move, then the delete, with the
+        // untracked file last -- and alphabetical inside each group. Sorting on
+        // the letter alone would lead with '?' and bury 'D' among the letters.
+        assert_eq!(
+            got,
+            vec![
+                "A src/cli.rs",
+                "A src/ui.rs",
+                "M docs/base.txt",
+                "M src/main.rs",
+                "R moved.rs",
+                "D old.rs",
+                "? new.txt",
+            ]
+        );
+    }
 
     #[test]
     fn file_stat_lines_pads_paths_and_counts() {

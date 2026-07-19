@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::git::git_stdout;
-use crate::cmd::commits::rows::{file_stat_lines, FileStat};
+use crate::cmd::commits::rows::{file_stat_lines, sort_file_stats, FileStat};
 use crate::cmd::merged::{merged_text, merged_text_at};
 use crate::ui::{
     color_enabled, ellipsize, is_subseq, paint, term_width, BRANCH_MIN, DIM,
@@ -190,7 +190,7 @@ pub(crate) fn worktree_files(w: &Worktree) -> Vec<FileStat> {
         });
     }
 
-    stats.sort_by(|a, b| a.path.cmp(&b.path));
+    sort_file_stats(&mut stats);
     stats
 }
 

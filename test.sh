@@ -1282,6 +1282,11 @@ cd "$APP" || exit 1
 #   detached                     (skipped: no branch to sync)
 SR="$ROOT/syn/origin.git"; SA="$ROOT/syn/app"; mkdir -p "$ROOT/syn"
 ( git init -q --bare "$SR"
+  # A bare repo's HEAD is init.defaultBranch: 'master' on stock Linux. Only
+  # 'main' is ever pushed here, so a later clone of this origin would resolve
+  # HEAD to a ref that does not exist, check out nothing, and leave the second
+  # clone empty. Pin the bare HEAD to the branch that will actually be there.
+  git symbolic-ref HEAD refs/heads/main
   git clone -q "$SR" "$SA" 2>/dev/null
   cd "$SA"
   git config user.email t@t; git config user.name t

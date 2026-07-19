@@ -334,7 +334,7 @@ pub(crate) fn list_from_args(root: &Path, args: &[String]) -> Result<(), String>
             }
         }
     }
-    cmd_list(root, search.as_deref(), cols, mode, show_path, files)
+    cmd_list(root, search.as_deref(), cols, mode, show_path, files, None)
 }
 
 

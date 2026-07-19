@@ -11,9 +11,13 @@ pub(crate) fn git_cmd(dir: &Path, args: &[&str]) -> Command {
     c
 }
 
-/// Run git, streaming its output through. Errors carry git's stderr.
-pub(crate) fn git_run(dir: &Path, args: &[&str]) -> Result<(), String> {
-    let out = git_cmd(dir, args)
+/// Run a prepared git command, relaying what it printed. Errors carry stderr.
+///
+/// Both `git_run` and `git_run_no_editor` end here: they differ only in the
+/// environment they set, and when they each carried their own copy of this
+/// body a fix to one silently left the other behind.
+fn run_and_relay(mut cmd: Command) -> Result<(), String> {
+    let out = cmd
         .output()
         .map_err(|e| format!("failed to run git: {e}"))?;
 
@@ -24,32 +28,31 @@ pub(crate) fn git_run(dir: &Path, args: &[&str]) -> Result<(), String> {
     }
 
     if out.status.success() {
+        // On success git's stderr is the report, not an error: `fetch` writes
+        // "From github.com..." and the ref updates there and nothing to stdout,
+        // so dropping it would make a successful fetch print nothing at all.
+        let err = String::from_utf8_lossy(&out.stderr);
+        for line in err.lines() {
+            eprintln!("{line}");
+        }
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
 }
 
+/// Run git, streaming its output through. Errors carry git's stderr.
+pub(crate) fn git_run(dir: &Path, args: &[&str]) -> Result<(), String> {
+    run_and_relay(git_cmd(dir, args))
+}
+
 /// Run git with the editor disabled. We capture git's output, so a spawned
 /// editor would have no terminal and hang; instead git's default commit message
 /// is taken as-is (`-m` is how a user overrides it).
 pub(crate) fn git_run_no_editor(dir: &Path, args: &[&str]) -> Result<(), String> {
-    let out = git_cmd(dir, args)
-        .env("GIT_EDITOR", "true")
-        .env("GIT_MERGE_AUTOEDIT", "no")
-        .output()
-        .map_err(|e| format!("failed to run git: {e}"))?;
-
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        eprintln!("{line}");
-    }
-
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
+    let mut cmd = git_cmd(dir, args);
+    cmd.env("GIT_EDITOR", "true").env("GIT_MERGE_AUTOEDIT", "no");
+    run_and_relay(cmd)
 }
 
 pub(crate) fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {

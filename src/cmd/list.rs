@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::git::git_stdout;
-use crate::cmd::commits::rows::{file_stat_lines, sort_file_stats, FileStat};
+use crate::cmd::commits::rows::{file_stat_lines, parse_numstat_z, sort_file_stats, FileStat};
 use crate::cmd::merged::{merged_text, merged_text_at};
 use crate::ui::{
     color_enabled, ellipsize, is_subseq, paint, term_width, BRANCH_MIN, DIM,
@@ -76,7 +76,7 @@ pub(crate) fn parse_cols(s: &str) -> Result<Vec<usize>, String> {
         let n: usize = p
             .parse()
             .map_err(|_| format!("bad column '{p}' (use {COL_HELP})"))?;
-        if n < 1 || n > 10 {
+        if !(1..=10).contains(&n) {
             return Err(format!("no column {n} (use {COL_HELP})"));
         }
         v.push(n);
@@ -131,39 +131,30 @@ pub(crate) fn worktree_files(w: &Worktree) -> Vec<FileStat> {
             continue;
         }
         let status = if x != ' ' { x } else { y };
-        // "R  old -> new": the new path is the one that exists now, and numstat
-        // spells the same change "old => new", so both look it up.
-        match rest.split_once(" -> ") {
-            Some((old, new)) => {
-                status_by_path.insert(new.to_string(), status);
-                status_by_path.insert(format!("{old} => {new}"), status);
-            }
-            None => {
-                status_by_path.insert(rest.to_string(), status);
-            }
-        }
+        // "R  old -> new": the new path is the one that exists now, and it is
+        // the one `--numstat -z` keys the rename on.
+        let path = match rest.split_once(" -> ") {
+            Some((_old, new)) => new,
+            None => rest,
+        };
+        status_by_path.insert(path.to_string(), status);
     }
 
     let mut stats: Vec<FileStat> = Vec::new();
     let mut counted: HashSet<String> = HashSet::new();
-    if let Ok(numstat) = git_stdout(&w.path, &["diff", "--numstat", "HEAD"]) {
-        for line in numstat.lines() {
-            let mut parts = line.splitn(3, '\t');
-            let (Some(added_field), Some(removed_field), Some(path)) =
-                (parts.next(), parts.next(), parts.next())
-            else {
-                continue;
+    if let Ok(numstat) = git_stdout(&w.path, &["diff", "--numstat", "-z", "HEAD"]) {
+        for entry in parse_numstat_z(&numstat) {
+            let status = status_by_path.get(&entry.path).copied().unwrap_or('M');
+            counted.insert(entry.path.clone());
+            let path = match &entry.old_path {
+                Some(old) => format!("{old} => {}", entry.path),
+                None => entry.path.clone(),
             };
-            // A binary file has no line counts; git spells that "-".
-            let added = (added_field != "-").then(|| added_field.parse().ok()).flatten();
-            let removed = (removed_field != "-").then(|| removed_field.parse().ok()).flatten();
-            let status = status_by_path.get(path).copied().unwrap_or('M');
-            counted.insert(path.to_string());
             stats.push(FileStat {
                 status,
-                path: path.to_string(),
-                added,
-                removed,
+                path,
+                added: entry.added,
+                removed: entry.removed,
             });
         }
     }
@@ -203,6 +194,13 @@ pub(crate) enum ListMode {
     Long,
 }
 
+/// The worktree table.
+///
+/// `merged_ref` is what `--others` adds: every row is measured against that ref
+/// instead of the branch we are standing in, and the default columns carry the
+/// merged-into-ref pair (7/8) rather than the ahead/behind pair. It is the only
+/// difference between the two views, so they share this one body -- a second
+/// copy meant every table fix had to be made twice.
 pub(crate) fn cmd_list(
     root: &Path,
     search: Option<&str>,
@@ -210,6 +208,7 @@ pub(crate) fn cmd_list(
     mode: ListMode,
     show_path: bool,
     files: bool,
+    merged_ref: Option<&str>,
 ) -> Result<(), String> {
     let trees = worktrees(root)?;
 
@@ -244,13 +243,20 @@ pub(crate) fn cmd_list(
     // with a prefix, and `git-wt <N> path` is how a script gets one anyway --
     // so on a terminal it waits for --show-path. A pipe keeps it unasked: the
     // id/branch/dir contract is what the flagless form has always emitted.
-    let cols = match (cols, mode) {
-        (Some(c), _) => c,
-        (None, ListMode::Short) => vec![1, 2, 4],
-        (None, ListMode::Long) => vec![1, 2, 3, 4, 5, 9, 10],
-        (None, ListMode::Normal) if stdout_tty && show_path => vec![1, 2, 3, 4, 5, 9, 10],
-        (None, ListMode::Normal) if stdout_tty => vec![1, 2, 4, 5, 9, 10],
-        (None, ListMode::Normal) => vec![1, 2, 3],
+    //
+    // Under `--others` the merged-into-ref pair replaces the ahead/behind pair:
+    // the question that view asks is what has landed in the ref, and a piped
+    // one still answers it, since that is the whole point of the command.
+    let cols = match (cols, merged_ref, mode) {
+        (Some(c), _, _) => c,
+        (None, Some(_), _) if stdout_tty && show_path => vec![1, 2, 3, 4, 5, 7, 8],
+        (None, Some(_), _) if stdout_tty => vec![1, 2, 4, 5, 7, 8],
+        (None, Some(_), _) => vec![1, 2, 3, 7, 8],
+        (None, None, ListMode::Short) => vec![1, 2, 4],
+        (None, None, ListMode::Long) => vec![1, 2, 3, 4, 5, 9, 10],
+        (None, None, ListMode::Normal) if stdout_tty && show_path => vec![1, 2, 3, 4, 5, 9, 10],
+        (None, None, ListMode::Normal) if stdout_tty => vec![1, 2, 4, 5, 9, 10],
+        (None, None, ListMode::Normal) => vec![1, 2, 3],
     };
 
     // Branch color needs status too, so fetch it whenever we color or show it.
@@ -268,12 +274,14 @@ pub(crate) fn cmd_list(
     // The branch we are standing in; column 6 asks whether each row's branch is
     // already contained in it. Columns 7/8 use the same reference in normal list
     // mode; the `--others` command overrides the reference explicitly.
-    let here = if need_merged || need_merged_ref || need_merged_at {
-        current_ref()
-    } else {
-        String::new()
+    // Columns 7/8 follow `merged_ref` when one was given, so the branch we are
+    // standing in is only worth looking up when something still asks for it.
+    let need_here = need_merged || ((need_merged_ref || need_merged_at) && merged_ref.is_none());
+    let here = if need_here { current_ref() } else { String::new() };
+    let merged_ref = match merged_ref {
+        Some(r) => r.to_string(),
+        None => here.clone(),
     };
-    let merged_ref = here.clone();
 
     // Per-row metadata, fetched once (read-only git calls).
     let meta: Vec<(Status, String, String, String, String, String, String)> = rows

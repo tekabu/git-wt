@@ -1,10 +1,10 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cmd::list::{col_header, last_commit, render_row};
+use crate::cmd::list::{cmd_list, ListMode};
 use crate::git::{git_cmd, git_stdout};
-use crate::ui::{color_enabled, ellipsize, paint, term_width, BRANCH_MIN, DIM, GREEN};
-use crate::worktree::{label, ref_of, status_text, worktree_status, worktrees, Status, Worktree};
+use crate::ui::{color_enabled, paint, GREEN};
+use crate::worktree::{ref_of, Worktree};
 
 // ---------------------------------------------------------------------------
 // Merged: git-wt <N> merged [<M|BRANCH>] | git-wt <N>,<M> merged
@@ -19,120 +19,9 @@ pub(crate) fn cmd_merged_others(
     show_path: bool,
 ) -> Result<(), String> {
     let dest = ref_of(&trees[idx])?;
-    cmd_list_with_ref(root, &dest, show_path)
+    cmd_list(root, None, None, ListMode::Normal, show_path, false, Some(&dest))
 }
 
-/// Shared implementation for the "list relative to a reference branch" view.
-/// Used by `cmd_merged_others`; columns 7/8 are the merged-into-ref data.
-pub(crate) fn cmd_list_with_ref(root: &Path, merged_ref: &str, show_path: bool) -> Result<(), String> {
-    let trees = worktrees(root)?;
-    let rows: Vec<(usize, &Worktree)> = trees.iter().enumerate().collect();
-
-    let stdout_tty = std::io::stdout().is_terminal();
-    let color = color_enabled(stdout_tty);
-
-    let cols: Vec<usize> = if stdout_tty {
-        if show_path {
-            vec![1, 2, 3, 4, 5, 7, 8]
-        } else {
-            vec![1, 2, 4, 5, 7, 8]
-        }
-    } else {
-        vec![1, 2, 3, 7, 8]
-    };
-
-    let need_status = color || cols.contains(&4);
-    let need_last = cols.contains(&5);
-    let need_merged_ref = cols.contains(&7);
-    let need_merged_at = cols.contains(&8);
-    let header = stdout_tty;
-
-    let numw = trees.len().to_string().len();
-
-    let meta: Vec<(Status, String, String, String)> = rows
-        .iter()
-        .map(|(_, w)| {
-            let st = if need_status && !w.bare {
-                worktree_status(&w.path)
-            } else {
-                Status::Unknown
-            };
-            let last = if need_last { last_commit(&w.path) } else { String::new() };
-            let (merged_r, merged_a) = if need_merged_ref || need_merged_at {
-                merged_text_at(root, w, merged_ref)
-            } else {
-                (String::new(), String::new())
-            };
-            (st, last, merged_r, merged_a)
-        })
-        .collect();
-
-    let cells: Vec<Vec<String>> = rows
-        .iter()
-        .zip(&meta)
-        .map(|((i, w), (st, last, merged_r, merged_a))| {
-            cols.iter()
-                .map(|c| match c {
-                    1 => format!("{:>numw$}", i + 1, numw = numw),
-                    2 => label(w),
-                    3 => w.path.display().to_string(),
-                    4 => status_text(*st).to_string(),
-                    5 => last.clone(),
-                    7 => merged_r.clone(),
-                    _ => merged_a.clone(),
-                })
-                .collect()
-        })
-        .collect();
-
-    let header_cells: Vec<String> = cols.iter().map(|c| col_header(*c).to_string()).collect();
-    let mut cells = cells;
-
-    let mut widths = vec![0usize; cols.len()];
-    for row in cells.iter().chain(header.then_some(&header_cells)) {
-        for (k, cell) in row.iter().enumerate() {
-            widths[k] = widths[k].max(cell.chars().count());
-        }
-    }
-
-    if let (Some(term), Some(k)) = (term_width(stdout_tty), cols.iter().position(|c| *c == 2)) {
-        let gaps = 2 * (cols.len() - 1);
-        let others: usize = widths
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| *j != k)
-            .map(|(_, w)| w)
-            .sum();
-        let budget = term.saturating_sub(gaps + others);
-        if budget < widths[k] {
-            let cap = budget.max(BRANCH_MIN);
-            for row in cells.iter_mut() {
-                row[k] = ellipsize(&row[k], cap);
-            }
-            widths[k] = cells.iter().map(|r| r[k].chars().count()).max().unwrap_or(0);
-            if header {
-                widths[k] = widths[k].max(header_cells[k].chars().count());
-            }
-        }
-    }
-
-    if header {
-        let line = render_row(
-            &header_cells,
-            &cols,
-            &widths,
-            Status::Unknown,
-            false,
-        );
-        println!("{}", paint(&line, DIM, color));
-    }
-
-    for (row, (st, _, _, _)) in cells.iter().zip(&meta) {
-        let line = render_row(row, &cols, &widths, *st, color);
-        println!("{line}");
-    }
-    Ok(())
-}
 
 /// Short text for the "merged" column: whether `w`'s branch is already in the
 /// branch we are standing in (`here`). `-` for bare worktrees or failures.

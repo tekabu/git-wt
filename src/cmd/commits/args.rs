@@ -590,8 +590,20 @@ pub(crate) fn iso_date(s: &str) -> Result<String, String> {
         return Err(bad());
     }
     let num = |r: std::ops::Range<usize>| s[r].parse::<u32>().unwrap_or(0);
-    let (m, d) = (num(5..7), num(8..10));
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    let (y, m, d) = (num(0..4), num(5..7), num(8..10));
+    if !(1..=12).contains(&m) {
+        return Err(format!("no such date '{s}'"));
+    }
+    // Day bound is month-specific: a flat 1..=31 would pass 2026-02-31, which
+    // then matches nothing and reads as "no commits" rather than a typo.
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let last = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if leap => 29,
+        _ => 28,
+    };
+    if !(1..=last).contains(&d) {
         return Err(format!("no such date '{s}'"));
     }
     Ok(s.to_string())
@@ -613,6 +625,25 @@ mod tests {
     fn parse(args: &[&str]) -> Result<CommitsArgs, String> {
         let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         parse_commits_args(&v)
+    }
+
+    /// A day past the month's end is a typo, and matching zero rows would show
+    /// it as an empty table rather than a mistake.
+    #[test]
+    fn iso_date_rejects_days_the_month_does_not_have() {
+        assert!(iso_date("2026-02-31").is_err());
+        assert!(iso_date("2026-04-31").is_err());
+        assert!(iso_date("2026-02-29").is_err(), "2026 is not a leap year");
+        assert!(iso_date("2026-13-01").is_err());
+        assert!(iso_date("2026-01-00").is_err());
+
+        assert!(iso_date("2026-01-31").is_ok());
+        assert!(iso_date("2026-04-30").is_ok());
+        assert!(iso_date("2026-02-28").is_ok());
+        // Leap years: divisible by 4, except centuries that are not by 400.
+        assert!(iso_date("2024-02-29").is_ok());
+        assert!(iso_date("2000-02-29").is_ok());
+        assert!(iso_date("1900-02-29").is_err());
     }
 
     #[test]

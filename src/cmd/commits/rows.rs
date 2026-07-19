@@ -42,6 +42,58 @@ pub(crate) struct FileStat {
     pub(crate) removed: Option<usize>,
 }
 
+/// One `--numstat -z` record: line counts plus the path the change lands on.
+pub(crate) struct NumstatEntry {
+    pub(crate) added: Option<usize>,
+    pub(crate) removed: Option<usize>,
+    /// The path as it exists after the change -- the new name for a rename.
+    pub(crate) path: String,
+    /// The pre-rename name, `None` when the file did not move.
+    pub(crate) old_path: Option<String>,
+}
+
+/// Parse `--numstat -z` output.
+///
+/// The `-z` form exists because the plain one is ambiguous: git brace-compacts
+/// a rename's common prefix, so `src/deep/old.rs -> src/deep/new.rs` prints as
+/// `src/deep/{old.rs => new.rs}` -- a string that is neither path and cannot be
+/// split back into two without reimplementing git's compaction. Under `-z` a
+/// rename is instead three NUL-separated fields: the counts (with a trailing
+/// tab and an empty third column), then old, then new.
+pub(crate) fn parse_numstat_z(out: &str) -> Vec<NumstatEntry> {
+    let count = |f: &str| (f != "-").then(|| f.parse::<usize>().ok()).flatten();
+
+    let mut entries = Vec::new();
+    let mut fields = out.split('\0');
+    while let Some(record) = fields.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let mut parts = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        // An empty third column marks a rename or copy: the two names follow as
+        // their own NUL-separated fields.
+        let (path, old_path) = if path.is_empty() {
+            let (Some(old), Some(new)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            (new.to_string(), Some(old.to_string()))
+        } else {
+            (path.to_string(), None)
+        };
+        entries.push(NumstatEntry {
+            added: count(added),
+            removed: count(removed),
+            path,
+            old_path,
+        });
+    }
+    entries
+}
+
 /// The files a commit touched, with status and line counts.
 ///
 /// Diffed against the first parent (or the empty tree for root commits), which
@@ -70,7 +122,7 @@ pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, Stri
     )?;
     let numstat_out = git_stdout(
         root,
-        &["diff-tree", "-r", "--numstat", "-M", "-C", base, sha],
+        &["diff-tree", "-r", "--numstat", "-z", "-M", "-C", base, sha],
     )?;
 
     // Map path -> status. Renames/copies keep the new path.
@@ -88,17 +140,12 @@ pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, Stri
         };
         match status {
             'R' | 'C' => {
-                // R100<tab>old<tab>new
-                let Some(old) = parts.next() else {
-                    continue;
-                };
-                let Some(new) = parts.next() else {
+                // R100<tab>old<tab>new -- the old name is stepped over, since
+                // the numstat side keys every rename on the new one.
+                let (Some(_old), Some(new)) = (parts.next(), parts.next()) else {
                     continue;
                 };
                 status_by_path.insert(new.to_string(), status);
-                // `--numstat` reports the rename as `old => new`, so keep that
-                // lookup key too.
-                status_by_path.insert(format!("{} => {}", old, new), status);
             }
             _ => {
                 let Some(path) = parts.next() else {
@@ -110,36 +157,20 @@ pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, Stri
     }
 
     let mut stats: Vec<FileStat> = Vec::new();
-    for line in numstat_out.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.splitn(3, '\t');
-        let Some(added_field) = parts.next() else {
-            continue;
+    for entry in parse_numstat_z(&numstat_out) {
+        // Status is keyed on the new name, which is what name-status reports;
+        // the printed path keeps both names, since an 'R' on its own says a
+        // file moved without saying from where.
+        let status = status_by_path.get(&entry.path).copied().unwrap_or('M');
+        let path = match &entry.old_path {
+            Some(old) => format!("{old} => {}", entry.path),
+            None => entry.path.clone(),
         };
-        let Some(removed_field) = parts.next() else {
-            continue;
-        };
-        let Some(path) = parts.next() else {
-            continue;
-        };
-        let added = if added_field == "-" {
-            None
-        } else {
-            added_field.parse::<usize>().ok()
-        };
-        let removed = if removed_field == "-" {
-            None
-        } else {
-            removed_field.parse::<usize>().ok()
-        };
-        let status = status_by_path.get(path).copied().unwrap_or('M');
         stats.push(FileStat {
             status,
-            path: path.to_string(),
-            added,
-            removed,
+            path,
+            added: entry.added,
+            removed: entry.removed,
         });
     }
 
@@ -624,6 +655,81 @@ mod tests {
     use super::*;
     use crate::cmd::commits::args::{parse_date_filter, DateFmt};
 
+    /// The reason `-z` is used at all: the plain form brace-compacts a rename
+    /// into a string that is neither path, so a nested rename could never be
+    /// matched back to its name-status entry.
+    #[test]
+    fn numstat_z_reads_renames_as_separate_old_and_new_paths() {
+        let out = "0\t0\t\0src/deep/old.rs\0src/deep/new.rs\0\
+                   3\t1\tplain.rs\0\
+                   -\t-\tlogo.png\0";
+        let got = parse_numstat_z(out);
+
+        assert_eq!(got.len(), 3);
+        // The nested rename: new path stands alone, uncompacted.
+        assert_eq!(got[0].path, "src/deep/new.rs");
+        assert_eq!(got[0].old_path.as_deref(), Some("src/deep/old.rs"));
+        assert_eq!((got[0].added, got[0].removed), (Some(0), Some(0)));
+        // An ordinary edit carries no old name.
+        assert_eq!(got[1].path, "plain.rs");
+        assert_eq!(got[1].old_path, None);
+        assert_eq!((got[1].added, got[1].removed), (Some(3), Some(1)));
+        // Binary: git spells the counts "-", which is not zero.
+        assert_eq!(got[2].path, "logo.png");
+        assert_eq!((got[2].added, got[2].removed), (None, None));
+    }
+
+    /// The same rename, through real git rather than a literal: the unit test
+    /// above pins the parse, this pins the format it is parsing. A hand-written
+    /// string cannot notice if git ever changes what `--numstat -z` emits.
+    #[test]
+    fn a_rename_inside_a_directory_is_reported_as_a_move() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-rename-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2026-07-17T10:00:00")
+                .env("GIT_COMMITTER_DATE", "2026-07-17T10:00:00")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+        }
+
+        std::fs::create_dir_all(tmp.join("src/deep")).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        // Enough lines that git scores the move as a rename, not add+delete.
+        std::fs::write(tmp.join("src/deep/old.rs"), "a\nb\nc\nd\ne\n").unwrap();
+        std::fs::write(tmp.join("top.rs"), "top\n").unwrap();
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "one"]);
+        // One rename nested in a directory, one at the root. Only the nested
+        // one gets brace-compacted by plain --numstat, and it was the one that
+        // used to fall through to 'M'.
+        git(&tmp, &["mv", "src/deep/old.rs", "src/deep/new.rs"]);
+        git(&tmp, &["mv", "top.rs", "bottom.rs"]);
+        git(&tmp, &["commit", "--quiet", "-m", "two"]);
+
+        let head = git_stdout(&tmp, &["rev-parse", "HEAD"]).unwrap();
+        let stats = commit_files(&tmp, head.trim()).unwrap();
+
+        assert_eq!(stats.len(), 2, "{stats:?}");
+        // Both are moves, and both print where they came from.
+        assert!(stats.iter().all(|s| s.status == 'R'), "{stats:?}");
+        let paths: Vec<&str> = stats.iter().map(|s| s.path.as_str()).collect();
+        assert!(
+            paths.contains(&"src/deep/old.rs => src/deep/new.rs"),
+            "{paths:?}"
+        );
+        assert!(paths.contains(&"top.rs => bottom.rs"), "{paths:?}");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn body_hits_keeps_only_the_lines_that_matched() {
         let body = "fixes ISSUE-42 in the parser\n\nunrelated paragraph\n  ISSUE-42 again  \n";
@@ -869,11 +975,9 @@ mod tests {
         commit(&tmp, "C", "2025-12-24T10:00:00");
         commit(&tmp, "D", "2025-12-25T10:00:00");
 
-        let refs = vec![
-            "main".to_string(),
+        let refs = ["main".to_string(),
             "feat".to_string(),
-            "fix".to_string(),
-        ];
+            "fix".to_string()];
 
         // feat and fix both forked at B, so the commits main has that either of
         // them misses are C and D; the earliest is C. The default slice should
@@ -950,7 +1054,7 @@ mod tests {
             "2025-12-23T10:00:00",
         );
 
-        let refs = vec!["main".to_string(), "feat".to_string()];
+        let refs = ["main".to_string(), "feat".to_string()];
 
         // main has SIDE and FLOOR that feat is missing; MAINLINE is shared.
         let divergent = divergent_set(&tmp, &refs[0], &refs[1..]).unwrap();

@@ -82,12 +82,35 @@ EOF
   # Write through rather than `mv`: the rc is often a symlink into a dotfile
   # manager (chezmoi/stow/yadm), and `mv` would replace the link with a plain
   # file. This also preserves the rc's existing permissions.
-  cat "$tmp" > "$rc" && rm -f "$tmp"
+  # The redirect truncates $rc before the copy starts, so an interrupted write
+  # would leave the user with an empty shell rc. Keep a backup until it lands.
+  # `touch` above guarantees $rc exists, so the backup is always taken.
+  local bak="$rc.git-wt.bak"
+  cp "$rc" "$bak" || {
+    echo "error: could not back up $rc; leaving it untouched" >&2
+    rm -f "$tmp"
+    return 1
+  }
+  # A failed write is the case the backup exists for: restore it rather than
+  # leaving the truncated rc behind, and say so instead of reporting success.
+  if ! cat "$tmp" > "$rc"; then
+    # Whatever stopped the write (a full disk, a read-only file) is likely to
+    # stop the restore too, so the restore is checked before it is claimed.
+    if cp "$bak" "$rc" 2>/dev/null; then
+      echo "error: could not write $rc; restored from $bak" >&2
+    else
+      echo "error: could not write $rc, and the restore failed; your original is at $bak" >&2
+    fi
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
   if [ "$had_block" = yes ]; then
     echo "Refreshed '$alias_name' in $rc"
   else
     echo "Added '$alias_name' to $rc"
   fi
+  echo "Previous $rc saved as $bak"
 
   # The binary is already live (the function just calls it). Only the shell
   # function itself needs reloading, and a child process cannot touch its parent

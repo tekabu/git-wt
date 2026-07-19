@@ -110,13 +110,14 @@ pub(crate) fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
 
     // --from only affects creating a NEW branch; if the branch already exists
     // it is silently overridden, so warn + confirm.
-    if from.is_some() && (has_local || remote.is_some()) {
-        if !confirm(&format!(
+    if from.is_some()
+        && (has_local || remote.is_some())
+        && !confirm(&format!(
             "branch '{branch}' already exists; --from ignored. Continue? [y/N] "
-        ))? {
-            eprintln!("Aborted.");
-            return Ok(());
-        }
+        ))?
+    {
+        eprintln!("Aborted.");
+        return Ok(());
     }
 
     // Default base for a NEW branch is the ref checked out where the user is

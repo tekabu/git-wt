@@ -80,11 +80,10 @@ pub(crate) fn parse_sync_args(op: SyncOp, args: &[String]) -> Result<SyncArgs, S
             // `--force-with-lease` minus the check that makes it safe, and a
             // sweep would apply it to every branch at once.
             "-f" | "--force" if op == SyncOp::Push => {
-                return Err(format!(
-                    "no '--force' for push: it overwrites a remote branch without checking \
-                     what is on it\nhint: '--force-with-lease' refuses when the remote moved \
-                     since you last saw it"
-                ));
+                return Err("no '--force' for push: it overwrites a remote branch without \
+                     checking what is on it\nhint: '--force-with-lease' refuses when the remote \
+                     moved since you last saw it"
+                    .into());
             }
             s => s,
         };

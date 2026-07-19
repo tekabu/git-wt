@@ -54,6 +54,23 @@ pub(crate) fn parse_meld_args(args: &[String]) -> Result<MeldArgs, String> {
     if out.three_way && out.base.is_some() {
         return Err("--3way and --base are alternatives; use one or the other".into());
     }
+    // Everything below only means something to the --diff path. Accepting them
+    // silently without it would open a plain 2-pane meld and look like the flag
+    // had been honoured, so they are rejected instead of ignored.
+    if !out.diff {
+        let stray = if out.three_way {
+            "--3way"
+        } else if out.base.is_some() {
+            "--base"
+        } else if out.range.is_some() {
+            "'...'"
+        } else {
+            return Ok(out);
+        };
+        return Err(format!(
+            "{stray} only applies to 'meld --diff'; add --diff or drop {stray}"
+        ));
+    }
     Ok(out)
 }
 
@@ -159,17 +176,27 @@ pub(crate) fn cmd_meld_filtered(
     let tmp = temp_meld_dir()?;
     let dir_left = tmp.join("a");
     let dir_right = tmp.join("b");
-    extract_files(root, &left, &paths, &dir_left)?;
-    extract_files(root, &right, &paths, &dir_right)?;
 
-    let mut meld_paths: Vec<PathBuf> = vec![dir_left.clone(), dir_right.clone()];
-
-    if let Some(b) = &base {
-        let dir_base = tmp.join("base");
-        extract_files(root, b, &paths, &dir_base)?;
-        // Order: base, left, right (BASE in middle pane).
-        meld_paths = vec![dir_base, dir_left, dir_right];
-    }
+    // Every failure from here on has to sweep the temp dir on the way out --
+    // an early `?` would leave the extracted tree behind in /tmp.
+    let extract_all = || -> Result<Vec<PathBuf>, String> {
+        extract_files(root, &left, &paths, &dir_left)?;
+        extract_files(root, &right, &paths, &dir_right)?;
+        if let Some(b) = &base {
+            let dir_base = tmp.join("base");
+            extract_files(root, b, &paths, &dir_base)?;
+            // Order: base, left, right (BASE in middle pane).
+            return Ok(vec![dir_base, dir_left.clone(), dir_right.clone()]);
+        }
+        Ok(vec![dir_left.clone(), dir_right.clone()])
+    };
+    let meld_paths = match extract_all() {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    };
 
     let on = color_enabled(std::io::stderr().is_terminal());
     let mut labels: Vec<String> = if base.is_some() {
@@ -183,12 +210,10 @@ pub(crate) fn cmd_meld_filtered(
     }
     eprintln!("{} {}", paint("meld", GREEN, on), labels.join("  ↔  "));
 
-    let status = Command::new("meld")
-        .args(&meld_paths)
-        .status()
-        .map_err(|e| format!("failed to run meld: {e}"))?;
+    let status = Command::new("meld").args(&meld_paths).status();
 
     let _ = std::fs::remove_dir_all(&tmp);
+    let status = status.map_err(|e| format!("failed to run meld: {e}"))?;
 
     if !status.success() {
         return Err("meld exited with an error".into());
@@ -294,6 +319,31 @@ pub(crate) fn extract_files(root: &Path, r#ref: &str, paths: &[String], dir: &Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(args: &[&str]) -> Result<MeldArgs, String> {
+        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_meld_args(&v)
+    }
+
+    /// These flags only reach the --diff path. Accepting them without it would
+    /// open an ordinary 2-pane meld and look like they had been honoured.
+    #[test]
+    fn diff_only_flags_are_refused_without_diff() {
+        for args in [vec!["--3way"], vec!["--base", "main"], vec!["..."]] {
+            let err = parse(&args).unwrap_err();
+            assert!(
+                err.contains("only applies to 'meld --diff'"),
+                "{args:?} gave: {err}"
+            );
+        }
+
+        // With --diff they are exactly what the flag is for.
+        assert!(parse(&["--diff", "--3way"]).is_ok());
+        assert!(parse(&["--diff", "--base", "main"]).is_ok());
+        assert!(parse(&["--diff", "..."]).is_ok());
+        // And a bare meld still parses.
+        assert!(parse(&[]).is_ok());
+    }
 
     #[test]
     fn name_status_keeps_both_sides_of_a_rename() {

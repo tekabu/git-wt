@@ -138,6 +138,8 @@ pub(crate) struct CommitsArgs {
     pub(crate) message: Option<String>,
     /// Only commits touching a path containing this, case-folded.
     pub(crate) filename: Option<String>,
+    /// Cut the file block down to the paths --filename matched.
+    pub(crate) matched_files: bool,
     pub(crate) topo: bool,
     pub(crate) no_merges: bool,
     pub(crate) fmt: DateFmt,
@@ -233,6 +235,7 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     let mut author = None;
     let mut message = None;
     let mut filename = None;
+    let mut matched_files = false;
     let mut topo = false;
     let mut no_merges = false;
     let mut fmt = DateFmt { human: false, time: false };
@@ -328,6 +331,9 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
             s if s.starts_with("--message=") => {
                 message = Some(term_of(&s["--message=".len()..], MESSAGE_MISSING)?);
             }
+            // A merge can carry a hundred files and match on three; when the
+            // matches are the point, the rest is the haystack.
+            "--matched-files" | "--only-matched" => matched_files = true,
             "--filename" => filename = Some(term(it.next(), FILENAME_MISSING)?),
             s if s.starts_with("--filename=") => {
                 filename = Some(term_of(&s["--filename=".len()..], FILENAME_MISSING)?);
@@ -427,9 +433,14 @@ pub(crate) fn parse_commits_args(args: &[String]) -> Result<CommitsArgs, String>
     let wrap = wrap.unwrap_or(if message.is_some() { Wrap::Full } else { Wrap::Lines(1) });
     // Same rule for a path: a row kept for a file it touched has to name it.
     let files = files || filename.is_some();
+    // Trimming the block to the matches only means anything when there are
+    // matches to trim to: without --filename there is no match to keep.
+    if matched_files && filename.is_none() {
+        return Err(MATCHED_FILES_MSG.into());
+    }
 
     Ok(CommitsArgs {
-        limit, dates, commit_since, commit_until, commits, author, message, filename,
+        limit, dates, commit_since, commit_until, commits, author, message, filename, matched_files,
         topo, no_merges, fmt, md,
         reverse, no_cherry, pick, union,
         all, files, wrap, subjectw,
@@ -493,6 +504,8 @@ pub(crate) const MESSAGE_MISSING: &str =
      hint: it searches the subject and the body";
 pub(crate) const FILENAME_MISSING: &str =
     "--filename needs a term, e.g. '--filename render.rs'";
+pub(crate) const MATCHED_FILES_MSG: &str =
+    "--matched-files needs a '--filename TERM' to match: on its own there is nothing to keep";
 pub(crate) const FILE_MSG: &str =
     "no '--file' for commits: '--filename TERM' filters rows, '--files' shows the file block";
 pub(crate) const GREP_MSG: &str =
@@ -894,6 +907,17 @@ mod tests {
         // ...and --filename does not turn on the wrap: its match is in the
         // block below the row, not in the subject.
         assert_eq!(parse(&["--filename", "ui.rs"]).unwrap().wrap, Wrap::Lines(1));
+    }
+
+    #[test]
+    fn matched_files_needs_something_to_match() {
+        assert!(!parse(&[]).unwrap().matched_files);
+        assert!(parse(&["--filename", "ui.rs", "--matched-files"]).unwrap().matched_files);
+        assert!(parse(&["--filename", "ui.rs", "--only-matched"]).unwrap().matched_files);
+        // On its own it names no term, so there is nothing to keep and nothing
+        // to cut -- say so rather than print an empty block.
+        let err = parse(&["--matched-files"]).unwrap_err();
+        assert!(err.contains("--filename"), "{err}");
     }
 
     #[test]

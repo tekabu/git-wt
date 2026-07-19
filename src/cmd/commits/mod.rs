@@ -189,13 +189,24 @@ pub(crate) fn cmd_commits(
 
     // File stats are scoped to the displayed rows, so a large log only pays for
     // what the user is looking at. Merge commits diff against their first parent.
-    let row_files: Vec<Vec<FileStat>> = if args.files {
+    let mut row_files: Vec<Vec<FileStat>> = if args.files {
         rows.iter()
             .map(|r| commit_files(root, &r.sha))
             .collect::<Result<Vec<_>, _>>()?
     } else {
         Vec::new()
     };
+    // --filename shows the whole block by default: the filter chose the row,
+    // and the block answers what that commit did. On a merge carrying a hundred
+    // files that answer buries the three that matched, so --matched-files cuts
+    // it to them -- at the cost of counts that no longer sum to the commit.
+    if args.matched_files {
+        if let Some(t) = &args.filename.as_ref().map(|s| s.to_lowercase()) {
+            for files in &mut row_files {
+                files.retain(|f| f.path.to_lowercase().contains(t));
+            }
+        }
+    }
 
     // The body lines a --message row matched on, scoped to the displayed rows
     // like the file blocks are. Empty when the match was in the subject, which

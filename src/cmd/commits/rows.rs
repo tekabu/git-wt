@@ -321,27 +321,59 @@ fn escape_pathspec(term: &str) -> String {
     out
 }
 
-/// The shas, among `refs`, of commits that touched a path containing `term`.
+/// The shas, among `refs`, of commits whose file block would name a path
+/// containing `term`.
 ///
-/// A pathspec, so git does the walk: one rev-list, where matching in Rust would
-/// cost a diff per commit. `:(icase)` case-folds it, and the bare `*term*` is
-/// the default (non-`:(glob)`) pathspec, whose `*` crosses directory
-/// separators -- which is what a substring over a path has to do.
+/// The block is the definition, not an approximation of it: `commit_files`
+/// diffs a merge against its first parent, so this has to ask that same
+/// question or `--filename` would keep rows whose block shows no match, and
+/// drop rows whose block shows one.
 ///
-/// Path limiting brings git's history simplification with it: a merge whose
-/// tree matched no differently from its first parent is not listed. Those are
-/// the commits `git log -- <path>` shows, and for the same reason -- a merge
-/// that touched the file only by joining two sides did not touch it.
+/// Which rules out every plain path-limited walk. `git log -- <path>` prunes
+/// merges, so a merge that brought a whole feature in lists none of its files
+/// and vanishes -- the common case, and the one that made this worth fixing.
+/// `--full-history` keeps merges, but keeps every merge, matching or not.
+/// `--simplify-merges` prunes them again.
+///
+/// So: `--full-history` for the walk, and `--name-only` to check the answer.
+/// The pathspec still narrows the walk to a candidate set -- `:(icase)` folds
+/// case, and the bare `*term*` is the default (non-`:(glob)`) pathspec whose
+/// `*` crosses directory separators, which a substring over a path must do.
+/// `--diff-merges=first-parent` then makes a merge's listed files the same
+/// files its block will show. A commit git kept but listed nothing for touched
+/// no matching path, and is dropped here.
 pub(crate) fn path_shas(root: &Path, refs: &[String], term: &str) -> Result<HashSet<String>, String> {
     let spec = format!(":(icase)*{}*", escape_pathspec(term));
-    let mut args = vec!["rev-list"];
+    let mut args = vec![
+        "log",
+        "--format=%x00%H",
+        "--name-only",
+        "--full-history",
+        "--diff-merges=first-parent",
+    ];
     args.extend(refs.iter().map(String::as_str));
     args.push("--");
     args.push(&spec);
-    Ok(git_stdout(root, &args)?
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // A git too old for --diff-merges (2.31) would fail the whole command, so
+    // fall back to the walk without it: merges lose their file lists and drop
+    // out, which is the old behavior rather than no answer at all.
+    let out = match git_stdout(root, &args) {
+        Ok(o) => o,
+        Err(_) => {
+            args.retain(|a| *a != "--diff-merges=first-parent");
+            git_stdout(root, &args)?
+        }
+    };
+
+    // Each record is a sha then the matching paths it touched, so a record with
+    // no path is a commit the walk kept and the diff did not.
+    Ok(out
+        .split('\0')
+        .filter_map(|rec| {
+            let mut lines = rec.lines().map(str::trim).filter(|l| !l.is_empty());
+            let sha = lines.next()?;
+            lines.next().map(|_| sha.to_string())
+        })
         .collect())
 }
 
@@ -1206,6 +1238,85 @@ mod tests {
         assert_eq!(Mark::Has.glyph(), "✓");
         assert_eq!(Mark::Equivalent.glyph(), "≈");
         assert_eq!(Mark::Missing.glyph(), "·");
+    }
+
+    #[test]
+    fn a_merge_matches_the_paths_its_block_will_show() {
+        // The bug this exists for: `git log -- <path>` prunes merges, so a
+        // merge that brought a whole feature in matched nothing -- while its
+        // file block sat right there listing the very files searched for.
+        let tmp = std::env::temp_dir().join(format!("git-wt-pathmerge-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2026-07-17T10:00:00")
+                .env("GIT_COMMITTER_DATE", "2026-07-17T10:00:00")
+                .env("GIT_MERGE_AUTOEDIT", "no")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {out:?}");
+        }
+        fn write(dir: &std::path::Path, path: &str, text: &str) {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+        write(&tmp, "base.txt", "base");
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "base"]);
+
+        // The feature branch, merged with a commit of its own.
+        git(&tmp, &["checkout", "--quiet", "-b", "feature"]);
+        write(&tmp, "app/Expense/Report.php", "x");
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "add expense report"]);
+        git(&tmp, &["checkout", "--quiet", "main"]);
+        git(&tmp, &["merge", "--no-ff", "-m", "merge-expense", "feature"]);
+
+        // An unrelated branch, merged the same way: --full-history keeps every
+        // merge, so this is the one the name-only check has to throw back.
+        git(&tmp, &["checkout", "--quiet", "-b", "other", "HEAD~1"]);
+        write(&tmp, "unrelated.txt", "z");
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "unrelated"]);
+        git(&tmp, &["checkout", "--quiet", "main"]);
+        git(&tmp, &["merge", "--no-ff", "-m", "merge-other", "other"]);
+
+        let refs = vec!["main".to_string()];
+        let hits = path_shas(&tmp, &refs, "expense").unwrap();
+        let subject = |sha: &str| -> String {
+            let out = std::process::Command::new("git")
+                .current_dir(&tmp)
+                .args(["log", "-1", "--format=%s", sha])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let subjects: HashSet<String> = hits.iter().map(|s| subject(s)).collect();
+
+        // The commit that wrote the file, and the merge that brought it in --
+        // whose block will list it, which is what makes it a match.
+        assert!(subjects.contains("add expense report"), "{subjects:?}");
+        assert!(subjects.contains("merge-expense"), "{subjects:?}");
+        // ...and not the merge that touched nothing matching, nor the base.
+        assert!(!subjects.contains("merge-other"), "{subjects:?}");
+        assert!(!subjects.contains("unrelated"), "{subjects:?}");
+        assert!(!subjects.contains("base"), "{subjects:?}");
+
+        // Case-folded, and a substring: the term is the user's, not a glob.
+        assert_eq!(path_shas(&tmp, &refs, "EXPENSE").unwrap(), hits);
+        assert_eq!(path_shas(&tmp, &refs, "app/Expense").unwrap(), hits);
+        assert!(path_shas(&tmp, &refs, "zzz").unwrap().is_empty());
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

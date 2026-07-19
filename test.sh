@@ -602,6 +602,18 @@ hlcheck "--date lights the date" "$(printf '\033')\[1;38;5;214m$today" \
 # --author lights the author column instead.
 hlcheck "--author lights the author" "$(printf '\033')\[1;38;5;214mTest" \
   "$(fmt_cmd 1,$didx commits --author Test)" "1,$didx" commits --author Test
+# A commit bound is a date bound underneath, but the flag named a COMMIT: the
+# sha lights and the date column stays dim, or most of the table would be lit.
+cbhl="$(hl "1,$didx" commits --commit-until "$hlsha")"
+cbcmd="$(fmt_cmd "1,$didx" commits --commit-until "$hlsha")"
+if printf '%s' "$cbhl" | grep -q "$(printf '\033')\[1;38;5;214m$today"; then
+  report FAIL HAPPY "--commit-until leaves the date dim" "$cbcmd" "the date column was lit by a commit flag"
+else
+  report PASS HAPPY "--commit-until leaves the date dim" "$cbcmd"
+fi
+hlcheck "--commit-until lights its sha" "$(printf '\033')\[1;38;5;214m$hlsha" \
+  "$cbcmd" "1,$didx" commits --commit-until "$hlsha"
+
 # Nothing is lit without a filter: the table is not an answer to anything.
 plainhl="$(hl "1,$didx" commits)"
 phcmd="$(fmt_cmd "1,$didx" commits)"

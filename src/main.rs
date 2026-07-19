@@ -214,10 +214,11 @@ COMMITS FILTERS:
     When a filter keeps nothing, the message says which flag reaches back.
 
     A filter also highlights what it read, so a long table can be
-    skimmed: --author lights the author column, the date filters light
-    the date column, and --commits/--commit-since/--commit-until light
-    the sha of the commit they name -- the one row that was asked for
-    rather than merely kept.
+    skimmed. The highlight follows the flag you typed, not the filter it
+    became: --author lights the author column, --date/--date-since/
+    --date-until light the date column, and --commits/--commit-since/
+    --commit-until light only the sha of the commit they name -- a
+    commit bound is a date bound underneath, but you named a commit.
 
     --date compares the date the table prints, which is the AUTHOR date;
     git's own --since/--until read committer dates and would disagree

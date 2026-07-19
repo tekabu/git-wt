@@ -539,10 +539,12 @@ back.
 
 **A filter highlights what it read.** A filtered table is all matches by
 definition, so the color says *where* the answer lives rather than which rows
-survived: `--author` lights the author column, every date filter lights the date
-column, and `--commits`/`--commit-since`/`--commit-until` light the sha of the
-commit they name — the row that was asked for, as opposed to the rows that
-merely fall on the right side of it. Bold amber — yellow is the family the eye
+survived. It follows the flag you typed, not the filter it became: `--author`
+lights the author column, `--date`/`--date-since`/`--date-until` light the date
+column, and `--commits`/`--commit-since`/`--commit-until` light only the sha of
+the commit they name — the row that was asked for, as opposed to the rows that
+merely fall on the right side of it. A commit bound *is* a date bound
+underneath, but you named a commit, so the date column stays dim. Bold amber — yellow is the family the eye
 finds first, and plain yellow is already spent on `≈`.
 
 **Both ends include what they name.** `--commit-since 5568a21` takes that

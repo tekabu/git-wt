@@ -265,8 +265,11 @@ pub(crate) fn cmd_commits(
         args.wrap,
         args.subjectw,
         &Highlight {
-            // Every date filter reads the one column, whichever spelling asked.
-            date: !args.dates.is_empty() || !dates.is_empty(),
+            // The flags actually typed, not the filters they became. A commit
+            // bound is a date bound underneath, but the user named a commit --
+            // lighting the date column there answers a question nobody asked
+            // and paints most of the table.
+            date: !args.dates.is_empty(),
             author: args.author.is_some(),
             shas: anchors,
         },

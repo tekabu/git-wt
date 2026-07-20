@@ -81,6 +81,35 @@ dropping the binary in `~/.cargo/bin`:
 ./install.sh --alias wt      # + a `wt` shell function that cd's for you
 ```
 
+#### Installing Rust and cargo
+
+If `cargo --version` fails, you don't have Rust yet. The official installer is
+[rustup](https://rustup.rs), which puts both `rustc` and `cargo` in
+`~/.cargo/bin`:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+macOS/Linux only. On Windows, download and run
+[`rustup-init.exe`](https://rustup.rs) instead.
+
+Accept the default (`1`) when it asks; it edits your shell rc so `~/.cargo/bin`
+is on `PATH`. Either open a new shell or source it now:
+
+```sh
+. "$HOME/.cargo/env"
+cargo --version              # confirm
+```
+
+Package managers work too — `brew install rust`, `apt install cargo`,
+`dnf install cargo` — but they pin whatever version the distro ships, and
+updating means waiting on them. `rustup` updates on your word:
+
+```sh
+rustup update                # newest stable
+```
+
 `install.sh` only ever installs from source. The shareable one-file installer
 above is produced by `build.sh` (see [Build](#build)).
 

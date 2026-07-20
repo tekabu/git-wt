@@ -102,6 +102,26 @@ is on `PATH`. Either open a new shell or source it now:
 cargo --version              # confirm
 ```
 
+**rustup does not install a linker.** Rust links through the system C toolchain,
+so a fresh machine with only rustup fails at the last step of the first build:
+
+```
+error: linker `cc` not found
+```
+
+Install the platform's build tools once:
+
+| Platform | Command |
+|---|---|
+| Debian/Ubuntu | `sudo apt install -y build-essential` |
+| Fedora/RHEL | `sudo dnf groupinstall "Development Tools"` |
+| Arch | `sudo pacman -S base-devel` |
+| Alpine | `sudo apk add build-base` |
+| macOS | `xcode-select --install` |
+
+Only the source install needs this — the [one-file installer](#from-the-one-file-installer-no-rust-needed)
+ships a prebuilt binary and needs no toolchain at all.
+
 Package managers work too — `brew install rust`, `apt install cargo`,
 `dnf install cargo` — but they pin whatever version the distro ships, and
 updating means waiting on them. `rustup` updates on your word:

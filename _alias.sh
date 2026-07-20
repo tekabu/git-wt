@@ -13,7 +13,9 @@ gitwt_write_alias() {
   case "$alias_name" in
     ""|*[!A-Za-z0-9_]*) echo "error: invalid alias name '$alias_name'" >&2; return 1 ;;
     [0-9]*) echo "error: alias name '$alias_name' cannot start with a digit" >&2; return 1 ;;
-    if|then|else|elif|fi|for|while|until|do|done|case|esac|function|select|in|time)
+    # 'esac' must be quoted: unquoted inside a pattern list bash reads it as
+    # the case terminator and dies with a syntax error.
+    if|then|else|elif|fi|for|while|until|do|done|case|"esac"|function|select|in|time)
       echo "error: alias name '$alias_name' is a shell reserved word" >&2; return 1 ;;
   esac
 

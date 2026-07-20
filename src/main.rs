@@ -13,7 +13,8 @@ mod ui;
 mod worktree;
 
 use crate::cli::{
-    dispatch_target, dispatch_targets, list_from_args, parse_target_list, unknown_command_msg,
+    dispatch_target, dispatch_targets, list_from_args, parse_target_list, resolve_target,
+    resolve_target_list, unknown_command_msg,
 };
 use crate::cmd::add::cmd_add;
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp, ALL_HINT};
@@ -60,6 +61,12 @@ USAGE:
     git-wt --help
 
     Aliases: ls = list, rm = remove, cd = switch, show = path.
+
+    Anywhere <N> or a <N>,<M> list appears above, a worktree may be named by
+    the branch it holds instead of its number, and the two spellings mix:
+    'git-wt main commits', 'git-wt main,2 diff', 'git-wt main,feat/x merge'.
+    A bare number is always the worktree number, and a verb always wins over
+    a branch of the same name; 'heads/main' reaches the branch either way.
 
 ADD OPTIONS:
     -n, --name NAME       Suffix only -> leaf = <repo>-NAME
@@ -628,14 +635,31 @@ fn run() -> Result<(), String> {
         return dispatch_target(&root, n, &args[1..]);
     }
 
-    // <N>,<N>[,<N>] <action> — the multi-target grammar (meld).
-    if let Some(ns) = parse_target_list(first)? {
+    // <N>,<N>[,<N>] <action> — the multi-target grammar (meld). Parts may also
+    // be branch names; they are resolved to numbers here so the grammar below
+    // only ever sees numbers.
+    if let Some(parts) = parse_target_list(first)? {
         let root = repo_root()?;
+        let trees = worktrees(&root)?;
+        let ns = resolve_target_list(&trees, &parts)?;
         return dispatch_targets(&root, &ns, &args[1..]);
     }
 
     if first.starts_with('-') {
         return Err(format!("unknown option '{first}'\nTry 'git-wt --help'"));
+    }
+
+    // <BRANCH> <action> — the same grammar, with the worktree named by the
+    // branch it holds instead of its number. Last, so every verb outranks it: a
+    // branch called `list` is reachable only as `heads/list`. A failure to find
+    // the repo is swallowed rather than reported, because outside one the honest
+    // answer is still "unknown command", which is what falls through below.
+    if let Ok(root) = repo_root() {
+        if let Ok(trees) = worktrees(&root) {
+            if let Some(n) = resolve_target(&trees, first) {
+                return dispatch_target(&root, n, &args[1..]);
+            }
+        }
     }
 
     Err(unknown_command_msg(first))

@@ -8,7 +8,7 @@ use crate::cmd::merge::{cmd_merge, parse_merge_args, resolve_merge_source, Merge
 use crate::cmd::merged::{cmd_merged, cmd_merged_others};
 use crate::cmd::remove::cmd_remove;
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp};
-use crate::worktree::{current_ref, label, ref_of, worktrees};
+use crate::worktree::{current_ref, label, ref_of, worktrees, Worktree};
 
 /// Message for a leading word that is neither a number nor a known verb.
 /// Legacy verb-first forms get a migration hint; branch-like words get an
@@ -176,21 +176,75 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
     }
 }
 
-/// Recognize a comma-separated target list like `1,2,3`. Returns Ok(None) when
-/// the token is not one at all (so the caller keeps looking), and an error when
-/// it clearly meant to be one but is malformed (`1,,2`, `1,x`).
-pub(crate) fn parse_target_list(tok: &str) -> Result<Option<Vec<usize>>, String> {
+/// Recognize a comma-separated target list like `1,2,3` or `main,2`. Returns
+/// Ok(None) when the token is not one at all (so the caller keeps looking), and
+/// an error when it clearly meant to be one but is malformed (`1,,2`).
+///
+/// Parts are returned as written; `resolve_target_list` turns them into the
+/// worktree numbers the rest of the grammar runs on.
+pub(crate) fn parse_target_list(tok: &str) -> Result<Option<Vec<String>>, String> {
     if !tok.contains(',') {
         return Ok(None);
     }
     let mut out = Vec::new();
     for part in tok.split(',') {
-        let n: usize = part
-            .parse()
-            .map_err(|_| format!("bad worktree list '{tok}'; want numbers, e.g. '1,2'"))?;
-        out.push(n);
+        if part.is_empty() {
+            return Err(format!(
+                "bad worktree list '{tok}'; want numbers or branches, e.g. '1,2' or 'main,2'"
+            ));
+        }
+        out.push(part.to_string());
     }
     Ok(Some(out))
+}
+
+/// Turn each part of a target list into a 1-based worktree number, so
+/// everything downstream keeps working on numbers alone.
+///
+/// A bare number in range is that worktree, even when a branch shares the name;
+/// this is the same worktree-wins rule `merge` and `merged` already apply, and
+/// `heads/2` is still the way to mean the branch. Anything else is matched
+/// against the checked-out branches. It has to be a *worktree*: a list action
+/// diffs, melds or sweeps real directories, so a branch nobody has checked out
+/// has no path to give. `git-wt <N> merge <branch>` remains the way to name one.
+pub(crate) fn resolve_target_list(trees: &[Worktree], parts: &[String]) -> Result<Vec<usize>, String> {
+    let mut out = Vec::new();
+    for part in parts {
+        // A number is a worktree number, full stop -- in range or not. Out of
+        // range it is check_index that should say "no worktree #9", not a
+        // branch lookup reporting a branch nobody was asking for; `heads/9` is
+        // still there for a branch that really is called `9`.
+        if let Ok(n) = part.parse::<usize>() {
+            out.push(n);
+            continue;
+        }
+        let want = part.strip_prefix("heads/").unwrap_or(part);
+        let hit = worktree_on_branch(trees, want).ok_or_else(|| {
+            format!("no worktree on branch '{want}' (see 'git-wt list')")
+        })?;
+        out.push(hit + 1);
+    }
+    Ok(out)
+}
+
+/// The index of the worktree with `branch` checked out, if any.
+pub(crate) fn worktree_on_branch(trees: &[Worktree], branch: &str) -> Option<usize> {
+    trees.iter().position(|w| w.branch.as_deref() == Some(branch))
+}
+
+/// The worktree number a lone leading token names, when it names one at all.
+///
+/// The single-target twin of `resolve_target_list`, and deliberately quieter:
+/// a lone word reaches here only after every verb has failed to match, so a
+/// miss is not "no such branch" but "not a target either" -- the caller still
+/// owns the message, and `unknown_command_msg` keeps its `add <branch>` hint
+/// for a word that merely looks branch-shaped.
+pub(crate) fn resolve_target(trees: &[Worktree], tok: &str) -> Option<usize> {
+    if tok.parse::<usize>().is_ok() {
+        return None; // A number is the caller's own path, already handled.
+    }
+    let want = tok.strip_prefix("heads/").unwrap_or(tok);
+    worktree_on_branch(trees, want).map(|i| i + 1)
 }
 
 pub(crate) fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Result<(), String> {
@@ -346,6 +400,7 @@ pub(crate) fn list_from_args(root: &Path, args: &[String]) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn branch_like_detection() {
@@ -393,4 +448,114 @@ mod tests {
         assert_eq!(unknown_command_msg("lsit"), "unknown command 'lsit'");
     }
 
+
+    /// Worktrees on the given branches, in order, for the resolver tests.
+    fn trees_on(branches: &[&str]) -> Vec<Worktree> {
+        branches
+            .iter()
+            .map(|b| Worktree {
+                path: PathBuf::from(format!("/tmp/{b}")),
+                branch: Some((*b).to_string()),
+                detached: false,
+                bare: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn target_list_tokenizes_without_judging_the_parts() {
+        // A branch name is a legal part; only the caller knows if it resolves.
+        assert_eq!(
+            parse_target_list("1,main"),
+            Ok(Some(vec!["1".into(), "main".into()]))
+        );
+        // No comma is not a list at all -- the caller keeps looking.
+        assert_eq!(parse_target_list("main"), Ok(None));
+    }
+
+    #[test]
+    fn an_empty_part_is_a_malformed_list() {
+        let want = Err("bad worktree list '1,,2'; want numbers or branches, \
+                        e.g. '1,2' or 'main,2'"
+            .into());
+        assert_eq!(parse_target_list("1,,2"), want);
+        assert!(parse_target_list("1,").is_err());
+        assert!(parse_target_list(",1").is_err());
+    }
+
+    #[test]
+    fn a_branch_resolves_to_its_worktree_number() {
+        let trees = trees_on(&["main", "feat/x", "feat/y"]);
+        assert_eq!(
+            resolve_target_list(&trees, &["main".into(), "feat/y".into()]),
+            Ok(vec![1, 3])
+        );
+        // Numbers and branches mix freely, and a number passes through as-is.
+        assert_eq!(
+            resolve_target_list(&trees, &["2".into(), "main".into()]),
+            Ok(vec![2, 1])
+        );
+    }
+
+    #[test]
+    fn a_bare_number_is_the_worktree_not_a_branch_of_that_name() {
+        // Worktree #2 is `feat/x`, but a branch is also literally named `2`.
+        let trees = trees_on(&["main", "feat/x", "2"]);
+        // The number wins...
+        assert_eq!(resolve_target_list(&trees, &["2".into()]), Ok(vec![2]));
+        // ...and `heads/` is how you reach the branch instead.
+        assert_eq!(resolve_target_list(&trees, &["heads/2".into()]), Ok(vec![3]));
+    }
+
+    #[test]
+    fn an_out_of_range_number_stays_a_number() {
+        // It must not fall through to a branch lookup: the useful complaint is
+        // "no worktree #9", which check_index makes downstream, not "no worktree
+        // on branch '9'". Same for a `+` that usize::from_str happens to accept.
+        let trees = trees_on(&["main", "feat/x"]);
+        assert_eq!(resolve_target_list(&trees, &["9".into()]), Ok(vec![9]));
+        assert_eq!(resolve_target_list(&trees, &["+9".into()]), Ok(vec![9]));
+        assert_eq!(
+            check_index(9, trees.len()),
+            Err("no worktree #9; there are 2 (see 'git-wt list')".into())
+        );
+    }
+
+    #[test]
+    fn a_branch_no_worktree_holds_is_rejected() {
+        let trees = trees_on(&["main", "feat/x"]);
+        assert_eq!(
+            resolve_target_list(&trees, &["main".into(), "feat/gone".into()]),
+            Err("no worktree on branch 'feat/gone' (see 'git-wt list')".into())
+        );
+    }
+
+    #[test]
+    fn a_lone_branch_names_its_worktree() {
+        let trees = trees_on(&["main", "feat/x"]);
+        assert_eq!(resolve_target(&trees, "feat/x"), Some(2));
+        assert_eq!(resolve_target(&trees, "heads/main"), Some(1));
+        // A miss is None, not an error: the caller still owns the message, so
+        // `unknown_command_msg` keeps its 'did you mean add ...' hint.
+        assert_eq!(resolve_target(&trees, "feat/gone"), None);
+    }
+
+    #[test]
+    fn a_lone_number_is_left_to_the_caller() {
+        // main's own `first.parse::<usize>()` arm already ran by then; resolving
+        // it here too would give a second, divergent path to the same worktree.
+        let trees = trees_on(&["main", "2"]);
+        assert_eq!(resolve_target(&trees, "2"), None);
+        assert_eq!(resolve_target(&trees, "heads/2"), Some(2));
+    }
+
+    #[test]
+    fn a_detached_worktree_matches_no_branch_name() {
+        let mut trees = trees_on(&["main", "feat/x"]);
+        trees[1].branch = None;
+        trees[1].detached = true;
+        assert!(resolve_target_list(&trees, &["feat/x".into()]).is_err());
+        // Its number still reaches it; whether it has a ref is the action's call.
+        assert_eq!(resolve_target_list(&trees, &["2".into()]), Ok(vec![2]));
+    }
 }

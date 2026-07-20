@@ -187,6 +187,31 @@ git-wt --help
 
 Aliases: `ls` = `list`, `rm` = `remove`, `cd` = `switch`, `show` = `path`.
 
+### Branch names instead of numbers
+
+Anywhere `<N>` or a `<N>,<M>` list appears above, a worktree may be named by
+the branch it holds instead of its number, and the two spellings mix freely:
+
+```
+git-wt main commits
+git-wt main,2 diff
+git-wt main,feat/login merge
+git-wt main,feat/login,feat/api commits
+```
+
+The branch has to be checked out in a worktree — a list action diffs, melds or
+sweeps real directories, so a branch nobody has checked out has no path to
+give. To merge such a branch, name it in the single-target form instead:
+`git-wt 1 merge some-branch`.
+
+A bare number is always read as a worktree number, even when a branch shares
+that name; write `heads/2` for a branch that is itself called `2`. This is the
+same rule `merge` and `merged` already follow.
+
+A command word likewise wins over a branch of the same name: `git-wt list` is
+the listing, never a worktree on a branch called `list`. Reach that one as
+`git-wt heads/list`.
+
 ### Options (create)
 
 ```

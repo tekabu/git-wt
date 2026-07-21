@@ -162,6 +162,10 @@ pub(crate) struct CommitsArgs {
     pub(crate) all: bool,
     /// Add the changed files under each displayed commit.
     pub(crate) files: bool,
+    /// Drop the per-commit file blocks for a single consolidated one below the
+    /// table: every file the shown commits touched, its counts summed. The
+    /// commits stay as rows -- this is a file view, not a squash of history.
+    pub(crate) squash: bool,
     /// Terminal lines a subject may take. Moot off a terminal: nothing is cut.
     pub(crate) wrap: Wrap,
     /// Columns the subject gets. None lets the terminal decide, as it always has.
@@ -324,6 +328,7 @@ pub(crate) fn parse_commits_args_with(
     let mut union = false;
     let mut all = false;
     let mut files = false;
+    let mut squash = false;
     let mut wrap = None;
     let mut subjectw = None;
     let mut it = args.iter().peekable();
@@ -350,6 +355,10 @@ pub(crate) fn parse_commits_args_with(
             "--no-cherry" => no_cherry = true,
             "--pick-id" => pick = true,
             "--files" | "-f" => files = true,
+            // Only outside a review: under one, '--squash' shapes the merge
+            // commit that '--review' is not making, so it falls through to the
+            // merge-vocabulary message rather than becoming a file view here.
+            "--squash" if !review => squash = true,
             "--union" => union = true,
             "--all" | "-a" => all = true,
             // The count is optional, and only a count or 'full' is read as
@@ -529,7 +538,7 @@ pub(crate) fn parse_commits_args_with(
         limit, dates, commit_since, commit_until, commits, author, message, filename, all_files,
         topo, merges, fmt, md,
         reverse, no_cherry, pick, union,
-        all, files, wrap, subjectw,
+        all, files, squash, wrap, subjectw,
     })
 }
 
@@ -844,6 +853,10 @@ mod tests {
         // --files is also opt-in: it spawns a diff per displayed commit.
         assert!(!parse(&[]).unwrap().files);
         assert!(parse(&["--files"]).unwrap().files);
+
+        // --squash is the consolidated file view, opt-in and off by default.
+        assert!(!parse(&[]).unwrap().squash);
+        assert!(parse(&["--squash"]).unwrap().squash);
     }
 
     #[test]

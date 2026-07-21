@@ -208,6 +208,46 @@ pub(crate) fn sort_file_stats(stats: &mut [FileStat]) {
     });
 }
 
+/// Merge the per-commit file blocks into one: the block `--squash` prints in
+/// place of them, once, below the whole table.
+///
+/// Keyed on path, so a file touched by several of the shown commits is one line
+/// whose counts are the sum of theirs -- churn across the range, not a net diff:
+/// a line added in one commit and removed in another shows as `+1 -1`, the work
+/// that happened rather than the state left behind. This is the one reading that
+/// holds for *any* row set the table can show -- a filtered, non-contiguous one
+/// included -- where a true `base..tip` diff has no single base to measure from.
+///
+/// Binary is contagious: once a path has one uncountable change its sum cannot
+/// be a number either, so a later `Some` cannot resurrect the count. The status
+/// is the earliest in the file's lifecycle among the commits -- an `A` outranks
+/// a later `M` -- since across a squash the file was, on balance, added.
+pub(crate) fn consolidate_file_stats(row_files: &[Vec<FileStat>]) -> Vec<FileStat> {
+    let mut by_path: HashMap<String, FileStat> = HashMap::new();
+    for files in row_files {
+        for f in files {
+            let entry = by_path.entry(f.path.clone()).or_insert_with(|| FileStat {
+                status: f.status,
+                path: f.path.clone(),
+                added: Some(0),
+                removed: Some(0),
+            });
+            if status_rank(f.status) < status_rank(entry.status) {
+                entry.status = f.status;
+            }
+            let sum = |a: Option<usize>, b: Option<usize>| match (a, b) {
+                (Some(a), Some(b)) => Some(a + b),
+                _ => None,
+            };
+            entry.added = sum(entry.added, f.added);
+            entry.removed = sum(entry.removed, f.removed);
+        }
+    }
+    let mut out: Vec<FileStat> = by_path.into_values().collect();
+    sort_file_stats(&mut out);
+    out
+}
+
 /// The lines of a file block: one tab-indented `status  path  +added  -removed`
 /// per file, with the path and both counts padded to the block's own widths.
 /// Binary files (and anything git gave no count for) print `-` in place of a
@@ -816,6 +856,44 @@ mod tests {
                 "\tM  logo.png        -   -".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn consolidate_sums_churn_and_takes_the_earliest_status() {
+        let fs = |st: char, p: &str, a: Option<usize>, r: Option<usize>| FileStat {
+            status: st,
+            path: p.into(),
+            added: a,
+            removed: r,
+        };
+        // Newest-first, as the rows are: a.rs added then twice modified, b.rs
+        // touched once, logo.png binary in one of two commits.
+        let row_files = vec![
+            vec![fs('M', "a.rs", Some(2), Some(1)), fs('M', "logo.png", None, None)],
+            vec![fs('M', "a.rs", Some(3), Some(0)), fs('A', "b.rs", Some(9), Some(0))],
+            vec![fs('A', "a.rs", Some(5), Some(0)), fs('M', "logo.png", Some(4), Some(4))],
+        ];
+        let got = consolidate_file_stats(&row_files);
+
+        // Grouped by status then path: a.rs and b.rs are both 'A' (a.rs's add
+        // outranks its later modifies), logo.png stays 'M'.
+        let by = |p: &str| got.iter().find(|f| f.path == p).unwrap();
+        // Churn summed, not netted: every commit's count adds in.
+        assert_eq!((by("a.rs").added, by("a.rs").removed), (Some(10), Some(1)));
+        assert_eq!(by("a.rs").status, 'A', "the add outranks the later modifies");
+        assert_eq!((by("b.rs").added, by("b.rs").removed), (Some(9), Some(0)));
+        // Binary is contagious: one uncountable change makes the sum uncountable
+        // however many numbers the other commits gave.
+        assert_eq!((by("logo.png").added, by("logo.png").removed), (None, None));
+
+        // One line per path, and status-then-path order like every file block.
+        assert_eq!(got.len(), 3);
+        let order: Vec<&str> = got.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(order, ["a.rs", "b.rs", "logo.png"], "A's before the M");
+
+        // Nothing to consolidate is an empty block, not a panic.
+        assert!(consolidate_file_stats(&[]).is_empty());
+        assert!(consolidate_file_stats(&[vec![]]).is_empty());
     }
 
     /// The default spelling: what `commits` prints without a format flag.

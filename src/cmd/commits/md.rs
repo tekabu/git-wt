@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
-use crate::cmd::commits::rows::{CommitRow, FileStat, Mark};
+use crate::cmd::commits::rows::{consolidate_file_stats, CommitRow, FileStat, Mark};
 use crate::ui::{abbrev, PICK_HEAD};
 
 /// `commits_2026-07-17_14-30-05.md`: ISO, so the names sort the way the dates
@@ -73,6 +73,7 @@ pub(crate) fn write_md(
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
     picks: Option<&HashMap<String, String>>,
+    squash: bool,
     cmd: &str,
     head: &MdHead,
 ) -> Result<(), String> {
@@ -171,7 +172,8 @@ pub(crate) fn write_md(
                 }
             }
         }
-        if let Some(file_stats) = row_files.get(i) {
+        // The per-commit block, unless --squash folded them into the one below.
+        if let Some(file_stats) = (!squash).then(|| row_files.get(i)).flatten() {
             if !file_stats.is_empty() {
                 let mut lines = String::from("<br><br>");
                 for f in file_stats {
@@ -187,6 +189,26 @@ pub(crate) fn write_md(
             }
         }
         out.push_str(&format!(" {} |\n", subject));
+    }
+
+    // The consolidated block --squash prints below the table: every file the
+    // shown commits touched, counts summed, as its own small table so it reads
+    // as a file list rather than a run of `<br>` lines in a cell.
+    if squash {
+        let consolidated = consolidate_file_stats(row_files);
+        if !consolidated.is_empty() {
+            out.push_str("\n## Consolidated files\n\n");
+            out.push_str("| status | file | +added | -removed |\n|---|---|--:|--:|\n");
+            for f in &consolidated {
+                out.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    f.status,
+                    md_cell(&f.path),
+                    f.added.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()),
+                    f.removed.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()),
+                ));
+            }
+        }
     }
 
     std::fs::write(path, out).map_err(|e| format!("cannot write {}: {e}", path.display()))?;

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::cmd::commits::args::{SubjectWidth, Wrap};
-use crate::cmd::commits::rows::{file_stat_lines, CommitRow, FileStat, Mark};
+use crate::cmd::commits::rows::{consolidate_file_stats, file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
     abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, CHECK, DIM, EQUIV, GREEN,
     MATCH, MIN_TEXTW, MISS, PICK_HEAD, YELLOW,
@@ -56,6 +56,7 @@ pub(crate) fn render_commits(
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
     picks: Option<&HashMap<String, String>>,
+    squash: bool,
     color: bool,
     width: Option<usize>,
     wrap: Wrap,
@@ -202,7 +203,10 @@ pub(crate) fn render_commits(
     // With file blocks the table becomes a series of groups, so every commit is
     // fenced off by a blank line -- including one whose block is empty, which
     // would otherwise huddle against the block above and read as part of it.
-    let grouped = row_files.iter().any(|f| !f.is_empty())
+    // Under --squash the per-commit blocks are gone -- one consolidated block
+    // prints below the whole table instead -- so the rows are not fenced by
+    // them. A --message body block still groups them, squash or no.
+    let grouped = (!squash && row_files.iter().any(|f| !f.is_empty()))
         || row_bodies.iter().any(|(lines, _)| !lines.is_empty());
 
     for (i, (row, text)) in rows.iter().enumerate() {
@@ -287,8 +291,9 @@ pub(crate) fn render_commits(
         }
 
         // File block, tab-indented under the commit row. Kept dim so the commit
-        // rows remain the primary scan target.
-        if let Some(file_stats) = row_files.get(i) {
+        // rows remain the primary scan target. Off under --squash: the files
+        // are consolidated into one block below, not repeated per commit.
+        if let Some(file_stats) = (!squash).then(|| row_files.get(i)).flatten() {
             if !file_stats.is_empty() {
                 println!();
                 for file_line in file_stat_lines(file_stats) {
@@ -298,6 +303,23 @@ pub(crate) fn render_commits(
                     let term = hl.file.as_deref().unwrap_or_default();
                     println!("{}", paint_matches(&file_line, term, MATCH, DIM, color));
                 }
+            }
+        }
+    }
+
+    // The one block --squash prints in place of the per-commit ones: every file
+    // the shown commits touched, counts summed, once, below the whole table. A
+    // dim header sets it off from the rows so it does not read as the last
+    // commit's block. Empty when no shown commit touched a file -- then nothing
+    // to consolidate, and the header would announce a block that never comes.
+    if squash {
+        let consolidated = consolidate_file_stats(row_files);
+        if !consolidated.is_empty() {
+            println!();
+            println!("{}", paint("consolidated files", DIM, color));
+            let term = hl.file.as_deref().unwrap_or_default();
+            for file_line in file_stat_lines(&consolidated) {
+                println!("{}", paint_matches(&file_line, term, MATCH, DIM, color));
             }
         }
     }

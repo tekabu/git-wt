@@ -277,7 +277,7 @@ fn commits_view(
 
     // File stats are scoped to the displayed rows, so a large log only pays for
     // what the user is looking at. Merge commits diff against their first parent.
-    let mut row_files: Vec<Vec<FileStat>> = if args.files {
+    let mut row_files: Vec<Vec<FileStat>> = if args.files || args.squash {
         rows.iter()
             .map(|r| commit_files(root, &r.sha))
             .collect::<Result<Vec<_>, _>>()?
@@ -430,6 +430,7 @@ fn commits_view(
             &sets,
             &equiv,
             picks.as_ref(),
+            args.squash,
             &cmd,
             &if review.is_some() { MdHead::review() } else { MdHead::commits() },
         );
@@ -444,6 +445,7 @@ fn commits_view(
         &sets,
         &equiv,
         picks.as_ref(),
+        args.squash,
         color_enabled(tty),
         term_width(tty),
         args.wrap,

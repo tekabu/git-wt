@@ -716,6 +716,37 @@ from a pathspec walk, so a merge that brought a whole feature in would list none
 of its files. `commits` keeps them and attributes each merge's files against its
 first parent.
 
+### One block for the whole range — `--squash`
+
+```sh
+git-wt 1 commits --squash --all      # commits up top, one file block below
+```
+
+`--squash` keeps the commit rows but drops the per-commit file blocks for a
+single consolidated one beneath the whole table: every file the shown commits
+touched, once, with its `+`/`-` counts **summed across them**.
+
+```
+$ git-wt 1 commits --squash -n 3
+commit   author        date  subject
+32f386d  Nino    2026-07-20  feat: support branch names as worktree targets
+c87c402  Nino    2026-07-20  fix(alias): quote 'esac' in reserved word list
+787f10a  Nino    2026-07-20  docs(README): installing Rust and cargo
+
+consolidated files
+	M  README.md    +205  -14
+	M  src/cli.rs   +180  -10
+	M  test.sh       +72  -18
+```
+
+The counts are **churn, not a net diff**: a line added in one commit and removed
+in another shows as `+1 -1`, the work that happened rather than the state left
+behind. That is the one reading that holds for any row set the table can show —
+a filtered or non-contiguous one included — where a `base..tip` diff has no
+single base to measure from. It combines with the filters (`--filename`,
+`--message`, the date bounds) and with `--md`, which writes the consolidated
+block as its own **Consolidated files** table.
+
 ### How many branches can it compare?
 
 No cap — unlike `diff` (exactly two) and `meld` (two or three), `commits` takes
@@ -1344,6 +1375,7 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits -m oauth` | Only commits with `oauth` in the subject or body (also `--message`) |
 | `git-wt 1,2 commits --filename api.php` | Only commits touching a matching path; implies `--files`, block cut to the matches |
 | `git-wt 1,2 commits --filename api.php --all-files` | Same rows, but each block is the commit's whole file list |
+| `git-wt 1,2 commits --squash` | Rows stay; one consolidated file block below, counts summed across them |
 | `git-wt 1,2 commits --date 2026-01-31` | Commits on exactly that day (also `-d`) |
 | `git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30` | A date range, inclusive, no quoting |
 | `git-wt 1,2 commits --commit-since 5568a21` | The day that commit was authored, and after |

@@ -112,8 +112,8 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeArgs, String> {
             s if s.starts_with("--message=") => {
                 message = Some(s["--message=".len()..].to_string())
             }
-            "--no-ff" => no_ff = true,
-            "--ff-only" => ff_only = true,
+            "--no-ff" | "--nf" => no_ff = true,
+            "--ff-only" | "--fo" => ff_only = true,
             "--squash" => squash = true,
             "-f" | "--force" => force = true,
             s if s.starts_with('-') && s != "-" => {
@@ -693,6 +693,12 @@ mod tests {
         assert_eq!(a.message.as_deref(), Some("sync"));
 
         assert_eq!(merge_args(&["2", "--message=hi"]).unwrap().message.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn short_aliases_set_the_same_field_as_their_long_form() {
+        assert_eq!(merge_args(&["2", "--nf"]).unwrap().no_ff, merge_args(&["2", "--no-ff"]).unwrap().no_ff);
+        assert_eq!(merge_args(&["2", "--fo"]).unwrap().ff_only, merge_args(&["2", "--ff-only"]).unwrap().ff_only);
     }
 
 

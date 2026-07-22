@@ -76,6 +76,11 @@ pub(crate) fn parse_sync_args(op: SyncOp, args: &[String]) -> Result<SyncArgs, S
             "-u" if op == SyncOp::Push => "--set-upstream",
             "-p" if op != SyncOp::Push => "--prune",
             "-n" if op == SyncOp::Push => "--dry-run",
+            "--rb" if op == SyncOp::Pull => "--rebase",
+            "--nr" if op == SyncOp::Pull => "--no-rebase",
+            "--as" if op == SyncOp::Pull => "--autostash",
+            "--nt" if op == SyncOp::Fetch => "--no-tags",
+            "--fl" if op == SyncOp::Push => "--force-with-lease",
             // `git push --force` is the one flag we refuse outright: it is
             // `--force-with-lease` minus the check that makes it safe, and a
             // sweep would apply it to every branch at once.
@@ -315,6 +320,16 @@ mod tests {
         assert_eq!(sync_args(SyncOp::Push, &["-n"]).unwrap().flags, ["--dry-run"]);
         assert_eq!(sync_args(SyncOp::Fetch, &["-p"]).unwrap().flags, ["--prune"]);
         assert_eq!(sync_args(SyncOp::Pull, &["-p"]).unwrap().flags, ["--prune"]);
+    }
+
+
+    #[test]
+    fn sync_short_aliases_canonicalize_the_same_as_long_form() {
+        assert_eq!(sync_args(SyncOp::Pull, &["--rb"]).unwrap().flags, sync_args(SyncOp::Pull, &["--rebase"]).unwrap().flags);
+        assert_eq!(sync_args(SyncOp::Pull, &["--nr"]).unwrap().flags, sync_args(SyncOp::Pull, &["--no-rebase"]).unwrap().flags);
+        assert_eq!(sync_args(SyncOp::Pull, &["--as"]).unwrap().flags, sync_args(SyncOp::Pull, &["--autostash"]).unwrap().flags);
+        assert_eq!(sync_args(SyncOp::Fetch, &["--nt"]).unwrap().flags, sync_args(SyncOp::Fetch, &["--no-tags"]).unwrap().flags);
+        assert_eq!(sync_args(SyncOp::Push, &["--fl"]).unwrap().flags, sync_args(SyncOp::Push, &["--force-with-lease"]).unwrap().flags);
     }
 
 

@@ -22,6 +22,92 @@ use crate::worktree::{current_worktree_index, repo_root, worktrees};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The short usage list -- one line per command, no inline prose. The
+/// option tables below it are not duplicated by hand: `short_help` pulls
+/// them straight out of `HELP`, so a flag added there never has to be
+/// added here too.
+const SHORT_USAGE: &str = "\
+git-wt — worktrees in sibling directories named <repo>-<branch>
+
+USAGE:
+    git-wt                       List worktrees, numbered from 1
+    git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path] [--files]
+    git-wt <N>                   == git-wt <N> switch
+    git-wt <N> switch            cd into worktree N (alias: cd)
+    git-wt <N> path              Print worktree N's path only (alias: show)
+    git-wt <N> remove [-y] [-f]  Remove worktree N
+    git-wt <N>,<M> merge         Merge M into N
+    git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
+    git-wt <N>,<M> merge review  What would that merge bring over?
+    git-wt <N> merge continue|abort
+    git-wt <N>,<M> merged        Is M's branch already in N's branch?
+    git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
+    git-wt <N> merged            Is N's branch already in the current branch?
+    git-wt <N> merged --others, --ot
+                                 List all worktrees; show which are merged into N
+    git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
+    git-wt <N>,<M>[,...] commits Table: which commit is on which branch
+    git-wt <N> commits           Same, N against the worktree you are in
+    git-wt <N>[,<M>...] log [PATH...] [flags]
+                                 Same table, narrowed to one file's history
+    git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
+    git-wt -b/--branch LIST <action>
+                                 LIST with the current worktree prepended
+    git-wt <N> fetch|pull|push   Run it in worktree N
+    git-wt <N>,<M> pull          Run it in each worktree listed
+    git-wt fetch|pull|push --all Run it in every worktree
+    git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
+    git-wt version
+    git-wt --help                This: options, no prose
+    git-wt --help -f             Full manual: every flag, every section
+
+    Aliases: ls = list, rm = remove, cd = switch, show = path.
+
+    A worktree may be named by the branch it holds instead of its number:
+    'git-wt main commits', 'git-wt main,2 diff'.
+";
+
+const SHORT_FOOTER: &str = "\
+'git-wt --help -f' (or '-hf') for the full manual, prose and all -- the
+same option tables above, plus every section explaining them.
+";
+
+/// Section headers (the text before ':') worth keeping in the short help:
+/// pure option tables, no prose paragraphs mixed in. Order here doesn't
+/// matter -- sections are emitted in the order `HELP` already has them.
+const SHORT_HELP_SECTIONS: &[&str] = &[
+    "ADD OPTIONS",
+    "REMOVE OPTIONS",
+    "DIFF OPTIONS",
+    "COMMITS OPTIONS",
+    "SYNC OPTIONS",
+    "MERGE WORDS",
+    "MERGE OPTIONS",
+];
+
+/// A section's header line has no leading indentation; every other line in
+/// `HELP` (body text, blanks) does. That is the one signal used to tell
+/// them apart -- no regex, no line-number bookkeeping to keep in sync by
+/// hand as sections are added or reordered.
+fn short_help() -> String {
+    let mut out = String::from(SHORT_USAGE);
+    out.push('\n');
+    let mut keep = false;
+    for line in HELP.lines() {
+        let is_header = !line.is_empty() && !line.starts_with(' ');
+        if is_header {
+            let name = line.split(':').next().unwrap_or("").trim();
+            keep = SHORT_HELP_SECTIONS.contains(&name);
+        }
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push_str(SHORT_FOOTER);
+    out
+}
+
 const HELP: &str = "\
 git-wt — worktrees in sibling directories named <repo>-<branch>
 
@@ -48,7 +134,8 @@ USAGE:
     git-wt <N>,<M> merged        Is M's branch already in N's branch?
     git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
     git-wt <N> merged            Is N's branch already in the current branch?
-    git-wt <N> merged --others   List all worktrees; show which are merged into N
+    git-wt <N> merged --others, --ot
+                                 List all worktrees; show which are merged into N
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<M>[,...] commits Table: which commit is on which branch
     git-wt <N> commits           Same, N against the worktree you are in
@@ -64,6 +151,7 @@ USAGE:
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
     git-wt version
     git-wt --help
+    git-wt --help -f             Full manual, this (alias: --full, -hf)
 
     Aliases: ls = list, rm = remove, cd = switch, show = path.
 
@@ -72,6 +160,42 @@ USAGE:
     'git-wt main commits', 'git-wt main,2 diff', 'git-wt main,feat/x merge'.
     A bare number is always the worktree number, and a verb always wins over
     a branch of the same name; 'heads/main' reaches the branch either way.
+
+GRAMMAR:
+    git-wt [TARGET] [VERB] [FLAGS...]
+
+    TARGET is one of:
+        <N>               A worktree number, 1-based, from 'git-wt list'
+        <BRANCH>          A branch name -- must be checked out in some
+                          worktree; 'heads/<name>' forces branch over number
+        <N>,<M>[,...]     Comma list, no spaces; numbers and branches mix
+                          freely: '1,main,3'
+        (omitted)         Defaults to 'list', or 'fetch|pull|push --all'
+    -b/--branch LIST is not a target itself; it prepends the current
+    worktree to whatever list the command already has:
+        git-wt -b 1,2 commits   == git-wt <cur>,1,2 commits
+        git-wt --branch=main diff  == git-wt <cur>,main diff
+
+    VERB count per command depends on the target list's length:
+        one target   -> switch, path, remove, commits, fetch/pull/push,
+                         merge <BRANCH>, merged [BRANCH]
+        two targets   -> merge, merged, diff, meld (also 3 for meld)
+        any length    -> commits, meld (2-3), pull (each in turn)
+    Some verbs also take a bare word before their own flags, matched ahead
+    of a branch of the same name ('merge continue', 'merged --others'):
+    spell it 'heads/continue' on the rare branch actually called that.
+
+    FLAGS combine freely after the verb, in any order, short or long:
+        git-wt 1,2 commits --author nino --all-files --filename api.php -n 5
+        git-wt 1,2 commits -af          # bundle: -a (--all) + -f (--files)
+        git-wt 1,2 commits -fn 20       # bundle ending in a value-flag
+    Bundling (see -af above) only applies to single-dash letters in
+    'commits'; a bundle stops at the first flag that takes a value, which
+    then must be last in the bundle. Double-dash long forms and their
+    short aliases (--au, --cs, --nf, --rb, ...) are never bundled -- each
+    is typed on its own, exactly like the long spelling it stands in for.
+    '-h'/'--help' and '-f'/'--full' bundle as the one exception: '-hf'
+    is 'git-wt --help -f' spelled as a single token.
 
 ADD OPTIONS:
     -n, --name NAME       Suffix only -> leaf = <repo>-NAME
@@ -135,8 +259,8 @@ COMMITS OPTIONS:
         --union           Rows from every worktree listed, not just the
                           first one's range
         --merges          Keep merge commits; they are dropped by default
-        --no-cherry       Skip the patch comparison behind '≈' (faster)
-        --pick-id         Add a 'pick' column: the sha the '≈' copy of the
+        --no-cherry, --nc Skip the patch comparison behind '≈' (faster)
+        --pick-id, --pi   Add a 'pick' column: the sha the '≈' copy of the
                           commit carries elsewhere
     -f, --files           Add the changed files under each commit, with
                           status and +/- line counts
@@ -144,26 +268,31 @@ COMMITS OPTIONS:
         --reverse         Newest last (alias: --oldest-first)
     -w, --wrap [N]        Let a long subject take N terminal lines, not
                           one; 'full' or a bare --wrap never cuts it
-        --subject-width N Give the subject N columns rather than what the
-                          terminal left it; 'full' never cuts (alias:
-                          --subjw)
-        --branch-width N  Cut a mark column's branch name to N columns
-                          (default 24); 'full' never cuts (alias: --branchw)
+        --subject-width, --subjw N
+                          Give the subject N columns rather than what the
+                          terminal left it; 'full' never cuts
+        --branch-width, --branchw N
+                          Cut a mark column's branch name to N columns
+                          (default 24); 'full' never cuts
         --md [FILE]       Write a markdown table instead of printing one
                           (default: commits_<date>_<time>.md in the cwd)
         --time            Add the time to the date column, 24-hour
-        --date-human      'Jan. 31, 2026' instead of '2026-01-31'
-        --author NAME     Only NAME's commits (fuzzy, like list's SEARCH)
+        --date-human, --dh 'Jan. 31, 2026' instead of '2026-01-31'
+        --author, --au NAME
+                          Only NAME's commits (fuzzy, like list's SEARCH)
     -d, --date DATE       Only commits on exactly this YYYY-MM-DD day
-        --date-since DATE That day and after
-        --date-until DATE That day and before
-        --commit-since C  Same bound, dated by commit C: C's day, and after
-        --commit-until C  Same bound, dated by commit C: C's day, and before
+        --date-since, --ds DATE  That day and after
+        --date-until, --du DATE  That day and before
+        --commit-since, --cs C   Same bound, dated by commit C: C's day,
+                          and after
+        --commit-until, --cu C   Same bound, dated by commit C: C's day,
+                          and before
     -c, --commits IDS     Only these commits, comma-separated shas
     -m, --message TERM    Only commits whose subject or body contains TERM
-        --filename TERM   Only commits touching a path containing TERM;
+        --filename, --fn TERM
+                          Only commits touching a path containing TERM;
                           implies --files, and cuts the block to the matches
-        --all-files       With --filename, show every file each commit
+        --all-files, --af With --filename, show every file each commit
                           touched, not only the matched paths
 
 COMMITS:
@@ -456,9 +585,11 @@ MARKS:
 
 SYNC OPTIONS:        (fetch/pull/push; any other git flag is an error, not a passthrough)
     -a, --all             Every worktree, not the ones a list named
-    fetch: -p, --prune | --tags | --no-tags | --force
-    pull:  --rebase | --no-rebase | --ff-only | -p, --prune | --autostash
-    push:  -u, --set-upstream | --force-with-lease | --tags | -n, --dry-run
+    fetch: -p, --prune | --tags | --no-tags, --nt | --force
+    pull:  --rebase, --rb | --no-rebase, --nr | --ff-only | -p, --prune |
+           --autostash, --as
+    push:  -u, --set-upstream | --force-with-lease, --fl | --tags |
+           -n, --dry-run
 
 SYNC:
     fetch/pull/push run git in a worktree's own directory, so each one syncs
@@ -526,8 +657,8 @@ MERGE WORDS:            (each takes an optional '--': 'abort' == '--abort')
 
 MERGE OPTIONS:
     -m, --message MSG     Merge commit message
-        --no-ff           Always create a merge commit
-        --ff-only         Refuse anything but a fast-forward
+        --no-ff, --nf     Always create a merge commit
+        --ff-only, --fo   Refuse anything but a fast-forward
         --squash          Stage the merge without committing
     -f, --force           Merge even when worktree N has uncommitted changes
 
@@ -608,7 +739,7 @@ MERGED:
         git-wt 1 merged feat/x        # is feat/x in worktree 1's branch?
         git-wt 1 merged               # is worktree 1's branch in the current branch?
         git-wt 1 merged --others      # list every worktree against worktree 1
-        git-wt 1 merged --others -p   # include the path column
+        git-wt 1 merged --ot -p       # short alias for --others; -p adds the path column
 
     The normal forms answer yes/no, exiting 0 for \"already merged\" and nonzero
     for \"ahead\". The `--others` form prints a table with a `merged` column and
@@ -673,8 +804,13 @@ fn run() -> Result<(), String> {
             let root = repo_root()?;
             return list_from_args(&root, &args);
         }
-        Some("-h") | Some("--help") | Some("help") => {
+        Some("-hf") => {
             print!("{HELP}");
+            return Ok(());
+        }
+        Some("-h") | Some("--help") | Some("help") => {
+            let full = args[1..].iter().any(|a| a == "-f" || a == "--full");
+            print!("{}", if full { HELP.to_string() } else { short_help() });
             return Ok(());
         }
         Some("-V") | Some("--version") | Some("version") => {

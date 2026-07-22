@@ -99,12 +99,14 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
         "merged" => {
             let args = &rest[1..];
             // `--others` asks for a table, not a yes/no answer.
-            if args.iter().any(|a| a == "--others" || a == "--ot") {
+            if args.iter().any(|a| a == "--others" || a == "--ot" || a == "-o") {
                 let show_path = show_path_from_rest(args);
                 let extra: Vec<&str> = args
                     .iter()
                     .map(String::as_str)
-                    .filter(|a| *a != "--others" && *a != "--ot" && *a != "-p" && *a != "--show-path")
+                    .filter(|a| {
+                        *a != "--others" && *a != "--ot" && *a != "-o" && *a != "-p" && *a != "--show-path"
+                    })
                     .collect();
                 if !extra.is_empty() {
                     return Err(format!(

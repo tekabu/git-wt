@@ -44,7 +44,7 @@ USAGE:
     git-wt <N>,<M> merged        Is M's branch already in N's branch?
     git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
     git-wt <N> merged            Is N's branch already in the current branch?
-    git-wt <N> merged --others, --ot
+    git-wt <N> merged --others, --ot, -o
                                  List all worktrees; show which are merged into N
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<M>[,...] commits Table: which commit is on which branch
@@ -136,7 +136,7 @@ USAGE:
     git-wt <N>,<M> merged        Is M's branch already in N's branch?
     git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
     git-wt <N> merged            Is N's branch already in the current branch?
-    git-wt <N> merged --others, --ot
+    git-wt <N> merged --others, --ot, -o
                                  List all worktrees; show which are merged into N
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<M>[,...] commits Table: which commit is on which branch
@@ -743,6 +743,7 @@ MERGED:
         git-wt 1 merged               # is worktree 1's branch in the current branch?
         git-wt 1 merged --others      # list every worktree against worktree 1
         git-wt 1 merged --ot -p       # short alias for --others; -p adds the path column
+        git-wt 1 merged -o            # -o is the same short alias
 
     The normal forms answer yes/no, exiting 0 for \"already merged\" and nonzero
     for \"ahead\". The `--others` form prints a table with a `merged` column and
@@ -866,7 +867,7 @@ fn run() -> Result<(), String> {
     // (which of the others are already merged into the one you're standing
     // in), so it takes the bare-`commits`/`remove` reading, not the
     // bare-`merged`-needs-a-pair one below.
-    if first == "merged" && args[1..].iter().any(|a| a == "--others" || a == "--ot") {
+    if first == "merged" && args[1..].iter().any(|a| a == "--others" || a == "--ot" || a == "-o") {
         let root = repo_root()?;
         let trees = worktrees(&root)?;
         let idx = current_worktree_index(&trees)

@@ -38,6 +38,7 @@ USAGE:
     git-wt <N> remove [-y] [-f]  Remove worktree N
     git-wt <N>,<M> merge         Merge M into N
     git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
+    git-wt merge -b <M>          Merge M into the worktree you are in
     git-wt <N>,<M> merge review  What would that merge bring over?
     git-wt <N> merge continue|abort
     git-wt <N>,<M> merged        Is M's branch already in N's branch?

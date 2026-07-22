@@ -107,11 +107,12 @@ pub(crate) fn parse_numstat_z(out: &str) -> Vec<NumstatEntry> {
 /// Diffed against the first parent (or the empty tree for root commits), which
 /// matches what a reader expects from a one-line log entry. Merge commits show
 /// the first-parent diff only, not the combined merge.
-pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, String> {
-    // First parent, or the empty tree for a root commit. The empty tree hash is
-    // stable across git versions, so we use it directly rather than spawning a
-    // command to compute it.
-    const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/// A root commit's parent, for a diff that needs one: the empty tree. Its hash
+/// is stable across git versions, so it costs nothing to spawn for.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// `sha`'s first parent, or the empty tree when it has none.
+fn first_parent_or_empty(root: &Path, sha: &str) -> Result<String, String> {
     let parents = git_stdout(root, &["rev-list", "--parents", "-n", "1", sha])?
         .lines()
         .next()
@@ -122,7 +123,15 @@ pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, Stri
                 .collect::<Vec<String>>()
         })
         .unwrap_or_default();
-    let base = parents.first().map(String::as_str).unwrap_or(EMPTY_TREE);
+    Ok(parents.into_iter().next().unwrap_or_else(|| EMPTY_TREE.to_string()))
+}
+
+pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, String> {
+    // First parent, or the empty tree for a root commit, which matches what a
+    // reader expects from a one-line log entry: merge commits show the
+    // first-parent diff only, not the combined merge.
+    let base = first_parent_or_empty(root, sha)?;
+    let base = base.as_str();
 
     let status_out = git_stdout(
         root,
@@ -184,6 +193,48 @@ pub(crate) fn commit_files(root: &Path, sha: &str) -> Result<Vec<FileStat>, Stri
 
     sort_file_stats(&mut stats);
     Ok(stats)
+}
+
+/// `log`'s per-row `±` cell and the name(s) the pathspec actually matched on
+/// that commit, both from one scoped `--numstat` -- not the commit-wide count
+/// `--files` prints, which is every file the commit touched.
+///
+/// Counts are summed across every matching entry, so a path given as several
+/// pathspecs (or a rename whose old and new name both match) still lands on
+/// one number. `None` for either side when nothing matched at all: the commit
+/// is a row only because some other ref's copy of the walk kept it (a merge
+/// under `--diff-merges=first-parent` whose first parent did not touch the
+/// path), and the cell prints `-` rather than a churn that never happened.
+///
+/// The names are the post-rename path of each matching entry -- what the
+/// `path` column shows on the rows where it varies, which is exactly the
+/// rows a rename or a multi-path pathspec makes different from the others.
+pub(crate) fn path_row_stat(
+    root: &Path,
+    sha: &str,
+    paths: &[String],
+) -> Result<(Option<usize>, Option<usize>, Vec<String>), String> {
+    let base = first_parent_or_empty(root, sha)?;
+    let mut args = vec!["diff-tree", "-r", "--numstat", "-z", "-M", "-C", base.as_str(), sha, "--"];
+    args.extend(paths.iter().map(String::as_str));
+    let out = git_stdout(root, &args)?;
+    let entries = parse_numstat_z(&out);
+    if entries.is_empty() {
+        return Ok((None, None, Vec::new()));
+    }
+    let sum = |a: Option<usize>, b: Option<usize>| match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        _ => None,
+    };
+    let mut added = Some(0);
+    let mut removed = Some(0);
+    let mut names = Vec::with_capacity(entries.len());
+    for e in entries {
+        added = sum(added, e.added);
+        removed = sum(removed, e.removed);
+        names.push(e.path);
+    }
+    Ok((added, removed, names))
 }
 
 /// Where a status letter sorts in a file block.
@@ -309,6 +360,14 @@ pub(crate) fn commit_rows(
     fmt: DateFmt,
     no_merges: bool,
     want_body: bool,
+    // `log`'s pathspec, empty for every other caller. Appended as `-- <paths>`,
+    // after `refs` and `--not base` -- git reads a pathspec only once it has
+    // seen the `--`, so it has to come last whatever else the walk carries.
+    paths: &[String],
+    // `--follow`. Only sound with exactly one path -- git rejects more -- so
+    // the caller decides, rather than this function inferring it from
+    // `paths.len()` and silently doing the wrong thing for two.
+    follow: bool,
 ) -> Result<Vec<CommitRow>, String> {
     let count;
     let date_arg = format!("--date=format:{}", fmt.spec());
@@ -326,11 +385,24 @@ pub(crate) fn commit_rows(
         "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%ae%x09%aI%x09%s%x00"
     };
     let mut args = vec!["log", order.flag(), &date_arg, format];
+    if follow {
+        args.push("--follow");
+    }
     // Merge commits carry no work of their own; dropping them leaves the
     // commits someone actually wrote. The mark columns are unaffected: a
     // merge that is not a row is still in every rev-list that reaches it.
     if no_merges {
         args.push("--no-merges");
+    } else if !paths.is_empty() {
+        // `log -- <path>` prunes merges by default -- the same trap
+        // `path_shas` documents below: a merge that brought the whole file
+        // over lists nothing against the path and vanishes. Kept here (no
+        // `--no-merges`, so `--merges` was asked for), `--full-history` stops
+        // git from simplifying them away and `--diff-merges=first-parent`
+        // makes the merge's listed diff the one its own row and `±` cell
+        // agree with.
+        args.push("--full-history");
+        args.push("--diff-merges=first-parent");
     }
     if let Some(n) = limit {
         count = format!("-n{n}");
@@ -340,6 +412,12 @@ pub(crate) fn commit_rows(
     if let Some(b) = base {
         args.push("--not");
         args.push(b);
+    }
+    // The pathspec, last: git only reads paths after the `--`, so it has to
+    // follow everything else the walk carries.
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths.iter().map(String::as_str));
     }
 
     let out = git_stdout(root, &args)?;
@@ -1109,7 +1187,7 @@ mod tests {
         // --all keeps the old default: the first ref's log, whole -- exactly
         // 'git log --oneline main', shared history included. feat's own commit
         // is not a row, it is a missing mark on feat's column.
-        let all_rows = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false).unwrap();
+        let all_rows = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false, &[], false).unwrap();
         let subjects: Vec<&str> = all_rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(all_rows.len(), 2, "{subjects:?}");
         assert!(subjects.iter().any(|t| t.ends_with("on-main")), "{subjects:?}");
@@ -1131,7 +1209,7 @@ mod tests {
         // older than the missing commit and is therefore excluded.
         let divergent = divergent_set(&tmp, &refs[0], &refs[1..]).unwrap();
         assert!(!divergent.is_empty(), "feat must be missing something from main");
-        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false).unwrap();
+        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false, &[], false).unwrap();
         let rows = window_to_divergent(full, &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rows.len(), 1, "{subjects:?}");
@@ -1155,7 +1233,7 @@ mod tests {
 
         // --union: every ref contributes rows, so feat's commit is one too, and
         // the shared commit is checked on both.
-        let union = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false).unwrap();
+        let union = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false, &[], false).unwrap();
         let subjects: Vec<&str> = union.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(union.len(), 3, "{subjects:?}");
         // --author-date-order, so the rows descend by the date they print.
@@ -1165,7 +1243,7 @@ mod tests {
         assert!(feat_all.contains(&shared.sha));
 
         // -n caps the rows, newest first.
-        let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date, ISO, false, false).unwrap();
+        let capped = commit_rows(&tmp, &refs, None, Some(1), Order::Date, ISO, false, false, &[], false).unwrap();
         assert_eq!(capped.len(), 1);
 
         // A commit names a day for --commit-since/--commit-until, so the
@@ -1234,7 +1312,7 @@ mod tests {
         assert_eq!(divergent.len(), 2);
 
         let full = commit_rows(
-            &tmp, &refs[..1], None, None, Order::Date, ISO, false, false,
+            &tmp, &refs[..1], None, None, Order::Date, ISO, false, false, &[], false,
         ).unwrap();
         let rows = window_to_divergent(full, &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
@@ -1242,7 +1320,7 @@ mod tests {
 
         // The full first-branch log with --all.
         let all_rows = commit_rows(
-            &tmp, &refs[..1], None, None, Order::Date, ISO, false, false,
+            &tmp, &refs[..1], None, None, Order::Date, ISO, false, false, &[], false,
         ).unwrap();
         let all_subjects: Vec<&str> = all_rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(all_subjects, ["D", "C", "B", "A"], "{all_subjects:?}");
@@ -1308,7 +1386,7 @@ mod tests {
         assert!(divergent.contains(sha_by_subject(&tmp, "main", "FLOOR").as_str()));
         assert_eq!(divergent.len(), 2, "MAINLINE is shared, not divergent");
 
-        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false).unwrap();
+        let full = commit_rows(&tmp, &refs[..1], None, None, Order::Date, ISO, false, false, &[], false).unwrap();
         let rows = window_to_divergent(full.clone(), &divergent);
         let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         // FLOOR down to SIDE, and nothing below: MAINLINE must not leak in even
@@ -1347,6 +1425,8 @@ mod tests {
             Order::Date,
             ISO,
             false,
+            false,
+            &[],
             false,
         )
         .unwrap();
@@ -1392,7 +1472,7 @@ mod tests {
 
         let refs = vec!["main".to_string(), "feat".to_string()];
         let subjects = |o: Order| -> Vec<String> {
-            commit_rows(&tmp, &refs, None, None, o, ISO, false, false)
+            commit_rows(&tmp, &refs, None, None, o, ISO, false, false, &[], false)
                 .unwrap()
                 .iter()
                 .map(|r| r.text.clone())
@@ -1450,7 +1530,7 @@ mod tests {
         commit("feat-21h", "2026-07-17T21:00:00");
 
         let refs = vec!["main".to_string(), "feat".to_string()];
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false, &[], false).unwrap();
         let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
 
         // Ordering reads the full timestamp, not the printed day: the branches
@@ -1465,7 +1545,7 @@ mod tests {
         // --time is what tells those four rows apart, 24-hour so they sort
         // the way they read; the day stays ISO beside it.
         let timed = DateFmt { human: false, time: true };
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, timed, false, false).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, timed, false, false, &[], false).unwrap();
         let stamps: Vec<&str> = rows[..4].iter().map(|r| r.date.as_str()).collect();
         assert_eq!(
             stamps,
@@ -1479,7 +1559,7 @@ mod tests {
 
         // --date-human is the old spelling, single-digit days unpadded.
         let human = DateFmt { human: true, time: false };
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, human, false, false).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, human, false, false, &[], false).unwrap();
         assert_eq!(rows[4].date, "Jul. 1, 2026");
         // The filter key never changes shape, whatever the column is spelled
         // as: --date compares ISO no matter what you are looking at.
@@ -1694,6 +1774,8 @@ mod tests {
                 ISO,
                 false,
                 false,
+                &[],
+                false,
             )
             .unwrap(),
         );
@@ -1841,6 +1923,8 @@ mod tests {
             Order::Date,
             ISO,
             false,
+            false,
+            &[],
             false,
         )
         .unwrap();
@@ -2014,7 +2098,7 @@ mod tests {
         let refs = vec!["release".to_string()];
         // What `--review` runs: the source's log, cut at the destination.
         let subjects = |merges: bool| -> Vec<String> {
-            commit_rows(&tmp, &refs, Some("main"), None, Order::Date, ISO, !merges, false)
+            commit_rows(&tmp, &refs, Some("main"), None, Order::Date, ISO, !merges, false, &[], false)
                 .unwrap()
                 .iter()
                 .map(|r| r.text.clone())
@@ -2039,7 +2123,7 @@ mod tests {
         // because its block will list the file, which is the whole fix.
         let hits = path_shas(&tmp, &refs, "expense").unwrap();
         let by_sha: HashMap<String, String> = commit_rows(
-            &tmp, &refs, Some("main"), None, Order::Date, ISO, false, false,
+            &tmp, &refs, Some("main"), None, Order::Date, ISO, false, false, &[], false,
         )
         .unwrap()
         .into_iter()
@@ -2118,6 +2202,8 @@ mod tests {
             ISO,
             false,
             false,
+            &[],
+            false,
         )
         .unwrap();
         // Absent by sha, so the merge would still bring it: that is why the
@@ -2165,7 +2251,7 @@ mod tests {
 
         let refs = vec!["main".to_string()];
         let rows = |no_merges: bool| -> Vec<String> {
-            commit_rows(&tmp, &refs, None, None, Order::Date, ISO, no_merges, false)
+            commit_rows(&tmp, &refs, None, None, Order::Date, ISO, no_merges, false, &[], false)
                 .unwrap()
                 .iter()
                 .map(|r| r.text.clone())
@@ -2213,7 +2299,7 @@ mod tests {
         git(&tmp, &["commit", "--quiet", "--allow-empty", "-m", "child"], "2026-01-01T10:00:00");
 
         let refs = vec!["main".to_string()];
-        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false).unwrap();
+        let rows = commit_rows(&tmp, &refs, None, None, Order::Date, ISO, false, false, &[], false).unwrap();
         let seen: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
 
         // Ancestry wins: the child is listed above the parent it descends from,
@@ -2223,6 +2309,144 @@ mod tests {
         assert_eq!(seen, ["child", "parent"], "a parent must never precede its child");
         assert_eq!(rows[0].key, "2026-01-01");
         assert_eq!(rows[1].key, "2026-05-01");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    }
+
+    fn write_commit(dir: &std::path::Path, path: &str, content: &str, msg: &str) {
+        let full = dir.join(path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(full, content).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "--quiet", "-m", msg]);
+    }
+
+    /// `log`'s row source: a pathspec on the same walk, so only commits that
+    /// touched the path become rows -- and a merge that carried the whole file
+    /// over is the `path_shas` trap this function has to dodge the same way.
+    #[test]
+    fn a_pathspec_narrows_the_rows_and_the_merge_trap_is_dodged() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-log-path-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+
+        write_commit(&tmp, "src/ui.rs", "one", "touch ui");
+        write_commit(&tmp, "other.rs", "one", "touch other");
+        git(&tmp, &["branch", "feat"]);
+        git(&tmp, &["checkout", "--quiet", "feat"]);
+        write_commit(&tmp, "src/ui.rs", "two", "feat touches ui");
+        git(&tmp, &["checkout", "--quiet", "main"]);
+        write_commit(&tmp, "other.rs", "two", "main touches other");
+        git(&tmp, &["merge", "--quiet", "--no-ff", "-m", "merge feat", "feat"]);
+
+        let refs = vec!["main".to_string()];
+        let paths = vec!["src/ui.rs".to_string()];
+
+        // Merges kept (--merges, so no_merges is false): the merge brought
+        // ui.rs's feat-side change over relative to main's prior tip, and
+        // without --full-history/--diff-merges=first-parent a plain pathspec
+        // walk would prune it -- the trap `path_shas` already documents,
+        // dodged here the same way.
+        let rows = commit_rows(
+            &tmp, &refs, None, None, Order::Date, ISO, false, false, &paths, false,
+        )
+        .unwrap();
+        let subjects: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(subjects, ["merge feat", "feat touches ui", "touch ui"], "{subjects:?}");
+        assert!(!subjects.contains(&"touch other"), "{subjects:?}");
+        assert!(!subjects.contains(&"main touches other"), "{subjects:?}");
+
+        // Merges dropped (the default, no_merges = true): plain --no-merges,
+        // and the merge row is simply absent -- no pruning trap in play
+        // because there is no merge row to begin with.
+        let dropped = commit_rows(
+            &tmp, &refs, None, None, Order::Date, ISO, true, false, &paths, false,
+        )
+        .unwrap();
+        let subjects: Vec<&str> = dropped.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(subjects, ["feat touches ui", "touch ui"], "{subjects:?}");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `--follow` spans a rename; without it the walk stops at the boundary.
+    /// Only sound with exactly one path, which is the caller's job to enforce
+    /// -- this pins what the flag does once that condition holds.
+    #[test]
+    fn follow_spans_a_rename_and_plain_does_not() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-log-follow-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+
+        write_commit(&tmp, "src/old.rs", "a\nb\nc\nd\ne\n", "add old");
+        git(&tmp, &["mv", "src/old.rs", "src/new.rs"]);
+        git(&tmp, &["commit", "--quiet", "-m", "rename"]);
+        write_commit(&tmp, "src/new.rs", "a\nb\nc\nd\ne\nf\n", "edit new");
+
+        let refs = vec!["main".to_string()];
+
+        let followed = commit_rows(
+            &tmp, &refs, None, None, Order::Date, ISO, true, false,
+            &["src/new.rs".to_string()], true,
+        )
+        .unwrap();
+        let subjects: Vec<&str> = followed.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(subjects, ["edit new", "rename", "add old"], "{subjects:?}");
+
+        let plain = commit_rows(
+            &tmp, &refs, None, None, Order::Date, ISO, true, false,
+            &["src/new.rs".to_string()], false,
+        )
+        .unwrap();
+        let subjects: Vec<&str> = plain.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(subjects, ["edit new", "rename"], "{subjects:?}");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The `±` cell and the `path` column's source: per-path churn and the
+    /// matched name(s), from one scoped `--numstat`, not the commit-wide
+    /// count `--files` prints.
+    #[test]
+    fn path_row_stat_counts_only_the_named_path() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-log-numstat-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp, &["init", "--quiet", "--initial-branch=main"]);
+        git(&tmp, &["config", "user.email", "t@test"]);
+        git(&tmp, &["config", "user.name", "t"]);
+
+        std::fs::write(tmp.join("a.rs"), "1\n2\n3\n").unwrap();
+        std::fs::write(tmp.join("b.rs"), "1\n2\n").unwrap();
+        git(&tmp, &["add", "-A"]);
+        git(&tmp, &["commit", "--quiet", "-m", "two files, one commit"]);
+
+        let head = git_stdout(&tmp, &["rev-parse", "HEAD"]).unwrap();
+        let (added, removed, names) = path_row_stat(&tmp, head.trim(), &["a.rs".to_string()]).unwrap();
+        assert_eq!((added, removed), (Some(3), Some(0)));
+        assert_eq!(names, vec!["a.rs".to_string()]);
+
+        // A path the commit never touched has nothing to sum: '-', not 0.
+        let (added, removed, names) = path_row_stat(&tmp, head.trim(), &["c.rs".to_string()]).unwrap();
+        assert_eq!((added, removed), (None, None));
+        assert!(names.is_empty());
 
         std::fs::remove_dir_all(&tmp).ok();
     }

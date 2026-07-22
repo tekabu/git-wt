@@ -57,6 +57,10 @@ impl MdHead {
     pub(crate) fn review() -> Self {
         MdHead { title: "git-wt merge --review", labels: "Merging" }
     }
+
+    pub(crate) fn log() -> Self {
+        MdHead { title: "git-wt log", labels: "Branches" }
+    }
 }
 
 /// Write the table as a markdown file, and say where it went.

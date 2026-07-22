@@ -47,6 +47,7 @@ Replace branch switching with separate folders next door.
 | Fold one task's work into another | `wt 1,2 merge` | Task 2's branch is merged into task 1's, without leaving your shell |
 | Check what a merge would bring first | `wt 1,2 merge --review` | The commits about to land, and whether they'd conflict — nothing is changed |
 | See which tasks have which commits | `wt 1,2,3 commits` | A table: one row per commit, a check under every task that has it |
+| See what happened to one file, across branches | `wt 1,2 log src/ui.rs` | The same table, narrowed to that file's history |
 | Catch every task up with the server | `wt pull --all` | Each folder pulls its own branch; the last line counts what worked |
 | Clean up a finished task | `wt 1 remove` | The extra folder disappears; the branch stays in Git |
 
@@ -176,6 +177,8 @@ git-wt <N> merged            Is N's branch already in the current branch?
 git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
 git-wt <N>[,<M>...] commits  Table: which commit is on which branch
 git-wt <N> commits           One worktree's own log, nothing compared
+git-wt <N>[,<M>...] log [PATH...] [flags]
+                             Same table, narrowed to one file's history
 git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
 git-wt <N> fetch|pull|push   Run it in worktree N
 git-wt <N>,<M> pull          Run it in each worktree listed
@@ -869,6 +872,83 @@ are marked `≈` rather than `·`, which is what [the marks](#what-the-marks-mea
 are about. When the question is the content of the whole branch rather than
 per-commit, `1,2 diff` and `1,2 merged` still answer it directly.
 
+## Log
+
+`commits` answers "which branch has this commit". `log` answers the question
+you ask while staring at a file: what happened to *this* file, and on which
+branch did it happen. It's the same table as `commits` — same rows, same
+columns, same filters, same renderer — with a pathspec selecting the rows
+instead of a branch range:
+
+```
+git-wt 1,2 log src/cmd/commits/render.rs
+git-wt log src/ui.rs --author nino --date-since 2026-01-01 -w
+```
+
+The targets are worktrees or branches, exactly like `commits`: the first is
+the row source, the rest are mark columns. `PATH` always comes after the verb
+— never in the target slot, which would collide with a branch name like
+`feature/foo` — and any shape works: absolute, relative, or repo-relative,
+typed from anywhere. It's resolved against the worktree it sits under, so any
+worktree's copy of `src/ui.rs` names the same file in history, whether or not
+that worktree is one of the ones you listed. `PATH` omitted is the current
+directory, repo-relative.
+
+A path outside every worktree is an error naming both readings:
+
+```
+error: '/etc/hosts' is outside the repository
+hint: paths are resolved against the worktree they sit in
+```
+
+A path that resolves but has no commits on the branches you listed is **not**
+an error — a file deleted on `main` and alive on `feat/x` is exactly the case
+this table is for:
+
+```
+no commits touched 'src/old.rs' on main
+hint: it may live under another name; --no-follow shows the literal path only
+```
+
+Every flag `commits` has still works the same way (`-n`, the date/commit/author/
+message filters, `--time`, `--date-human`, `--reverse`, `--topo`, `--merges`,
+`--no-cherry`, `--pick-id`, `-w`/`--subject-width`/`--branch-width`, `--md`),
+with four exceptions:
+
+- **`--filename`, `--all`, `--all-files`** don't exist under `log` at all — the
+  path already is the target, so there's nothing left for any of them to ask
+  for. Typing one gets the same unknown-argument error any other typo would.
+- **`--union`** is load-bearing here: the default rows are the *first*
+  branch's history of the path; `--union` unions in every listed branch's.
+- **`-f`/`--files`** means the *other* files each shown commit touched — the
+  row already carries the path's own `±`, so `-f` is the blast radius of every
+  change to it.
+- **`--squash`** becomes the path's lifetime totals — commits, authors, `±`,
+  first and last touch — added onto the header line instead of a file block.
+- **`--no-follow`** is new: `log` follows a rename automatically when exactly
+  one path is given (across several, it's what git gives without `--follow`
+  anyway). `--no-follow` opts out and shows the literal path only.
+
+```
+git-wt 1,2,3 log src/ui.rs --union     # every branch's touches, unioned
+git-wt 2 log src/ui.rs -f              # + the other files each commit touched
+git-wt 1 log src/ui.rs --squash        # the file's lifetime totals
+git-wt 1 log src/ui.rs --no-follow     # stop at a rename instead of crossing it
+```
+
+The table adds one column of its own, `±`: the added/removed line count
+scoped to the path alone (from a `--numstat` on the same walk), not the
+commit-wide count `-f` prints. A `path` column also appears, but only when it
+varies — a rename crossed under `--follow`, or more than one `PATH` given —
+otherwise the header already names it:
+
+```
+src/ui.rs   main, feat/x, feat/y   34 commits, +1204 -318, 3 authors
+
+commit   author  date        main  feat-x  feat-y      ±  subject
+2526759  Nino    2026-07-17   ✓     ✓       ·      +12 -3  wire up the new renderer
+```
+
 ## Meld
 
 Compare worktrees side by side in [meld](https://meldmerge.org/):
@@ -1397,6 +1477,24 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits --match-only` | Error — unknown argument; `--filename` already cuts the block, `--all-files` widens it |
 | `git-wt 1,2 commits --all-files` | Error — needs a `--filename` to widen |
 | `git-wt 1,2 commits --grep x` | Error — unknown argument; `--message` is the flag here |
+
+### Log — `git-wt <N>[,<M>...] log [PATH...]`
+
+| Command | Effect |
+|---|---|
+| `git-wt 1,2 log src/ui.rs` | That path's commits on worktree 1, with a column saying whether 2 has each |
+| `git-wt 2 log src/ui.rs` | Worktree 2's own history of the path — no check columns |
+| `git-wt 1,2 log` | PATH omitted = the current directory, repo-relative |
+| `git-wt 1,2,3 log src/ui.rs --union` | Every listed branch's touches of the path, unioned |
+| `git-wt 2 log src/ui.rs -f` | + the *other* files each shown commit touched |
+| `git-wt 1 log src/ui.rs --squash` | The path's lifetime totals: commits, authors, `±`, first/last touch |
+| `git-wt 1 log src/ui2.rs` | Follows a rename automatically — one path, so `--follow` is implied |
+| `git-wt 1 log src/ui2.rs --no-follow` | Same, but stops at the rename instead of crossing it |
+| `git-wt 1 log src/old.rs` (deleted on this branch, alive on another) | `no commits touched 'src/old.rs' on <branch>`, exit 0, with a rename hint |
+| `git-wt 1,2 log src/ui.rs --all` | Error — unknown argument; a file's history is already the whole log |
+| `git-wt 1,2 log --filename ui.rs` | Error — unknown argument; the path is already the target |
+| `git-wt 1,2 log src/ui.rs --all-files` | Error — unknown argument; that request is `-f` here |
+| `git-wt 1 log /etc/hosts` | Error — `'/etc/hosts' is outside the repository` |
 
 ### Multi-target — `git-wt <N>,<N>[,<N>] meld`
 

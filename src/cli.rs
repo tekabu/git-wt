@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::cmd::commits::cmd_commits;
+use crate::cmd::log::cmd_log;
 use crate::cmd::diff::cmd_diff;
 use crate::cmd::list::{cmd_list, parse_cols, ListMode};
 use crate::cmd::meld::cmd_meld;
@@ -78,6 +79,9 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
         // worktree you happen to be standing in answers a wider question than
         // was asked. 'git-wt {n},<M> commits' is still how you compare two.
         "commits" => cmd_commits(root, &trees, &[idx], &rest[1..]),
+        // A single target's own history of the path, no comparison columns --
+        // the same "one worktree, no mark columns" rule 'commits' follows.
+        "log" => cmd_log(root, &trees, &[idx], &rest[1..]),
         "merge" => {
             let args = parse_merge_args(&rest[1..])?;
             if let MergeOp::Start(src) = &args.op {
@@ -170,7 +174,7 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
              e.g. 'git-wt {n} remove -f' or 'git-wt {n},2 diff --stat'"
         )),
         other => Err(format!(
-            "unknown action '{other}' (switch, path, remove, diff, commits, merge, meld, \
+            "unknown action '{other}' (switch, path, remove, diff, commits, log, merge, meld, \
              merged, fetch, pull, push)"
         )),
     }
@@ -310,6 +314,7 @@ pub(crate) fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Re
         Some("meld") => cmd_meld(root, &trees, &idxs, &rest[1..]),
         Some("diff") => cmd_diff(root, &trees, &idxs, &rest[1..]),
         Some("commits") => cmd_commits(root, &trees, &idxs, &rest[1..]),
+        Some("log") => cmd_log(root, &trees, &idxs, &rest[1..]),
         // `1,2 merge`: the list reads dest-first, so 2 merges into 1.
         Some("merge") => {
             // The list already names the source, so a resume word contradicts
@@ -375,7 +380,7 @@ pub(crate) fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Re
         }
         // A list only makes sense for actions that take more than one worktree.
         Some(other) => Err(format!(
-            "'{other}' takes a single worktree; only 'commits', 'diff', 'meld', 'merge', \
+            "'{other}' takes a single worktree; only 'commits', 'log', 'diff', 'meld', 'merge', \
              'merged', 'fetch', 'pull' and 'push' take a list"
         )),
         None => Err("a worktree list needs an action, e.g. 'git-wt 1,2 diff'".into()),

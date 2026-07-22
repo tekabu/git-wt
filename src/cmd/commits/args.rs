@@ -136,6 +136,21 @@ impl Wrap {
     }
 }
 
+/// Which of the three verbs that render through this parser and table asked
+/// for it.
+///
+/// Not a `review: bool` any more: `log` is a third shape, not a second
+/// variation on the first. It shares `Review`'s reason for existing (four
+/// behaviours gated by one enum instead of a growing pile of bools) and adds
+/// its own: `--filename`, `--all`, `--all-files` are not words `log` knows at
+/// all, because the path already is what they would otherwise ask for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Commits,
+    Review,
+    Log,
+}
+
 /// Options for `commits`.
 #[derive(Debug)]
 pub(crate) struct CommitsArgs {
@@ -190,6 +205,12 @@ pub(crate) struct CommitsArgs {
     /// Columns a branch-name header gets cut to. None is the default cap
     /// (`BRANCH_HEAD_MAX`); `Full` never cuts.
     pub(crate) branchw: Option<BranchWidth>,
+    /// `log` only: don't follow a rename, even with one path given. The
+    /// escape hatch for the empty-result hint ("it may live under another
+    /// name") -- an explicit opt-out for the one case `log` would otherwise
+    /// always take, a single path's history across whatever it used to be
+    /// called.
+    pub(crate) no_follow: bool,
 }
 
 /// The message for a token that reached the `commits` parser under `--review`
@@ -302,13 +323,12 @@ pub(crate) fn expand_short_bundles(args: &[String]) -> Result<Vec<String>, Strin
     Ok(out)
 }
 
-/// Parse `commits` arguments, for either of the two commands that render
-/// through this table.
+/// Parse `commits` arguments, for any of the three verbs that render through
+/// this table.
 ///
-/// `review` is the mode, not a single default. It started as one -- whether
-/// merge commits are kept -- and grew to four things, all of which follow from
-/// the same fact about `merge --review` and none of which follow from each
-/// other:
+/// `mode` used to be a `review: bool`. As one, it started with a single fact
+/// -- whether merge commits are kept -- and grew to four, all of which follow
+/// from `merge --review` and none of which follow from each other:
 ///
 /// - **The merges default.** Kept under a review, because the range is bounded
 ///   by the merge about to happen, so a merge inside it is cargo rather than
@@ -321,13 +341,20 @@ pub(crate) fn expand_short_bundles(args: &[String]) -> Result<Vec<String>, Strin
 /// - **Whether `--all` / `--union` are refused.** Both name a row source, and a
 ///   review's is already the range `dest..src`.
 ///
+/// `Mode::Log` is the same shape, not a new one: `--filename`, `--all`, and
+/// `--all-files` simply are not words it knows, so their match arms are
+/// gated off and the tokens fall through to the plain unknown-argument error
+/// -- no bespoke message, because the path already answers what each of them
+/// would otherwise ask for.
+///
 /// The merges default is the *positive* -- "keep them" -- all the way through
 /// this layer, matching `CommitsArgs.merges`; the single inversion to
 /// `commit_rows`'s `no_merges` happens at that one call site.
 pub(crate) fn parse_commits_args_with(
     args: &[String],
-    review: bool,
+    mode: Mode,
 ) -> Result<CommitsArgs, String> {
+    let review = mode == Mode::Review;
     let args = expand_short_bundles(args)?;
     let mut limit = None;
     let mut dates = Vec::new();
@@ -352,6 +379,7 @@ pub(crate) fn parse_commits_args_with(
     let mut wrap = None;
     let mut subjectw = None;
     let mut branchw = None;
+    let mut no_follow = false;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -381,7 +409,14 @@ pub(crate) fn parse_commits_args_with(
             // merge-vocabulary message rather than becoming a file view here.
             "--squash" if !review => squash = true,
             "--union" => union = true,
-            "--all" | "-a" => all = true,
+            // Only a word `log` knows: elsewhere there is no follow to opt out
+            // of, so it falls through to the plain unknown-argument error.
+            "--no-follow" if mode == Mode::Log => no_follow = true,
+            // Not a word `log` knows at all: a file's history is already the
+            // whole log, so there is no divergence floor to lift. Falls
+            // through to the generic unknown-argument error, same as any
+            // other flag `log` never had.
+            "--all" | "-a" if mode != Mode::Log => all = true,
             // The count is optional, and only a count or 'full' is read as
             // one: '--wrap --topo' asks for the whole subject, not for a
             // worktree named '--topo' to be parsed as a number.
@@ -465,9 +500,12 @@ pub(crate) fn parse_commits_args_with(
             // A merge can carry a hundred files and match on three, so the
             // block is cut to the matches by default. --all-files buys the
             // whole list back when the question is what the commit did.
-            "--all-files" => all_files = true,
-            "--filename" => filename = Some(term(it.next(), FILENAME_MISSING)?),
-            s if s.starts_with("--filename=") => {
+            // Neither is a word `log` knows: the path is already the target,
+            // so `--filename` asks for nothing new, and `--all-files` is the
+            // same request `-f` already spells there.
+            "--all-files" if mode != Mode::Log => all_files = true,
+            "--filename" if mode != Mode::Log => filename = Some(term(it.next(), FILENAME_MISSING)?),
+            s if mode != Mode::Log && s.starts_with("--filename=") => {
                 filename = Some(term_of(&s["--filename=".len()..], FILENAME_MISSING)?);
             }
             "--commit-since" => commit_since = Some(it.next().ok_or(COMMIT_SINCE_MISSING)?.clone()),
@@ -491,8 +529,12 @@ pub(crate) fn parse_commits_args_with(
             // commits accepts -- it changes the message, never the outcome.
             other if review => return Err(merge_word_msg(other)),
             other => {
+                // `log` is a different command from the user's own keystrokes'
+                // point of view, even though this is the same parser: naming
+                // 'commits' here would blame a word the user never typed.
+                let cmd = if mode == Mode::Log { "log" } else { "commits" };
                 return Err(format!(
-                    "unexpected argument '{other}' for commits\nTry 'git-wt --help'"
+                    "unexpected argument '{other}' for {cmd}\nTry 'git-wt --help'"
                 ));
             }
         }
@@ -572,7 +614,7 @@ pub(crate) fn parse_commits_args_with(
         limit, dates, commit_since, commit_until, commits, author, message, filename, all_files,
         topo, merges, fmt, md,
         reverse, no_cherry, pick, union,
-        all, files, squash, wrap, subjectw, branchw,
+        all, files, squash, wrap, subjectw, branchw, no_follow,
     })
 }
 
@@ -747,13 +789,59 @@ mod tests {
     /// `parse_commits_args` over string literals.
     fn parse(args: &[&str]) -> Result<CommitsArgs, String> {
         let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_commits_args_with(&v, false)
+        parse_commits_args_with(&v, Mode::Commits)
     }
 
     /// The same parser as `merge --review` runs it: merges kept by default.
     fn parse_review(args: &[&str]) -> Result<CommitsArgs, String> {
         let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_commits_args_with(&v, true)
+        parse_commits_args_with(&v, Mode::Review)
+    }
+
+    /// The same parser as `log` runs it.
+    fn parse_log(args: &[&str]) -> Result<CommitsArgs, String> {
+        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_commits_args_with(&v, Mode::Log)
+    }
+
+    /// `--filename`, `--all`, `--all-files` are not words `log` knows at all --
+    /// no bespoke refusal, just the same unknown-argument error every other
+    /// flag `log` never had gets. And each still means what it always did
+    /// outside `log`.
+    #[test]
+    fn log_does_not_know_the_flags_the_path_already_answers() {
+        for w in ["--filename", "--all", "-a", "--all-files"] {
+            let e = parse_log(&[w]).unwrap_err();
+            assert!(
+                e.contains(&format!("unexpected argument '{w}' for log")),
+                "{w}: {e}"
+            );
+        }
+        // '--filename TERM' -- the value is never consumed either, so the term
+        // itself also falls through as its own unknown argument.
+        let e = parse_log(&["--filename", "ui.rs"]).unwrap_err();
+        assert!(e.contains("unexpected argument '--filename' for log"), "{e}");
+
+        // Still real words everywhere else.
+        assert!(parse(&["--all"]).unwrap().all);
+        assert!(parse(&["--filename", "ui.rs"]).unwrap().filename.is_some());
+        assert!(parse(&["--filename", "ui.rs", "--all-files"]).unwrap().all_files);
+        assert!(parse_review(&["--all"]).is_err()); // refused, but as a real flag: see review_refuses_...
+
+        // '--union', '-f'/'--files', and '--squash' are unchanged in `log`.
+        assert!(parse_log(&["--union"]).unwrap().union);
+        assert!(parse_log(&["-f"]).unwrap().files);
+        assert!(parse_log(&["--squash"]).unwrap().squash);
+    }
+
+    /// `--no-follow` is a word only `log` knows -- the escape hatch for its
+    /// always-on rename-following, which no other mode does at all.
+    #[test]
+    fn no_follow_is_a_log_only_word() {
+        assert!(!parse_log(&[]).unwrap().no_follow);
+        assert!(parse_log(&["--no-follow"]).unwrap().no_follow);
+        assert!(parse(&["--no-follow"]).unwrap_err().contains("unexpected argument '--no-follow'"));
+        assert!(parse_review(&["--no-follow"]).is_err());
     }
 
     /// Both directions of the merges default, because this is the refactor
@@ -1000,7 +1088,7 @@ mod tests {
     fn commits_args_take_the_filters() {
         let parse = |args: &[&str]| {
             let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            parse_commits_args_with(&v, false)
+            parse_commits_args_with(&v, Mode::Commits)
         };
 
         // A range is --date-since plus --date-until; --date itself is one day.
@@ -1139,7 +1227,7 @@ mod tests {
     #[test]
     fn wrap_reads_a_count_or_full() {
         let parse = |a: &[&str]| {
-            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), false)
+            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), Mode::Commits)
         };
         // One line is the table's shape: more of it is asked for, never given.
         assert_eq!(parse(&[]).unwrap().wrap, Wrap::Lines(1));
@@ -1248,7 +1336,7 @@ mod tests {
     #[test]
     fn subject_width_is_a_width_not_a_filter() {
         let parse = |a: &[&str]| {
-            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), false)
+            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), Mode::Commits)
         };
         // None is the terminal's answer, which is the default it always was.
         assert_eq!(parse(&[]).unwrap().subjectw, None);
@@ -1270,7 +1358,7 @@ mod tests {
     #[test]
     fn branch_width_cuts_the_header_not_the_terminal() {
         let parse = |a: &[&str]| {
-            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), false)
+            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), Mode::Commits)
         };
         // None is the default cap (BRANCH_HEAD_MAX), applied at render time.
         assert_eq!(parse(&[]).unwrap().branchw, None);

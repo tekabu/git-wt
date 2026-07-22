@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::cli::{branch_targets, extract_branch_flag};
-use crate::cmd::commits::args::{parse_commits_args_with, DateFilter, DateOp, Order};
+use crate::cmd::commits::args::{parse_commits_args_with, DateFilter, DateOp, Mode, Order};
 use crate::cmd::commits::md::{md_filename, write_md, MdHead};
 use crate::cmd::commits::render::{render_commits, Highlight};
 use crate::cmd::commits::rows::{
@@ -107,7 +107,8 @@ fn commits_view(
     // Merges are kept under --review and dropped elsewhere: a review range is
     // bounded by the merge about to happen, so a merge inside it is the cargo
     // rather than the noise it is on a long-lived branch.
-    let mut args = parse_commits_args_with(rest, review.is_some())?;
+    let mode = if review.is_some() { Mode::Review } else { Mode::Commits };
+    let mut args = parse_commits_args_with(rest, mode)?;
     // Ten rows unless told otherwise: --all and --union both name "give me
     // everything" outright, so a silent cap under either would contradict the
     // flag just asked for. Named otherwise, `-n` already won this fight above.
@@ -207,6 +208,9 @@ fn commits_view(
         // The body is fetched only for the filter that reads it: every other
         // run would be paying for text the table never prints.
         args.message.is_some(),
+        // No pathspec here -- that is `log`'s row source, not `commits`'.
+        &[],
+        false,
     )?;
     // Default view: keep the log down to its earliest divergent date, shared
     // commits above the floor included. A date threshold, so --topo shows the

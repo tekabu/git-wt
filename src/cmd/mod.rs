@@ -2,6 +2,7 @@ pub(crate) mod add;
 pub(crate) mod commits;
 pub(crate) mod diff;
 pub(crate) mod list;
+pub(crate) mod log;
 pub(crate) mod meld;
 pub(crate) mod merge;
 pub(crate) mod merged;

@@ -52,6 +52,8 @@ USAGE:
     git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
     git-wt <N>,<M>[,...] commits Table: which commit is on which branch
     git-wt <N> commits           Same, N against the worktree you are in
+    git-wt <N>[,<M>...] log [PATH...] [flags]
+                                 Same table, narrowed to one file's history
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
     git-wt -b/--branch LIST <action>
                                  LIST with the current worktree prepended:
@@ -372,6 +374,53 @@ COMMITS DATES:
 
         git-wt 1,2 commits -n 10 --files
         git-wt 1,2 commits --author regoso --files
+
+LOG:
+    'log' is the same table as 'commits' -- same rows, columns, filters,
+    renderer -- with a pathspec selecting the rows instead of a branch range.
+
+        git-wt 1,2 log src/cmd/commits/render.rs
+        git-wt log src/ui.rs --author nino --date-since 2026-01-01 -w
+
+    Targets are worktrees or branches, exactly like 'commits': the first is
+    the row source, the rest are mark columns. PATH always comes after the
+    verb, never in the target slot -- that would collide with a branch name
+    like 'feature/foo'. It resolves against the worktree it sits under
+    (absolute, relative, or repo-relative, from anywhere), so any worktree's
+    copy of the path names the same file in history. PATH omitted is the
+    current directory, repo-relative.
+
+    Every 'commits' flag still works the same way, with four exceptions:
+    '--filename', '--all', and '--all-files' are not words 'log' knows at
+    all -- the path already is the target, so typing one gets the same
+    unknown-argument error any other typo would. '--union' is load-bearing:
+    the default rows are the first branch's history of the path; '--union'
+    unions in every listed branch's. '-f'/'--files' means the *other* files
+    each shown commit touched, since the row already carries the path's own
+    '±'. '--squash' becomes the path's lifetime totals -- commits, authors,
+    '±', first and last touch -- folded into the header line.
+
+        git-wt 1,2,3 log src/ui.rs --union     # every branch's touches
+        git-wt 2 log src/ui.rs -f               # + the other files touched
+        git-wt 1 log src/ui.rs --squash         # lifetime totals
+
+    '--no-follow' is new: with exactly one PATH, 'log' follows a rename
+    automatically; '--no-follow' stops at it instead. A path deleted on this
+    branch and alive on another is not an error -- that is exactly what
+    'log' is for -- and the empty result names the rename escape hatch:
+
+        no commits touched 'src/old.rs' on main
+        hint: it may live under another name; --no-follow shows the literal path only
+
+    A path outside every worktree is an error naming both readings:
+
+        error: '/etc/hosts' is outside the repository
+        hint: paths are resolved against the worktree they sit in
+
+    The table adds one column, '±': the added/removed line count scoped to
+    the path alone, not the commit-wide count '-f' prints. A 'path' column
+    appears only when it varies -- a rename crossed under '--follow', or more
+    than one PATH given -- otherwise the header already names it.
 
 MARKS:
     ✓   the branch has this commit
@@ -722,6 +771,25 @@ fn run() -> Result<(), String> {
         let trees = worktrees(&root)?;
         let cur = current_worktree_index(&trees)
             .ok_or("not inside a worktree; use 'git-wt <N> commits'")?;
+        let (rest, val) = extract_branch_flag(&args[1..])?;
+        if let Some(val) = val {
+            let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();
+            ns.insert(0, cur + 1);
+            let mut full_rest = vec![first.clone()];
+            full_rest.extend(rest);
+            return dispatch_targets(&root, &ns, &full_rest);
+        }
+        return dispatch_target(&root, cur + 1, &args);
+    }
+
+    // `log` with no target — the worktree standing in for itself, same reading
+    // as bare `commits` above: 'git-wt log src/ui.rs' is that worktree's own
+    // history of the path, and '-b <N>' still adds a comparison target.
+    if first == "log" {
+        let root = repo_root()?;
+        let trees = worktrees(&root)?;
+        let cur = current_worktree_index(&trees)
+            .ok_or("not inside a worktree; use 'git-wt <N> log'")?;
         let (rest, val) = extract_branch_flag(&args[1..])?;
         if let Some(val) = val {
             let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();

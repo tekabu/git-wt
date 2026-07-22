@@ -88,13 +88,14 @@ impl Pager {
             return none;
         }
         // `less`'s own defaults, unless the caller named a pager and its own
-        // flags: -R shows our color codes instead of escaping them, -F exits
-        // immediately when the table already fits one screen, -X leaves that
-        // screen on the terminal after quitting rather than clearing it.
+        // flags: -R shows our color codes instead of escaping them. No -F: a
+        // table that fits one screen should still open the pager's alternate
+        // screen, not print straight through. No -X: quitting restores the
+        // prior screen instead of leaving the table in scrollback.
         let args: Vec<&str> = if parts.clone().next().is_some() {
             parts.collect()
         } else if prog == "less" {
-            vec!["-R", "-F", "-X"]
+            vec!["-R"]
         } else {
             vec![]
         };
@@ -115,9 +116,14 @@ impl Pager {
             let _ = child.wait();
             return none;
         }
-        unsafe { dup2(pager_stdin.as_raw_fd(), stdout_fd) };
-        // The pipe now lives at fd 1 too; dropping `pager_stdin` here would
-        // close that shared fd out from under it.
+        let pipe_fd = pager_stdin.as_raw_fd();
+        unsafe { dup2(pipe_fd, stdout_fd) };
+        // The pipe now lives at fd 1 too. Close `pager_stdin`'s own fd (not
+        // via its Drop, which would also close fd 1's copy) so this process
+        // holds the pipe's write end exactly once -- otherwise that extra
+        // open fd keeps the pipe open after we dup2 stdout back, and `less`
+        // never sees EOF, hanging on "Waiting for data...".
+        unsafe { close(pipe_fd) };
         std::mem::forget(pager_stdin);
 
         Pager { child: Some(child), saved_stdout: Some(saved) }

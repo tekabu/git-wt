@@ -373,8 +373,8 @@ pub(crate) fn parse_commits_args_with(
             // error like any other flag that does not exist.
             "--no-merges" if review => merges = false,
             "--reverse" | "--oldest-first" => reverse = true,
-            "--no-cherry" => no_cherry = true,
-            "--pick-id" => pick = true,
+            "--no-cherry" | "--nc" => no_cherry = true,
+            "--pick-id" | "--pi" => pick = true,
             "--files" | "-f" => files = true,
             // Only outside a review: under one, '--squash' shapes the merge
             // commit that '--review' is not making, so it falls through to the
@@ -421,7 +421,7 @@ pub(crate) fn parse_commits_args_with(
                 branchw = Some(parse_branchw(&s["--branchw=".len()..])?);
             }
             "--time" => fmt.time = true,
-            "--date-human" => fmt.human = true,
+            "--date-human" | "--dh" => fmt.human = true,
             // The path is optional, so the next word is only it when it is not
             // another flag: 'commits --md --topo' asks for the default name.
             "--md" => {
@@ -440,22 +440,29 @@ pub(crate) fn parse_commits_args_with(
             // The same two bounds --date spells with '>=' and '<=', named to
             // mirror --from-id/--to-id -- and needing no quoting, where '>' is
             // a redirect the shell eats before git-wt ever sees it.
-            "--date-since" => {
+            "--date-since" | "--ds" => {
                 let v = it.next().ok_or(FROM_DATE_MISSING)?;
                 dates.push(DateFilter { op: DateOp::Ge, date: iso_date(v)? });
             }
             s if s.starts_with("--date-since=") => {
                 dates.push(DateFilter { op: DateOp::Ge, date: iso_date(&s["--date-since=".len()..])? });
             }
-            "--date-until" => {
+            s if s.starts_with("--ds=") => {
+                dates.push(DateFilter { op: DateOp::Ge, date: iso_date(&s["--ds=".len()..])? });
+            }
+            "--date-until" | "--du" => {
                 let v = it.next().ok_or(TO_DATE_MISSING)?;
                 dates.push(DateFilter { op: DateOp::Le, date: iso_date(v)? });
             }
             s if s.starts_with("--date-until=") => {
                 dates.push(DateFilter { op: DateOp::Le, date: iso_date(&s["--date-until=".len()..])? });
             }
-            "--author" => author = Some(it.next().ok_or(AUTHOR_MISSING)?.clone()),
+            s if s.starts_with("--du=") => {
+                dates.push(DateFilter { op: DateOp::Le, date: iso_date(&s["--du=".len()..])? });
+            }
+            "--author" | "--au" => author = Some(it.next().ok_or(AUTHOR_MISSING)?.clone()),
             s if s.starts_with("--author=") => author = Some(s["--author=".len()..].to_string()),
+            s if s.starts_with("--au=") => author = Some(s["--au=".len()..].to_string()),
             // The text filter. Its term has to end up somewhere on the row it
             // keeps -- see the --wrap implication below.
             "--message" | "-m" => message = Some(term(it.next(), MESSAGE_MISSING)?),
@@ -465,15 +472,20 @@ pub(crate) fn parse_commits_args_with(
             // A merge can carry a hundred files and match on three, so the
             // block is cut to the matches by default. --all-files buys the
             // whole list back when the question is what the commit did.
-            "--all-files" => all_files = true,
-            "--filename" => filename = Some(term(it.next(), FILENAME_MISSING)?),
+            "--all-files" | "--af" => all_files = true,
+            "--filename" | "--fn" => filename = Some(term(it.next(), FILENAME_MISSING)?),
             s if s.starts_with("--filename=") => {
                 filename = Some(term_of(&s["--filename=".len()..], FILENAME_MISSING)?);
             }
-            "--commit-since" => commit_since = Some(it.next().ok_or(COMMIT_SINCE_MISSING)?.clone()),
+            s if s.starts_with("--fn=") => {
+                filename = Some(term_of(&s["--fn=".len()..], FILENAME_MISSING)?);
+            }
+            "--commit-since" | "--cs" => commit_since = Some(it.next().ok_or(COMMIT_SINCE_MISSING)?.clone()),
             s if s.starts_with("--commit-since=") => commit_since = Some(s["--commit-since=".len()..].to_string()),
-            "--commit-until" => commit_until = Some(it.next().ok_or(COMMIT_UNTIL_MISSING)?.clone()),
+            s if s.starts_with("--cs=") => commit_since = Some(s["--cs=".len()..].to_string()),
+            "--commit-until" | "--cu" => commit_until = Some(it.next().ok_or(COMMIT_UNTIL_MISSING)?.clone()),
             s if s.starts_with("--commit-until=") => commit_until = Some(s["--commit-until=".len()..].to_string()),
+            s if s.starts_with("--cu=") => commit_until = Some(s["--cu=".len()..].to_string()),
             // The rows named outright, rather than a window they fall in. A
             // comma-separated list, and repeatable, so both spellings work.
             "--commits" | "-c" => {
@@ -1283,5 +1295,37 @@ mod tests {
         // Below BRANCH_MIN a cut name cannot tell two branches apart.
         assert!(parse(&["--branchw=8"]).unwrap_err().contains("columns or more"));
         assert!(parse(&["--branchw=0"]).unwrap_err().contains("needs a column count"));
+    }
+
+    #[test]
+    fn short_aliases_set_the_same_field_as_their_long_form() {
+        let parse = |a: &[&str]| {
+            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), false)
+        };
+        assert_eq!(parse(&["--au", "nino"]).unwrap().author, parse(&["--author", "nino"]).unwrap().author);
+        assert_eq!(parse(&["--dh"]).unwrap().fmt.human, parse(&["--date-human"]).unwrap().fmt.human);
+        assert_eq!(
+            parse(&["--filename", "ui.rs", "--af"]).unwrap().all_files,
+            parse(&["--filename", "ui.rs", "--all-files"]).unwrap().all_files
+        );
+        assert_eq!(parse(&["--fn", "ui.rs"]).unwrap().filename, parse(&["--filename", "ui.rs"]).unwrap().filename);
+        assert_eq!(
+            parse(&["--cs", "abc123"]).unwrap().commit_since,
+            parse(&["--commit-since", "abc123"]).unwrap().commit_since
+        );
+        assert_eq!(
+            parse(&["--cu", "def456"]).unwrap().commit_until,
+            parse(&["--commit-until", "def456"]).unwrap().commit_until
+        );
+        assert_eq!(
+            parse(&["--ds", "2026-01-01"]).unwrap().dates,
+            parse(&["--date-since", "2026-01-01"]).unwrap().dates
+        );
+        assert_eq!(
+            parse(&["--du", "2026-01-01"]).unwrap().dates,
+            parse(&["--date-until", "2026-01-01"]).unwrap().dates
+        );
+        assert_eq!(parse(&["--nc"]).unwrap().no_cherry, parse(&["--no-cherry"]).unwrap().no_cherry);
+        assert_eq!(parse(&["--pi"]).unwrap().pick, parse(&["--pick-id"]).unwrap().pick);
     }
 }

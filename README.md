@@ -182,7 +182,8 @@ git-wt <N>,<M> pull          Run it in each worktree listed
 git-wt fetch|pull|push --all Run it in every worktree
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
 git-wt version
-git-wt --help
+git-wt --help                Options, no prose (this is now the default)
+git-wt --help -f             Full manual: every flag, every section (alias: --full, -hf)
 ```
 
 Aliases: `ls` = `list`, `rm` = `remove`, `cd` = `switch`, `show` = `path`.
@@ -614,15 +615,15 @@ more.
 
 | Flag | Means |
 |---|---|
-| `--author NAME` | Only NAME's commits; fuzzy subsequence, case-folded (`nes` → `Nino Escalera`) |
+| `--author NAME` (`--au`) | Only NAME's commits; fuzzy subsequence, case-folded (`nes` → `Nino Escalera`) |
 | `--date D` (`-d`) | Commits on exactly day D |
-| `--date-since D` | Day D and after |
-| `--date-until D` | Day D and before |
-| `--commit-since C` | The day C was authored, and after |
-| `--commit-until C` | The day C was authored, and before |
+| `--date-since D` (`--ds`) | Day D and after |
+| `--date-until D` (`--du`) | Day D and before |
+| `--commit-since C` (`--cs`) | The day C was authored, and after |
+| `--commit-until C` (`--cu`) | The day C was authored, and before |
 | `--commits A,B` (`-c`) | Only these commits, named by sha |
 | `--message TERM` (`-m`) | Only commits with TERM in the subject **or** the body; plain substring, case-folded |
-| `--filename TERM` | Only commits touching a path containing TERM, case-folded |
+| `--filename TERM` (`--fn`) | Only commits touching a path containing TERM, case-folded |
 
 **A lower bound widens the rows, an upper bound does not.** The default rows
 are cut at the bottom, at the earliest divergent commit — so `--commits`,
@@ -956,8 +957,8 @@ carries over:
 
 ```
 -m, --message MSG      Merge commit message
-    --no-ff            Always create a merge commit
-    --ff-only          Refuse anything but a fast-forward
+    --no-ff, --nf      Always create a merge commit
+    --ff-only, --fo    Refuse anything but a fast-forward
     --squash           Stage the merge without committing
 -f, --force            Merge even when worktree N has uncommitted changes
 ```
@@ -1244,9 +1245,9 @@ instead.
 
 | Verb | Flags |
 |---|---|
-| `fetch` | `-p, --prune` · `--tags` · `--no-tags` · `--force` |
-| `pull` | `--rebase` · `--no-rebase` · `--ff-only` · `-p, --prune` · `--autostash` |
-| `push` | `-u, --set-upstream` · `--force-with-lease` · `--tags` · `-n, --dry-run` |
+| `fetch` | `-p, --prune` · `--tags` · `--no-tags, --nt` · `--force` |
+| `pull` | `--rebase, --rb` · `--no-rebase, --nr` · `--ff-only` · `-p, --prune` · `--autostash, --as` |
+| `push` | `-u, --set-upstream` · `--force-with-lease, --fl` · `--tags` · `-n, --dry-run` |
 | all three | `-a, --all` |
 
 `push --force` is the one flag refused outright: it overwrites a remote branch

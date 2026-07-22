@@ -227,6 +227,58 @@ pub(crate) fn resolve_target_list(trees: &[Worktree], parts: &[String]) -> Resul
     Ok(out)
 }
 
+/// Pull a `-b`/`--branch`/`--branch=VALUE` flag out of an argument list,
+/// wherever it sits, and return the args with it removed alongside its value.
+///
+/// Wherever it sits: `--branch` names extra targets to fold into whatever
+/// command it rides along with, not a target of its own, so it has to come
+/// out before the command's own parser sees an argument it doesn't know.
+pub(crate) fn extract_branch_flag(
+    args: &[String],
+) -> Result<(Vec<String>, Option<String>), String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut val: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "-b" || a == "--branch" {
+            if val.is_some() {
+                return Err(format!("'{a}' given twice"));
+            }
+            let v = args
+                .get(i + 1)
+                .ok_or_else(|| format!("'{a}' needs a value, e.g. '{a} 1,2'"))?;
+            val = Some(v.clone());
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--branch=") {
+            if val.is_some() {
+                return Err("'--branch' given twice".into());
+            }
+            val = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        out.push(a.clone());
+        i += 1;
+    }
+    Ok((out, val))
+}
+
+/// A `--branch` value, resolved to 0-based worktree indexes the same way any
+/// other comma list is: numbers or branch names, validated the same way.
+pub(crate) fn branch_targets(trees: &[Worktree], val: &str) -> Result<Vec<usize>, String> {
+    let parts: Vec<String> = val.split(',').map(String::from).collect();
+    if parts.iter().any(|p| p.is_empty()) {
+        return Err(format!(
+            "bad worktree list '{val}'; want numbers or branches, e.g. '1,2' or 'main,2'"
+        ));
+    }
+    let ns = resolve_target_list(trees, &parts)?;
+    ns.into_iter().map(|n| check_index(n, trees.len())).collect()
+}
+
 /// The index of the worktree with `branch` checked out, if any.
 pub(crate) fn worktree_on_branch(trees: &[Worktree], branch: &str) -> Option<usize> {
     trees.iter().position(|w| w.branch.as_deref() == Some(branch))

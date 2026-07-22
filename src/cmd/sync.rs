@@ -181,6 +181,21 @@ pub(crate) fn sync_argv(w: &Worktree, args: &SyncArgs) -> Result<Vec<String>, St
     Ok(argv)
 }
 
+/// Git's own "no upstream" errors point at a raw `git push -u origin <branch>`.
+/// That works, but it bypasses this tool's own flag for the same thing, so
+/// point back at that instead: `git-wt <n> push -u`.
+fn no_upstream_hint(op: SyncOp, e: &str, idx: usize) -> String {
+    let is_no_upstream = match op {
+        SyncOp::Push => e.contains("has no upstream branch"),
+        SyncOp::Pull => e.contains("no tracking information"),
+        SyncOp::Fetch => false,
+    };
+    if !is_no_upstream {
+        return e.to_string();
+    }
+    format!("{e}\nhint: 'git-wt {} push -u' sets the upstream from here", idx + 1)
+}
+
 /// Run one remote verb across the given worktrees.
 ///
 /// Every worktree runs, whatever the ones before it did: a sweep that stops
@@ -224,6 +239,7 @@ pub(crate) fn cmd_sync(trees: &[Worktree], idxs: &[usize], args: &SyncArgs) -> R
         match res {
             Ok(()) => ok += 1,
             Err(e) => {
+                let e = no_upstream_hint(args.op, &e, i);
                 if sweep {
                     eprintln!("{} {e}", paint("error:", RED, on));
                 }

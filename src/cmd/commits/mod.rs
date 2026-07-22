@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::Path;
 
+use crate::cli::{branch_targets, extract_branch_flag};
 use crate::cmd::commits::args::{parse_commits_args_with, DateFilter, DateOp, Order};
 use crate::cmd::commits::md::{md_filename, write_md, MdHead};
 use crate::cmd::commits::render::{render_commits, Highlight};
@@ -31,7 +32,19 @@ pub(crate) fn cmd_commits(
     idxs: &[usize],
     rest: &[String],
 ) -> Result<(), String> {
-    commits_view(root, trees, idxs, rest, None)
+    // `-b`/`--branch` can ride anywhere in a `commits` line, not only in front
+    // of it: 'git-wt commits -b 2' adds worktree 2 to the lone target the bare
+    // form already picked, same as spelling it 'git-wt <cur>,2 commits'.
+    let (rest, branch) = extract_branch_flag(rest)?;
+    let mut idxs = idxs.to_vec();
+    if let Some(v) = branch {
+        for i in branch_targets(trees, &v)? {
+            if !idxs.contains(&i) {
+                idxs.push(i);
+            }
+        }
+    }
+    commits_view(root, trees, &idxs, &rest, None)
 }
 
 /// Print the `dest..src` table for `merge --review`. See `commits_view`.
@@ -94,7 +107,13 @@ fn commits_view(
     // Merges are kept under --review and dropped elsewhere: a review range is
     // bounded by the merge about to happen, so a merge inside it is the cargo
     // rather than the noise it is on a long-lived branch.
-    let args = parse_commits_args_with(rest, review.is_some())?;
+    let mut args = parse_commits_args_with(rest, review.is_some())?;
+    // Ten rows unless told otherwise: --all and --union both name "give me
+    // everything" outright, so a silent cap under either would contradict the
+    // flag just asked for. Named otherwise, `-n` already won this fight above.
+    if args.limit.is_none() && !args.all && !args.union {
+        args.limit = Some(10);
+    }
     if let Some(r) = &review {
         eprintln!("{}", r.header);
     }
@@ -476,6 +495,7 @@ fn commits_view(
         term_width(tty),
         args.wrap,
         args.subjectw,
+        args.branchw,
         &Highlight {
             // The flags actually typed, not the filters they became. A commit
             // bound is a date bound underneath, but the user named a commit --

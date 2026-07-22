@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::cmd::commits::args::{SubjectWidth, Wrap};
+use crate::cmd::commits::args::{BranchWidth, SubjectWidth, Wrap};
 use crate::cmd::commits::rows::{consolidate_file_stats, file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
-    abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, BLUE, CHECK, DIM, EQUIV,
-    FINGERPRINT, GREEN, HEADER_COLORS, MAGENTA, MATCH, MIN_TEXTW, MISS, PICK_HEAD, TRAILER,
-    YELLOW,
+    abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, BLUE, BRANCH_HEAD_MAX, CHECK,
+    DIM, EQUIV, FINGERPRINT, GREEN, HEADER_COLORS, MAGENTA, MATCH, MIN_TEXTW, MISS, PICK_HEAD,
+    TRAILER, YELLOW,
 };
 
 /// Which cells a filter acted on, so the eye can find them in a long table.
@@ -64,8 +64,20 @@ pub(crate) fn render_commits(
     width: Option<usize>,
     wrap: Wrap,
     subjectw: Option<SubjectWidth>,
+    branchw: Option<BranchWidth>,
     hl: &Highlight,
 ) {
+    // Cut a long branch name before it dictates the column: nothing left of
+    // the marks bounds it the way the terminal bounds the subject, so an
+    // issue-shaped name would otherwise drag the marks and the subject off
+    // the edge on every row. `Full` (or an explicit width) opts out.
+    let cap = match branchw {
+        Some(BranchWidth::Full) => usize::MAX,
+        Some(BranchWidth::Cols(n)) => n,
+        None => BRANCH_HEAD_MAX,
+    };
+    let names: Vec<String> = names.iter().map(|n| ellipsize(n, cap)).collect();
+    let names = &names;
     let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
     let marksw: usize = widths.iter().map(|w| w + 2).sum();
 

@@ -189,6 +189,20 @@ pub(crate) fn current_ref() -> String {
     "HEAD".into()
 }
 
+/// The worktree the current directory is inside, if any.
+///
+/// Path-based rather than branch-based: a branch can be shared by nothing
+/// (only one worktree ever holds it), but the cwd can be a subdirectory of
+/// exactly one worktree's path, which is the more direct answer to "which one
+/// am I standing in".
+pub(crate) fn current_worktree_index(trees: &[Worktree]) -> Option<usize> {
+    let cwd = canon(&std::env::current_dir().ok()?);
+    trees.iter().position(|w| {
+        let base = canon(&w.path);
+        cwd == base || cwd.starts_with(&base)
+    })
+}
+
 pub(crate) fn worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
     let out = git_stdout(root, &["worktree", "list", "--porcelain"])?;
     let mut trees = Vec::new();

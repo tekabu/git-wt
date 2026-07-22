@@ -1,4 +1,4 @@
-use crate::ui::MIN_TEXTW;
+use crate::ui::{BRANCH_MIN, MIN_TEXTW};
 
 
 
@@ -97,6 +97,23 @@ pub(crate) enum SubjectWidth {
     Full,
 }
 
+/// How wide a mark column's branch-name header gets cut to.
+///
+/// A branch name is not bounded the way a subject line is -- an issue-shaped
+/// one can run past a hundred characters -- and unlike the subject, it is a
+/// header: every row under it pays for its width, not just the one line. Cut
+/// by default, so a long name cannot drag the marks and the subject off the
+/// right edge on every row; `Full` opts back in when the whole name is the
+/// point (piped to `grep`, or read off a terminal wide enough to spare it).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum BranchWidth {
+    /// Exactly this many columns. Below it the header carries only an
+    /// ellipsis, which names nothing -- see `parse_branchw`.
+    Cols(usize),
+    /// However many the branch name is. Nothing is cut.
+    Full,
+}
+
 /// How many terminal lines a subject may take before it is cut.
 ///
 /// One line is the table's shape -- a row is a commit -- so more of it is
@@ -170,6 +187,9 @@ pub(crate) struct CommitsArgs {
     pub(crate) wrap: Wrap,
     /// Columns the subject gets. None lets the terminal decide, as it always has.
     pub(crate) subjectw: Option<SubjectWidth>,
+    /// Columns a branch-name header gets cut to. None is the default cap
+    /// (`BRANCH_HEAD_MAX`); `Full` never cuts.
+    pub(crate) branchw: Option<BranchWidth>,
 }
 
 /// The message for a token that reached the `commits` parser under `--review`
@@ -331,6 +351,7 @@ pub(crate) fn parse_commits_args_with(
     let mut squash = false;
     let mut wrap = None;
     let mut subjectw = None;
+    let mut branchw = None;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -385,6 +406,19 @@ pub(crate) fn parse_commits_args_with(
             }
             s if s.starts_with("--subjw=") => {
                 subjectw = Some(parse_subjectw(&s["--subjw=".len()..])?);
+            }
+            // Same required-value shape as --subject-width: a bare
+            // '--branch-width' names no width, and 'full' is the word for
+            // wanting the whole name.
+            "--branch-width" | "--branchw" => {
+                let v = it.next().ok_or(BRANCHW_MISSING)?;
+                branchw = Some(parse_branchw(v)?);
+            }
+            s if s.starts_with("--branch-width=") => {
+                branchw = Some(parse_branchw(&s["--branch-width=".len()..])?);
+            }
+            s if s.starts_with("--branchw=") => {
+                branchw = Some(parse_branchw(&s["--branchw=".len()..])?);
             }
             "--time" => fmt.time = true,
             "--date-human" => fmt.human = true,
@@ -538,7 +572,7 @@ pub(crate) fn parse_commits_args_with(
         limit, dates, commit_since, commit_until, commits, author, message, filename, all_files,
         topo, merges, fmt, md,
         reverse, no_cherry, pick, union,
-        all, files, squash, wrap, subjectw,
+        all, files, squash, wrap, subjectw, branchw,
     })
 }
 
@@ -574,6 +608,24 @@ pub(crate) fn parse_subjectw(v: &str) -> Result<SubjectWidth, String> {
     }
 }
 
+/// Read `--branch-width`'s value: a column count, or 'full' for no cut at all.
+pub(crate) fn parse_branchw(v: &str) -> Result<BranchWidth, String> {
+    if v.eq_ignore_ascii_case("full") || v.eq_ignore_ascii_case("all") {
+        return Ok(BranchWidth::Full);
+    }
+    match v.parse::<usize>() {
+        // Below BRANCH_MIN a cut name is indistinguishable from any other
+        // branch cut to the same head -- the column would stop telling them
+        // apart, which is the one job a header has.
+        Ok(n) if n >= BRANCH_MIN => Ok(BranchWidth::Cols(n)),
+        Ok(n) if n > 0 => Err(format!(
+            "--branch-width needs {BRANCH_MIN} columns or more: below that, a cut name says nothing\n\
+             hint: '--branchw full' never cuts, however long the name\n  got: '{n}'"
+        )),
+        _ => Err(format!("{BRANCHW_BAD}\n  got: '{v}'")),
+    }
+}
+
 /// Read `--wrap`'s value: a line count, or 'full' for as many as it takes.
 pub(crate) fn parse_wrap(v: &str) -> Result<Wrap, String> {
     if v.eq_ignore_ascii_case("full") || v.eq_ignore_ascii_case("all") {
@@ -591,6 +643,9 @@ pub(crate) const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'f
 pub(crate) const SUBJW_MISSING: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
 pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'\n\
      hint: 'full' never cuts the subject, however wide it is";
+pub(crate) const BRANCHW_MISSING: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'";
+pub(crate) const BRANCHW_BAD: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'\n\
+     hint: 'full' never cuts a branch name, however long it is";
 pub(crate) const MESSAGE_MISSING: &str =
     "--message needs a term, e.g. '--message ISSUE-42'\n\
      hint: it searches the subject and the body";
@@ -1210,5 +1265,23 @@ mod tests {
         assert!(parse(&["--subjw=0"]).unwrap_err().contains("needs a column count"));
         // '--subject' is not a word here; only the width has this prefix.
         assert!(parse(&["--subject", "fix"]).unwrap_err().contains("unexpected argument"));
+    }
+
+    #[test]
+    fn branch_width_cuts_the_header_not_the_terminal() {
+        let parse = |a: &[&str]| {
+            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), false)
+        };
+        // None is the default cap (BRANCH_HEAD_MAX), applied at render time.
+        assert_eq!(parse(&[]).unwrap().branchw, None);
+        assert_eq!(parse(&["--branch-width", "40"]).unwrap().branchw, Some(BranchWidth::Cols(40)));
+        assert_eq!(parse(&["--branch-width=40"]).unwrap().branchw, Some(BranchWidth::Cols(40)));
+        assert_eq!(parse(&["--branchw", "40"]).unwrap().branchw, Some(BranchWidth::Cols(40)));
+        assert_eq!(parse(&["--branchw=full"]).unwrap().branchw, Some(BranchWidth::Full));
+        assert!(parse(&["--branch-width"]).unwrap_err().contains("needs a column count"));
+        assert!(parse(&["--branchw=wide"]).unwrap_err().contains("needs a column count"));
+        // Below BRANCH_MIN a cut name cannot tell two branches apart.
+        assert!(parse(&["--branchw=8"]).unwrap_err().contains("columns or more"));
+        assert!(parse(&["--branchw=0"]).unwrap_err().contains("needs a column count"));
     }
 }

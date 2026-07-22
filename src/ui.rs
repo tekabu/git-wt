@@ -89,6 +89,13 @@ pub(crate) fn abbrev(sha: &str, n: usize) -> String {
 /// head; past this the row is better off wrapping.
 pub(crate) const BRANCH_MIN: usize = 12;
 
+/// The default cut for a mark column's branch-name header in `commits`,
+/// unbounded by a terminal the way the subject column is (there is no row
+/// left of it competing for space). Wide enough for most branch names whole;
+/// past it an issue-shaped one would rather give up its tail than push the
+/// marks and subject off the edge. `--branch-width full` opts out.
+pub(crate) const BRANCH_HEAD_MAX: usize = 24;
+
 /// Below this, a truncated subject says nothing; let the line wrap instead.
 pub(crate) const MIN_TEXTW: usize = 24;
 /// Enough for a full name; past it, the subject has the better claim.

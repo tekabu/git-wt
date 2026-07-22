@@ -13,12 +13,12 @@ mod ui;
 mod worktree;
 
 use crate::cli::{
-    dispatch_target, dispatch_targets, list_from_args, parse_target_list, resolve_target,
-    resolve_target_list, unknown_command_msg,
+    branch_targets, dispatch_target, dispatch_targets, extract_branch_flag, list_from_args,
+    parse_target_list, resolve_target, resolve_target_list, unknown_command_msg,
 };
 use crate::cmd::add::cmd_add;
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp, ALL_HINT};
-use crate::worktree::{repo_root, worktrees};
+use crate::worktree::{current_worktree_index, repo_root, worktrees};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -53,6 +53,9 @@ USAGE:
     git-wt <N>,<M>[,...] commits Table: which commit is on which branch
     git-wt <N> commits           Same, N against the worktree you are in
     git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
+    git-wt -b/--branch LIST <action>
+                                 LIST with the current worktree prepended:
+                                 '-b 1,2 commits' == '<cur>,1,2 commits'
     git-wt <N> fetch|pull|push   Run it in worktree N
     git-wt <N>,<M> pull          Run it in each worktree listed
     git-wt fetch|pull|push --all Run it in every worktree
@@ -123,7 +126,8 @@ DIFF LIVE:
     'hunks' works without 'live' too; its line numbers are the '+' side (M).
 
 COMMITS OPTIONS:
-    -n, --limit N         Show at most N commits (newest first)
+    -n, --limit N         Show at most N commits (newest first; default 10,
+                          lifted by --all or --union)
     -a, --all             Full log of the first worktree (default is the
                           range the other worktrees are missing)
         --union           Rows from every worktree listed, not just the
@@ -141,6 +145,8 @@ COMMITS OPTIONS:
         --subject-width N Give the subject N columns rather than what the
                           terminal left it; 'full' never cuts (alias:
                           --subjw)
+        --branch-width N  Cut a mark column's branch name to N columns
+                          (default 24); 'full' never cuts (alias: --branchw)
         --md [FILE]       Write a markdown table instead of printing one
                           (default: commits_<date>_<time>.md in the cwd)
         --time            Add the time to the date column, 24-hour
@@ -197,9 +203,12 @@ COMMITS:
     difference. Name a second worktree to get the comparison back.
 
     Any number of worktrees can be columns -- there is no cap, unlike
-    diff's two or meld's three. The terminal is the real limit: each
-    column costs its branch name plus two, and once the row no longer
-    fits, the subject wraps. The marks never do: they are left of it.
+    diff's two or meld's three. Each column costs its branch name plus
+    two; the name itself is cut at 24 columns by default so one
+    issue-shaped branch cannot push the subject off the edge on every
+    row. '--branch-width'/'--branchw' moves that cut, and 'full' lifts
+    it -- same shape as '--subject-width' below. The marks never wrap:
+    they are left of the subject.
 
 COMMITS FILTERS:
     Filters narrow the rows; the columns stay whatever the worktree list
@@ -340,6 +349,19 @@ COMMITS DATES:
     off a terminal -- '--subjw 60 | grep' cuts at 60, where a bare 'commits |
     grep' still sees whole subjects. N is at least 24: below that a cut subject
     says nothing, which is what 'full' is for.
+
+    '--branch-width N' does the same for a mark column's header: branch
+    names have no natural bound the way author names do, and an
+    issue-shaped one is cut to 24 columns by default, on a terminal or
+    off, so it cannot drag every row's marks and subject rightward.
+    'full' never cuts it; N is at least 12, the shortest a header can be
+    and still tell two branches apart.
+
+        git-wt 1,2 commits --branch-width 40   # allow longer names
+        git-wt 1,2 commits --branchw full      # never cut, however long
+
+    Unlike '--subject-width', this has nothing to do with the terminal --
+    the branch column is fixed-width, so the cut is the same piped or not.
 
     '--files' adds the files a commit touched, indented under the subject.
     Each file shows a status letter (A/M/D/R/C) and the added/removed line
@@ -625,20 +647,90 @@ fn run() -> Result<(), String> {
         return cmd_add(&root, &args[1..]);
     }
 
-    // `git-wt fetch --all` — the one verb-first form, because the sweep names no
-    // target at all. Without `--all` it is the target that is missing, not the
-    // verb, so say that rather than "unknown command".
+    // `git-wt fetch --all` sweeps every worktree; bare `git-wt fetch` (no
+    // target, no `--all`) stands for the current worktree, the same way bare
+    // `commits` and `remove` do below.
     if let Some(op) = SyncOp::from_word(first) {
-        let args = parse_sync_args(op, &args[1..])?;
-        if !args.all {
-            return Err(format!(
-                "'{first}' needs a worktree: 'git-wt <N> {first}'\n{ALL_HINT}"
-            ));
-        }
+        let parsed = parse_sync_args(op, &args[1..])?;
         let root = repo_root()?;
         let trees = worktrees(&root)?;
-        let idxs: Vec<usize> = (0..trees.len()).collect();
-        return cmd_sync(&trees, &idxs, &args);
+        if parsed.all {
+            let idxs: Vec<usize> = (0..trees.len()).collect();
+            return cmd_sync(&trees, &idxs, &parsed);
+        }
+        let idx = current_worktree_index(&trees).ok_or_else(|| {
+            format!("not inside a worktree; use 'git-wt <N> {first}'\n{ALL_HINT}")
+        })?;
+        return dispatch_target(&root, idx + 1, &args);
+    }
+
+    // `remove`/`rm` with no target — the worktree standing in for itself, the
+    // same as bare `commits` below.
+    if first == "remove" || first == "rm" {
+        let root = repo_root()?;
+        let trees = worktrees(&root)?;
+        let idx = current_worktree_index(&trees)
+            .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {first}'"))?;
+        return dispatch_target(&root, idx + 1, &args);
+    }
+
+    // `diff`/`meld`/`merged` with no leading target — same reading as bare
+    // `commits -b`, but `-b` isn't optional: diff and meld always need a
+    // pair, and target-first `merged` already owns the no-source meaning
+    // ("is my branch merged into what I'm standing in"), so the bare verb
+    // needs `-b` to say what it's being compared against.
+    if first == "diff" || first == "meld" || first == "merged" {
+        let root = repo_root()?;
+        let trees = worktrees(&root)?;
+        let cur = current_worktree_index(&trees)
+            .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N>,<M> {first}'"))?;
+        let (rest, val) = extract_branch_flag(&args[1..])?;
+        let val = val.ok_or_else(|| {
+            format!(
+                "'{first}' needs another worktree: 'git-wt {first} -b <N>' or \
+                 'git-wt <N>,<M> {first}'"
+            )
+        })?;
+        let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();
+        ns.insert(0, cur + 1);
+        let mut full_rest = vec![first.clone()];
+        full_rest.extend(rest);
+        return dispatch_targets(&root, &ns, &full_rest);
+    }
+
+    // `--branch/-b LIST` — the multi-target grammar with the current worktree
+    // prepended, so it can join a comparison without its own number being
+    // looked up first: 'git-wt -b 1,branch1' is 'git-wt <cur>,1,branch1'.
+    if first == "--branch" || first == "-b" || first.starts_with("--branch=") {
+        let (rest, val) = extract_branch_flag(&args)?;
+        let val = val.expect("matched above");
+        let root = repo_root()?;
+        let trees = worktrees(&root)?;
+        let cur = current_worktree_index(&trees)
+            .ok_or("not inside a worktree; can't resolve --branch's current worktree")?;
+        let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();
+        ns.insert(0, cur + 1);
+        return dispatch_targets(&root, &ns, &rest);
+    }
+
+    // `commits` with no target — the worktree standing in for itself, so a
+    // solo log doesn't require typing its own number back at it. `-b <N>`
+    // still adds a comparison target, the same as the leading-`-b` form:
+    // 'git-wt commits -b 2' is 'git-wt <cur>,2 commits'.
+    if first == "commits" {
+        let root = repo_root()?;
+        let trees = worktrees(&root)?;
+        let cur = current_worktree_index(&trees)
+            .ok_or("not inside a worktree; use 'git-wt <N> commits'")?;
+        let (rest, val) = extract_branch_flag(&args[1..])?;
+        if let Some(val) = val {
+            let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();
+            ns.insert(0, cur + 1);
+            let mut full_rest = vec![first.clone()];
+            full_rest.extend(rest);
+            return dispatch_targets(&root, &ns, &full_rest);
+        }
+        return dispatch_target(&root, cur + 1, &args);
     }
 
     // <N> <action> — the target-first grammar.

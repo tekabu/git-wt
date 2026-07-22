@@ -4,7 +4,8 @@ use crate::cmd::commits::args::{SubjectWidth, Wrap};
 use crate::cmd::commits::rows::{consolidate_file_stats, file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
     abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, BLUE, CHECK, DIM, EQUIV,
-    FINGERPRINT, GREEN, MAGENTA, MATCH, MIN_TEXTW, MISS, PICK_HEAD, TRAILER, YELLOW,
+    FINGERPRINT, GREEN, HEADER_COLORS, MAGENTA, MATCH, MIN_TEXTW, MISS, PICK_HEAD, TRAILER,
+    YELLOW,
 };
 
 /// Which cells a filter acted on, so the eye can find them in a long table.
@@ -212,17 +213,27 @@ pub(crate) fn render_commits(
         }
     }
 
-    let mut head = format!("{:<shaw$}  ", "commit");
+    // Each label its own bright color, cycled, so the header reads as a row of
+    // named columns rather than one flat dim line -- padded before coloring,
+    // as everywhere else, so the escapes never skew the columns.
+    let mut hue = HEADER_COLORS.iter().cycle();
+    let mut next_hue = || hue.next().unwrap();
+    let mut head = paint(&format!("{:<shaw$}", "commit"), next_hue(), color);
+    head.push_str("  ");
     if let Some(w) = pickw {
-        head.push_str(&format!("{PICK_HEAD:<w$}  "));
+        head.push_str(&paint(&format!("{PICK_HEAD:<w$}"), next_hue(), color));
+        head.push_str("  ");
     }
-    head.push_str(&format!("{:<authw$}  {:>datew$}", "author", "date"));
+    head.push_str(&paint(&format!("{:<authw$}", "author"), next_hue(), color));
+    head.push_str("  ");
+    head.push_str(&paint(&format!("{:>datew$}", "date"), next_hue(), color));
     for (n, w) in names.iter().zip(&widths) {
         head.push_str("  ");
-        head.push_str(&format!("{n:<w$}"));
+        head.push_str(&paint(&format!("{n:<w$}"), next_hue(), color));
     }
-    head.push_str("  subject");
-    println!("{}", paint(&head, DIM, color));
+    head.push_str("  ");
+    head.push_str(&paint("subject", next_hue(), color));
+    println!("{}", head);
 
     // With file blocks the table becomes a series of groups, so every commit is
     // fenced off by a blank line -- including one whose block is empty, which

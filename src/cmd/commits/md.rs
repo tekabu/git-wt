@@ -72,6 +72,8 @@ pub(crate) fn write_md(
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
+    trailer: &[HashSet<String>],
+    author_match: &[HashSet<String>],
     picks: Option<&HashMap<String, String>>,
     squash: bool,
     cmd: &str,
@@ -105,6 +107,12 @@ pub(crate) fn write_md(
         }
         if equiv.iter().any(|e| !e.is_empty()) {
             legend.push("`≈` has the same patch under another sha");
+        }
+        if trailer.iter().any(|t| !t.is_empty()) {
+            legend.push("`←` picked via `-x` trailer from this commit");
+        }
+        if author_match.iter().any(|a| !a.is_empty()) {
+            legend.push("`~` same author/date/subject under another sha");
         }
         // '·' is "neither of the above", so on its own it names nothing.
         if !legend.is_empty() {
@@ -155,8 +163,11 @@ pub(crate) fn write_md(
             md_cell(&row.author),
             md_cell(&row.date)
         ));
-        for (set, eq) in sets.iter().zip(equiv) {
-            out.push_str(&format!(" {} |", Mark::of(&row.sha, set, eq).glyph()));
+        for (col, set) in sets.iter().enumerate() {
+            out.push_str(&format!(
+                " {} |",
+                Mark::of(&row.sha, set, &equiv[col], &trailer[col], &author_match[col]).glyph()
+            ));
         }
         let mut subject = md_cell(&row.text);
         // The body lines --message matched on, for the same reason the terminal

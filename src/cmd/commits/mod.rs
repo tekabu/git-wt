@@ -11,8 +11,9 @@ use crate::cmd::commits::args::{parse_commits_args_with, DateFilter, DateOp, Ord
 use crate::cmd::commits::md::{md_filename, write_md, MdHead};
 use crate::cmd::commits::render::{render_commits, Highlight};
 use crate::cmd::commits::rows::{
-    body_hits, commit_day, commit_files, commit_of, commit_rows, divergent_set, equivalents,
-    path_shas, pick_ids, ref_shas, window_to_divergent, CommitRow, FileStat,
+    author_match_sets, body_hits, commit_day, commit_files, commit_of, commit_rows, divergent_set,
+    equivalents, path_shas, pick_ids, ref_shas, trailer_sets, window_to_divergent, CommitRow,
+    FileStat,
 };
 use crate::ui::{color_enabled, is_subseq, term_width};
 use crate::worktree::{label, ref_of, Worktree};
@@ -385,6 +386,27 @@ fn commits_view(
     // it: it is a second patch-id walk over the same divergence.
     let picks = (args.pick && !solo).then(|| pick_ids(root, &cherry_refs));
 
+    // `-x` trailer detection: a branch whose commit message says it was picked
+    // from a row sha gets the row marked `←`. Author fingerprint detection:
+    // a branch with the same author/date/subject under a different sha gets
+    // the row marked `~`. Both are bounded at the same merge-base as the
+    // patch-id walk, and like `equiv` they are truncated to the mark columns
+    // (one column under --review, all listed branches otherwise).
+    let trailer = if solo {
+        vec![HashSet::new(); sets.len()]
+    } else {
+        let mut t = trailer_sets(root, &cherry_refs);
+        t.truncate(mark_refs.len());
+        t
+    };
+    let author_match = if solo {
+        vec![HashSet::new(); sets.len()]
+    } else {
+        let mut a = author_match_sets(root, &cherry_refs, &rows);
+        a.truncate(mark_refs.len());
+        a
+    };
+
     // Two lists: `labels` is who the table is about, `names` is the mark
     // columns. They are the same until there is only one worktree, which has a
     // subject but nothing to compare it against -- and under --review, where
@@ -429,6 +451,8 @@ fn commits_view(
             &names,
             &sets,
             &equiv,
+            &trailer,
+            &author_match,
             picks.as_ref(),
             args.squash,
             &cmd,
@@ -444,6 +468,8 @@ fn commits_view(
         &names,
         &sets,
         &equiv,
+        &trailer,
+        &author_match,
         picks.as_ref(),
         args.squash,
         color_enabled(tty),

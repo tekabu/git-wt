@@ -354,22 +354,32 @@ COMMITS DATES:
 MARKS:
     ✓   the branch has this commit
     ≈   the branch has this patch under a different sha
-    ·   the branch has neither
+    ←   the branch has a commit whose `-x` trailer names this commit
+    ~   the branch has a commit with the same author/date/subject
+    ·   the branch has none of the above
 
-    '≈' is a cherry-pick or a rebase's copy. To git those are different
-    commits, so a bare '✓/·' calls them missing -- which reads as work to
-    do, when the work is done. The comparison is git's own 'git cherry':
-    patch-ids, not history, per pair of branches. '--no-cherry' skips it
-    and takes the old, cheaper answer, for a repo whose branches have
+    Precedence: ✓ > ≈ > ← > ~ > ·.
+
+    '≈' is a cherry-pick or a rebase's copy detected by patch-id. To git
+    those are different commits, so a bare '✓/·' calls them missing -- which
+    reads as work to do, when the work is done. The comparison is git's own
+    'git cherry': patch-ids, not history, per pair of branches. '--no-cherry'
+    skips it and takes the old, cheaper answer, for a repo whose branches have
     diverged by thousands of commits.
 
-    A picked commit shows twice, once per sha: the original row is '≈' in
-    the branch that took it, the copy's row is '≈' in the branch it came
+    '←' is a stronger signal: a `git cherry-pick -x` on the other branch left
+    a trailer that names this exact commit. '~' is the fallback for picks that
+    changed enough in conflict resolution to defeat patch-id, or for picks made
+    without `-x`: it matches the author email, author date (with timezone), and
+    subject that cherry-pick preserves exactly.
+
+    A picked commit shows twice, once per sha: the original row is '≈'/←/~ in
+    the branch that took it, the copy's row is '≈'/←/~ in the branch it came
     from. Both are true -- they are two commits carrying one patch.
 
-    '--pick-id' names the other sha: a 'pick' column after 'commit', holding
-    the sha the same patch was committed under elsewhere. It is the row's
-    other half -- the sha to hand 'git show', or to check a pick landed
+    '--pick-id' names the other sha for '≈': a 'pick' column after 'commit',
+    holding the sha the same patch was committed under elsewhere. It is the
+    row's other half -- the sha to hand 'git show', or to check a pick landed
     where you meant it to. Rows with no copy leave it blank, and a patch
     carried under three shas names the first of the others.
 
@@ -496,12 +506,14 @@ MERGE REVIEW:
     ('-a' is '--all', so it is refused under that name -- '-fn 5' is the
     bundle that still works here.)
 
-    The single mark column is the DESTINATION's, and it has two answers:
+    The single mark column is the DESTINATION's, and it has four answers:
 
         ·  the commit is new to the destination
         ≈  its patch is already there under a different sha
+        ←  a `-x` trailer on the destination names this commit as its source
+        ~  the destination has a commit with the same author/date/subject
 
-    The second is what a cherry-picked hotfix leaves behind: the row is
+    The non-'·' marks are what a cherry-picked hotfix leaves behind: the row is
     genuinely absent by sha, so the merge still lists it, but the work has
     landed. There is no check column -- every row is in the source by
     definition, so it would say nothing.

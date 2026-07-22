@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::cmd::commits::args::{SubjectWidth, Wrap};
 use crate::cmd::commits::rows::{consolidate_file_stats, file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
-    abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, CHECK, DIM, EQUIV, GREEN,
-    MATCH, MIN_TEXTW, MISS, PICK_HEAD, YELLOW,
+    abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, BLUE, CHECK, DIM, EQUIV,
+    FINGERPRINT, GREEN, MAGENTA, MATCH, MIN_TEXTW, MISS, PICK_HEAD, TRAILER, YELLOW,
 };
 
 /// Which cells a filter acted on, so the eye can find them in a long table.
@@ -55,6 +55,8 @@ pub(crate) fn render_commits(
     names: &[String],
     sets: &[HashSet<String>],
     equiv: &[HashSet<String>],
+    trailer: &[HashSet<String>],
+    author_match: &[HashSet<String>],
     picks: Option<&HashMap<String, String>>,
     squash: bool,
     color: bool,
@@ -132,6 +134,8 @@ pub(crate) fn render_commits(
                 date: r.date.clone(),
                 key: r.key.clone(),
                 stamp: r.stamp.clone(),
+                email: r.email.clone(),
+                author_iso: r.author_iso.clone(),
                 text: r.text.clone(),
                 body: r.body.clone(),
             };
@@ -173,6 +177,26 @@ pub(crate) fn render_commits(
                 "{} {}",
                 paint(EQUIV, YELLOW, color),
                 paint("same patch, other sha", DIM, color),
+            ));
+        }
+        if trailer.iter().any(|t| !t.is_empty()) {
+            if !legend.is_empty() {
+                legend.push_str("   ");
+            }
+            legend.push_str(&format!(
+                "{} {}",
+                paint(TRAILER, BLUE, color),
+                paint("picked via -x trailer", DIM, color),
+            ));
+        }
+        if author_match.iter().any(|a| !a.is_empty()) {
+            if !legend.is_empty() {
+                legend.push_str("   ");
+            }
+            legend.push_str(&format!(
+                "{} {}",
+                paint(FINGERPRINT, MAGENTA, color),
+                paint("same author/date/subject", DIM, color),
             ));
         }
         // '·' is defined by contrast -- "neither of the above" -- so on its own
@@ -245,8 +269,14 @@ pub(crate) fn render_commits(
         line.push_str(&dim_or(&author_cell, hl.author));
         line.push_str("  ");
         line.push_str(&dim_or(&date_cell, hl.date));
-        for ((set, eq), w) in sets.iter().zip(equiv).zip(&widths) {
-            let mark = Mark::of(&row.sha, set, eq);
+        for (col, w) in widths.iter().enumerate() {
+            let mark = Mark::of(
+                &row.sha,
+                &sets[col],
+                &equiv[col],
+                &trailer[col],
+                &author_match[col],
+            );
             // Center the one-cell mark under its header.
             let pad = (w - 1) / 2;
             line.push_str("  ");

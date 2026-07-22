@@ -4,7 +4,9 @@ use std::process::Stdio;
 
 use crate::cmd::commits::args::{DateFmt, Order};
 use crate::git::{git_cmd, git_stdout};
-use crate::ui::{width_bound, CHECK, DIM, EQUIV, GREEN, MISS, YELLOW};
+use crate::ui::{
+    width_bound, BLUE, CHECK, DIM, EQUIV, FINGERPRINT, GREEN, MAGENTA, MISS, TRAILER, YELLOW,
+};
 
 /// One table row: a commit, its short name, who wrote it when, and its subject.
 #[derive(Clone)]
@@ -23,6 +25,12 @@ pub(crate) struct CommitRow {
     /// commits on the same day still order against each other and the window
     /// does not swallow a whole day of shared history.
     pub(crate) stamp: String,
+    /// Author email (`%ae`). Used for the author-fingerprint fallback mark;
+    /// never printed.
+    pub(crate) email: String,
+    /// Author date in strict ISO-8601 form with timezone (`%aI`). Used for the
+    /// author-fingerprint fallback mark; never printed.
+    pub(crate) author_iso: String,
     /// The message below the subject, empty unless a filter asked for it.
     ///
     /// The table never prints a body of its own accord, so fetching one costs
@@ -308,10 +316,14 @@ pub(crate) fn commit_rows(
     // each record inside the format itself -- not the `-z` flag, whose meaning
     // in `git log` is bound up with the diff options -- and the body goes last,
     // where a tab of its own lands in the final field rather than inventing one.
+    // Fingerprint fields (%ae, %aI) are not printed; they feed the author-date
+    // fallback that detects cherry-picks whose patch text changed in conflict
+    // resolution. They sit between the printed fields and the body so a body
+    // with tabs cannot shift printed columns.
     let format = if want_body {
-        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%s%x09%b%x00"
+        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%ae%x09%aI%x09%s%x09%b%x00"
     } else {
-        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%s%x00"
+        "--format=%H%x09%aN%x09%ad%x09%as%x09%h%x09%at%x09%ae%x09%aI%x09%s%x00"
     };
     let mut args = vec!["log", order.flag(), &date_arg, format];
     // Merge commits carry no work of their own; dropping them leaves the
@@ -338,7 +350,7 @@ pub(crate) fn commit_rows(
         .map(|rec| rec.trim_start_matches('\n'))
         .filter(|rec| !rec.is_empty())
         .filter_map(|rec| {
-            let mut f = rec.splitn(8, '\t');
+            let mut f = rec.splitn(10, '\t');
             Some(CommitRow {
                 sha: f.next()?.to_string(),
                 author: f.next()?.to_string(),
@@ -346,6 +358,8 @@ pub(crate) fn commit_rows(
                 key: f.next()?.to_string(),
                 short: f.next()?.to_string(),
                 stamp: f.next()?.to_string(),
+                email: f.next()?.to_string(),
+                author_iso: f.next()?.to_string(),
                 text: f.next()?.to_string(),
                 // Absent without `want_body`, and empty on a commit that has
                 // no body -- the same thing to every caller.
@@ -635,6 +649,142 @@ pub(crate) fn patch_ids(root: &Path, rev_args: &[&str]) -> Option<Vec<(String, S
     )
 }
 
+/// The source sha named by a `git cherry-pick -x` trailer, if any.
+///
+/// Git appends `(cherry picked from commit <sha>)` to the commit message.
+/// The trailer is usually at the end of the body, so the last occurrence is
+/// the one that matters if the message contains the marker more than once.
+pub(crate) fn cherry_trailer_source(body: &str) -> Option<&str> {
+    let marker = "(cherry picked from commit ";
+    let idx = body.rfind(marker)?;
+    let start = idx + marker.len();
+    let end = body[start..].find(')')? + start;
+    Some(body[start..end].trim())
+}
+
+/// Per column, the row shas that a `-x` trailer on that branch names as
+/// cherry-pick sources.
+///
+/// Like `equivalents`, this is bounded at the refs' common merge-base: a picked
+/// commit in shared history is already reachable by ancestry, so `Has` answers
+/// for it and there is no pick to report.
+pub(crate) fn trailer_sets(root: &Path, refs: &[String]) -> Vec<HashSet<String>> {
+    let mut out = vec![HashSet::new(); refs.len()];
+    let base = match merge_base(root, refs) {
+        Some(b) => b,
+        None => return out,
+    };
+    for (i, r) in refs.iter().enumerate() {
+        // The full message is needed, but merges carry no cherry-pick trailer
+        // of their own (they have no `-x` body in the usual sense).
+        let format = "--format=%H%x09%b%x00";
+        let Ok(text) = git_stdout(
+            root,
+            &["log", "--no-merges", format, r, "--not", &base],
+        ) else {
+            continue;
+        };
+        for rec in text.split('\0') {
+            let rec = rec.trim_start_matches('\n');
+            if rec.is_empty() {
+                continue;
+            }
+            let mut f = rec.splitn(2, '\t');
+            let _sha = f.next();
+            let body = f.next().unwrap_or("");
+            if let Some(src) = cherry_trailer_source(body) {
+                out[i].insert(src.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Shared octopus merge-base for a set of refs, if there is one.
+fn merge_base(root: &Path, refs: &[String]) -> Option<String> {
+    if refs.len() < 2 {
+        return None;
+    }
+    let mut args = vec!["merge-base", "--octopus"];
+    args.extend(refs.iter().map(String::as_str));
+    match git_stdout(root, &args) {
+        Ok(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Author fingerprint: the three fields that `git cherry-pick` preserves
+/// exactly, even through conflict resolution.
+type AuthorFingerprint = (String, String, String);
+
+/// Every commit above the octopus merge-base in each ref, with its fingerprint.
+fn author_fingerprints(
+    root: &Path,
+    refs: &[String],
+) -> Vec<Vec<(String, AuthorFingerprint)>> {
+    let mut out = vec![Vec::new(); refs.len()];
+    let base = match merge_base(root, refs) {
+        Some(b) => b,
+        None => return out,
+    };
+    let format = "--format=%H%x09%ae%x09%aI%x09%s%x00";
+    for (i, r) in refs.iter().enumerate() {
+        let Ok(text) = git_stdout(
+            root,
+            &["log", "--no-merges", format, r, "--not", &base],
+        ) else {
+            continue;
+        };
+        out[i] = text
+            .split('\0')
+            .map(|rec| rec.trim_start_matches('\n'))
+            .filter(|rec| !rec.is_empty())
+            .filter_map(|rec| {
+                let mut f = rec.splitn(4, '\t');
+                let sha = f.next()?.to_string();
+                let email = f.next()?.to_string();
+                let date = f.next()?.to_string();
+                let subject = f.next()?.to_string();
+                Some((sha, (email, date, subject)))
+            })
+            .collect();
+    }
+    out
+}
+
+/// Per column, the row shas whose author fingerprint appears on that branch
+/// under a different commit sha.
+///
+/// The match key is author email + author date (ISO-8601 with timezone) +
+/// subject. Cherry-pick preserves all three exactly, even when conflict edits
+/// change the patch text enough to defeat `git patch-id`. Same author, same
+/// second, same subject, different commit = near-zero false-positive rate.
+pub(crate) fn author_match_sets(
+    root: &Path,
+    refs: &[String],
+    rows: &[CommitRow],
+) -> Vec<HashSet<String>> {
+    let mut out = vec![HashSet::new(); refs.len()];
+    let per_ref = author_fingerprints(root, refs);
+    let mut by_key: HashMap<AuthorFingerprint, Vec<(String, usize)>> = HashMap::new();
+    for (i, list) in per_ref.iter().enumerate() {
+        for (sha, key) in list {
+            by_key.entry(key.clone()).or_default().push((sha.clone(), i));
+        }
+    }
+    for row in rows {
+        let key = (row.email.clone(), row.author_iso.clone(), row.text.clone());
+        if let Some(matches) = by_key.get(&key) {
+            for (sha, ref_idx) in matches {
+                if *sha != row.sha {
+                    out[*ref_idx].insert(row.sha.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Every commit sha reachable from `r`, cut at `base` the same way the rows are.
 pub(crate) fn ref_shas(root: &Path, r: &str, base: Option<&str>) -> Result<HashSet<String>, String> {
     let mut args = vec!["rev-list", r];
@@ -655,18 +805,32 @@ pub(crate) enum Mark {
     Has,
     /// The same patch under a different sha.
     Equivalent,
+    /// A `-x` trailer on another branch names this commit as its source.
+    Trailer,
+    /// Another branch has a commit with the same author fingerprint.
+    AuthorMatch,
     /// Neither.
     Missing,
 }
 
 impl Mark {
-    pub(crate) fn of(sha: &str, has: &HashSet<String>, equiv: &HashSet<String>) -> Mark {
+    pub(crate) fn of(
+        sha: &str,
+        has: &HashSet<String>,
+        equiv: &HashSet<String>,
+        trailer: &HashSet<String>,
+        author_match: &HashSet<String>,
+    ) -> Mark {
         // Containment wins: a branch that has the commit has it, whatever a
         // patch comparison would also say about an equivalent elsewhere.
         if has.contains(sha) {
             Mark::Has
         } else if equiv.contains(sha) {
             Mark::Equivalent
+        } else if trailer.contains(sha) {
+            Mark::Trailer
+        } else if author_match.contains(sha) {
+            Mark::AuthorMatch
         } else {
             Mark::Missing
         }
@@ -676,6 +840,8 @@ impl Mark {
         match self {
             Mark::Has => CHECK,
             Mark::Equivalent => EQUIV,
+            Mark::Trailer => TRAILER,
+            Mark::AuthorMatch => FINGERPRINT,
             Mark::Missing => MISS,
         }
     }
@@ -685,6 +851,8 @@ impl Mark {
             Mark::Has => GREEN,
             // Yellow: present, but not as the commit in this row.
             Mark::Equivalent => YELLOW,
+            Mark::Trailer => BLUE,
+            Mark::AuthorMatch => MAGENTA,
             Mark::Missing => DIM,
         }
     }
@@ -1369,7 +1537,9 @@ mod tests {
             .iter()
             .map(|r| ref_shas(&tmp, r, None).unwrap())
             .collect();
-        let mark = |sha: &str, col: usize| Mark::of(sha, &sets[col], &equiv[col]);
+        let empty: HashSet<String> = HashSet::new();
+        let mark =
+            |sha: &str, col: usize| Mark::of(sha, &sets[col], &equiv[col], &empty, &empty);
         let (main_col, feat_col) = (0, 1);
 
         // Each side has its own sha of the fix, and an equivalent of the
@@ -1387,7 +1557,10 @@ mod tests {
         // --no-cherry is the old answer: equivalence unasked, so the picked
         // commit reads as absent again.
         let none = vec![HashSet::new(); refs.len()];
-        assert_eq!(Mark::of(&feat_fix, &sets[main_col], &none[main_col]), Mark::Missing);
+        assert_eq!(
+            Mark::of(&feat_fix, &sets[main_col], &none[main_col], &none[main_col], &none[main_col]),
+            Mark::Missing
+        );
 
         // --pick-id's column: each copy of the fix names the other's sha, and
         // the work nobody picked names nothing.
@@ -1412,14 +1585,297 @@ mod tests {
     fn containment_beats_equivalence_in_a_mark() {
         let has: HashSet<String> = ["a".to_string()].into_iter().collect();
         let equiv: HashSet<String> = ["a".to_string(), "b".to_string()].into_iter().collect();
+        let trailer: HashSet<String> = ["c".to_string()].into_iter().collect();
+        let author: HashSet<String> = ["d".to_string()].into_iter().collect();
         // A branch holding both the commit and a copy of its patch still just
         // has the commit; '≈' would understate it.
-        assert_eq!(Mark::of("a", &has, &equiv), Mark::Has);
-        assert_eq!(Mark::of("b", &has, &equiv), Mark::Equivalent);
-        assert_eq!(Mark::of("c", &has, &equiv), Mark::Missing);
+        assert_eq!(Mark::of("a", &has, &equiv, &trailer, &author), Mark::Has);
+        assert_eq!(Mark::of("b", &has, &equiv, &trailer, &author), Mark::Equivalent);
+        assert_eq!(Mark::of("c", &has, &equiv, &trailer, &author), Mark::Trailer);
+        assert_eq!(Mark::of("d", &has, &equiv, &trailer, &author), Mark::AuthorMatch);
+        assert_eq!(Mark::of("e", &has, &equiv, &trailer, &author), Mark::Missing);
         assert_eq!(Mark::Has.glyph(), "✓");
         assert_eq!(Mark::Equivalent.glyph(), "≈");
+        assert_eq!(Mark::Trailer.glyph(), "←");
+        assert_eq!(Mark::AuthorMatch.glyph(), "~");
         assert_eq!(Mark::Missing.glyph(), "·");
+    }
+
+    #[test]
+    fn cherry_trailer_source_finds_the_last_marker() {
+        assert_eq!(
+            cherry_trailer_source("some body\n\n(cherry picked from commit abc123)"),
+            Some("abc123")
+        );
+        // A message that mentions the phrase earlier keeps the last one.
+        assert_eq!(
+            cherry_trailer_source(
+                "discussed (cherry picked from commit old)\n\n(cherry picked from commit new)"
+            ),
+            Some("new")
+        );
+        assert!(cherry_trailer_source("plain body").is_none());
+        assert!(cherry_trailer_source(
+            "body without a closing paren (cherry picked from commit abc123"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_cherry_pick_with_x_trailer_is_marked_trailer() {
+        let tmp = std::env::temp_dir().join(format!("git-wt-trailer-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2026-07-17T10:00:00")
+                .env("GIT_COMMITTER_DATE", "2026-07-17T10:00:00")
+                .env("GIT_EDITOR", "true")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {:?} failed: {:?}", args, out);
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        let commit = |dir: &std::path::Path, name: &str, file: &str| {
+            std::fs::write(tmp.join(file), name).unwrap();
+            git(dir, &["add", "-A"]);
+            git(dir, &["commit", "--quiet", "-m", name]);
+        };
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp,
+            &["init", "--quiet", "--initial-branch=main"],
+        );
+        git(&tmp,
+            &["config", "user.email", "t@test"],
+        );
+        git(&tmp,
+            &["config", "user.name", "t"],
+        );
+        commit(&tmp, "base", "base.txt");
+        git(&tmp,
+            &["checkout", "--quiet", "-b", "feat"],
+        );
+        commit(&tmp, "shared-fix", "fix.txt");
+        let feat_fix = git(&tmp,
+            &["rev-parse", "HEAD"],
+        );
+        git(&tmp,
+            &["checkout", "--quiet", "main"],
+        );
+        commit(&tmp, "main-work", "mainwork.txt");
+        // A real cherry-pick with -x: the patch is the same, so patch-id already
+        // catches it, but the trailer is the stronger signal we want to surface.
+        git(&tmp,
+            &["cherry-pick", "-x", &feat_fix],
+        );
+
+        let refs = vec!["main".to_string(), "feat".to_string()];
+        let sets: Vec<HashSet<String>> = refs
+            .iter()
+            .map(|r| ref_shas(&tmp, r, None).unwrap())
+            .collect();
+        let equiv = equivalents(&tmp,
+            &refs,
+        );
+        let trailer = trailer_sets(&tmp,
+            &refs,
+        );
+        let author = author_match_sets(&tmp,
+            &refs,
+            &commit_rows(
+                &tmp,
+                &refs,
+                None,
+                None,
+                Order::Date,
+                ISO,
+                false,
+                false,
+            )
+            .unwrap(),
+        );
+        let mark =
+            |sha: &str, col: usize| Mark::of(sha, &sets[col], &equiv[col], &trailer[col], &author[col]);
+        let (main_col, feat_col) = (0, 1);
+
+        assert_eq!(mark(&feat_fix, feat_col), Mark::Has);
+        // The trailer set really was populated by the -x pick...
+        assert!(trailer[main_col].contains(&feat_fix));
+        // ...but a clean pick's patch-id already matches, and containment/
+        // equivalence outrank the trailer in `Mark::of`'s precedence, so the
+        // mark itself still reads '≈' here. Trailer is a fallback for picks
+        // patch-id can't see, not a replacement for it.
+        assert_eq!(mark(&feat_fix, main_col), Mark::Equivalent);
+        // The copy itself, read from main's side, is Has on main.
+        let main_fix = git(&tmp,
+            &["rev-parse", "HEAD"],
+        );
+        assert_eq!(mark(&main_fix, main_col), Mark::Has);
+        assert_eq!(mark(&main_fix, feat_col), Mark::Equivalent);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn a_conflict_pick_without_x_is_marked_by_author_fingerprint() {
+        let tmp = std::env::temp_dir().join(format!(
+            "git-wt-fingerprint-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        fn git(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> String {
+            let mut c = std::process::Command::new("git");
+            c.current_dir(dir).args(args);
+            for (k, v) in env {
+                c.env(k, v);
+            }
+            let out = c.output().unwrap();
+            assert!(out.status.success(), "git {:?} failed: {:?}", args, out);
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        fn write(dir: &std::path::Path, path: &str, text: &str) {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        git(&tmp,
+            &["init", "--quiet", "--initial-branch=main"],
+            &[],
+        );
+        git(&tmp,
+            &["config", "user.email", "kevin.mensah@fireflyelectric.com"],
+            &[],
+        );
+        git(&tmp,
+            &["config", "user.name", "Kevin Mensah"],
+            &[],
+        );
+        write(&tmp, "f.txt", "base\n");
+        git(&tmp,
+            &["add", "-A"],
+            &[],
+        );
+        git(
+            &tmp,
+            &["commit", "--quiet", "-m", "base"],
+            &[("GIT_AUTHOR_DATE", "2026-02-01T10:00:00+08:00")],
+        );
+
+        git(&tmp,
+            &["checkout", "--quiet", "-b", "uat"],
+            &[],
+        );
+        write(&tmp, "f.txt", "base\nuat-line\n");
+        git(&tmp,
+            &["add", "-A"],
+            &[],
+        );
+        git(
+            &tmp,
+            &["commit", "--quiet", "-m", "update in booking report and po attachment"],
+            &[("GIT_AUTHOR_DATE", "2026-02-12T11:37:03+08:00")],
+        );
+        let uat_commit = git(
+            &tmp,
+            &["rev-parse", "HEAD"],
+            &[],
+        );
+
+        git(&tmp,
+            &["checkout", "--quiet", "main"],
+            &[],
+        );
+        // main diverges on the same file so the pick will conflict.
+        write(&tmp, "f.txt", "base\nmain-line\n");
+        git(&tmp,
+            &["add", "-A"],
+            &[],
+        );
+        git(
+            &tmp,
+            &["commit", "--quiet", "-m", "main diverges"],
+            &[("GIT_AUTHOR_DATE", "2026-02-13T10:00:00+08:00")],
+        );
+
+        // Pick without -x, resolving by taking the destination's side for the
+        // conflicting hunk. The resulting patch-id differs from the original,
+        // but author + date + subject stay identical.
+        let pick_out = std::process::Command::new("git")
+            .current_dir(&tmp)
+            .args([
+                "cherry-pick",
+                "--no-commit",
+                "-X",
+                "theirs",
+                &uat_commit,
+            ])
+            .output()
+            .unwrap();
+        assert!(pick_out.status.success(), "cherry-pick failed: {:?}", pick_out);
+        git(
+            &tmp,
+            &["commit", "--quiet", "-m", "update in booking report and po attachment"],
+            &[(
+                "GIT_AUTHOR_DATE",
+                "2026-02-12T11:37:03+08:00",
+            )],
+        );
+        let prd_commit = git(
+            &tmp,
+            &["rev-parse", "HEAD"],
+            &[],
+        );
+
+        let refs = vec!["uat".to_string(), "main".to_string()];
+        let rows = commit_rows(
+            &tmp,
+            &refs,
+            None,
+            None,
+            Order::Date,
+            ISO,
+            false,
+            false,
+        )
+        .unwrap();
+        let sets: Vec<HashSet<String>> = refs
+            .iter()
+            .map(|r| ref_shas(&tmp, r, None).unwrap())
+            .collect();
+        let equiv = equivalents(&tmp,
+            &refs,
+        );
+        let trailer = trailer_sets(
+            &tmp,
+            &refs,
+        );
+        let author = author_match_sets(
+            &tmp,
+            &refs,
+            &rows,
+        );
+        let mark =
+            |sha: &str, col: usize| Mark::of(sha, &sets[col], &equiv[col], &trailer[col], &author[col]);
+        let (uat_col, main_col) = (0, 1);
+
+        // The patch changed in resolution, so patch-id does not match.
+        assert_ne!(mark(&uat_commit, main_col), Mark::Equivalent);
+        // The author fingerprint still finds the copy on main.
+        assert_eq!(mark(&uat_commit, main_col), Mark::AuthorMatch);
+        assert_eq!(mark(
+            &prd_commit, main_col
+        ), Mark::Has);
+        assert_eq!(mark(
+            &prd_commit, uat_col
+        ), Mark::AuthorMatch);
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

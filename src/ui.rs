@@ -49,7 +49,16 @@ pub(crate) const CHECK: &str = "✓";
 pub(crate) const MISS: &str = "·";
 /// Not this commit, but this patch: a cherry-pick or a rebase's copy.
 pub(crate) const EQUIV: &str = "≈";
+/// A `-x` cherry-pick trailer on another branch names this commit as its source.
+pub(crate) const TRAILER: &str = "←";
+/// Another branch has a commit with the same author-email, author-date, and subject.
+pub(crate) const FINGERPRINT: &str = "~";
 pub(crate) const ELLIPSIS: char = '…';
+
+/// ANSI blue.
+pub(crate) const BLUE: &str = "34";
+/// ANSI magenta.
+pub(crate) const MAGENTA: &str = "35";
 
 /// The header over `--pick-id`'s shas.
 pub(crate) const PICK_HEAD: &str = "pick";

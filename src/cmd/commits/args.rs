@@ -499,10 +499,15 @@ pub(crate) fn parse_commits_args_with(
             s if s.starts_with("--author=") => author = Some(s["--author=".len()..].to_string()),
             s if s.starts_with("--au=") => author = Some(s["--au=".len()..].to_string()),
             // The text filter. Its term has to end up somewhere on the row it
-            // keeps -- see the --wrap implication below.
-            "--message" | "-m" => message = Some(term(it.next(), MESSAGE_MISSING)?),
+            // keeps -- see the --wrap implication below. `--search` is the
+            // same filter under the name `list --search` already uses, so
+            // the word means one thing across the whole CLI.
+            "--message" | "-m" | "--search" => message = Some(term(it.next(), MESSAGE_MISSING)?),
             s if s.starts_with("--message=") => {
                 message = Some(term_of(&s["--message=".len()..], MESSAGE_MISSING)?);
+            }
+            s if s.starts_with("--search=") => {
+                message = Some(term_of(&s["--search=".len()..], MESSAGE_MISSING)?);
             }
             // A merge can carry a hundred files and match on three, so the
             // block is cut to the matches by default. --all-files buys the

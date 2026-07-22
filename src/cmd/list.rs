@@ -6,7 +6,7 @@ use crate::git::git_stdout;
 use crate::cmd::commits::rows::{file_stat_lines, parse_numstat_z, sort_file_stats, FileStat};
 use crate::cmd::merged::{merged_text, merged_text_at};
 use crate::ui::{
-    color_enabled, ellipsize, is_subseq, paint, term_width, BRANCH_MIN, DIM,
+    color_enabled, ellipsize, paint, paint_matches, term_width, BRANCH_MIN, DIM, SEARCH_MATCH,
 };
 use crate::worktree::{
     current_ref, label, status_color, status_text, worktree_status, worktrees, Status, Worktree,
@@ -32,12 +32,17 @@ pub(crate) fn col_header(c: usize) -> &'static str {
 /// When `color`, the branch (col 2) and status (col 4) cells are tinted by
 /// `st`. Padding is computed on the plain text, then color wraps it, so ANSI
 /// never affects alignment.
+///
+/// `search`, when given, lights every literal-substring occurrence in the
+/// branch (col 2) and path (col 3) cells in `SEARCH_MATCH`, overwriting
+/// whatever tint the cell already carries for just that span.
 pub(crate) fn render_row(
     row: &[String],
     cols: &[usize],
     widths: &[usize],
     st: Status,
     color: bool,
+    search: Option<&str>,
 ) -> String {
     let mut line = String::new();
     let last = row.len() - 1;
@@ -52,7 +57,11 @@ pub(crate) fn render_row(
         };
         let code = status_color(st);
         let tinted = matches!(cols[k], 2 | 4) && color && !code.is_empty();
-        if tinted {
+        let searchable = matches!(cols[k], 2 | 3);
+        if let Some(term) = search.filter(|_| searchable) {
+            let base = if tinted { code } else { "" };
+            line.push_str(&paint_matches(&padded, term, SEARCH_MATCH, base, color));
+        } else if tinted {
             line.push_str(&paint(&padded, code, true));
         } else {
             line.push_str(&padded);
@@ -212,22 +221,9 @@ pub(crate) fn cmd_list(
 ) -> Result<(), String> {
     let trees = worktrees(root)?;
 
-    // Keep the original 1-based index so `git-wt <N> ...` means the same tree
-    // no matter what filter was applied.
-    let rows: Vec<(usize, &Worktree)> = trees
-        .iter()
-        .enumerate()
-        .filter(|(_, w)| match search {
-            Some(s) => fuzzy_match(w, s),
-            None => true,
-        })
-        .collect();
-
-    if let Some(s) = search {
-        if rows.is_empty() {
-            return Err(format!("no worktree matches '{s}'"));
-        }
-    }
+    // `search` only highlights now -- every worktree still gets a row, and its
+    // original 1-based index, so `git-wt <N> ...` never shifts under a search.
+    let rows: Vec<(usize, &Worktree)> = trees.iter().enumerate().collect();
 
     let stdout_tty = std::io::stdout().is_terminal();
     let color = color_enabled(stdout_tty);
@@ -381,6 +377,7 @@ pub(crate) fn cmd_list(
             &widths,
             Status::Unknown,
             false,
+            None,
         );
         println!("{}", paint(&line, DIM, color));
     }
@@ -395,7 +392,7 @@ pub(crate) fn cmd_list(
         if files && i > 0 {
             println!();
         }
-        let line = render_row(row, &cols, &widths, *st, color);
+        let line = render_row(row, &cols, &widths, *st, color, search);
         println!("{line}");
         // The same file block `commits --files` prints under a commit, here
         // under the branch it belongs to: every worktree that is not clean gets
@@ -445,12 +442,6 @@ pub(crate) fn push_pull_text(w: &Worktree) -> (String, String) {
     (push, pull)
 }
 
-/// Case-insensitive subsequence match over "<label> <path>".
-pub(crate) fn fuzzy_match(w: &Worktree, needle: &str) -> bool {
-    let hay = format!("{} {}", label(w), w.path.display()).to_lowercase();
-    is_subseq(&hay, &needle.to_lowercase())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,11 +473,31 @@ mod tests {
         let row = vec!["1".to_string(), "main".to_string()];
         let widths = vec![1, 7];
         // No color: branch is left-padded to width, no ANSI.
-        let plain = render_row(&row, &cols, &widths, Status::Clean, false);
+        let plain = render_row(&row, &cols, &widths, Status::Clean, false, None);
         assert_eq!(plain, "1  main");
         // Color: branch cell tinted green (padding inside the escape).
-        let tinted = render_row(&row, &cols, &widths, Status::Clean, true);
+        let tinted = render_row(&row, &cols, &widths, Status::Clean, true, None);
         assert_eq!(tinted, "1  \x1b[32mmain\x1b[0m");
+    }
+
+    #[test]
+    fn render_row_search_overwrites_the_tint_for_the_match_only() {
+        let cols = vec![1, 2];
+        let row = vec!["1".to_string(), "main".to_string()];
+        let widths = vec![1, 7];
+        // The matched span is repainted SEARCH_MATCH; the rest of the cell
+        // keeps its status tint -- the highlight overwrites, not replaces.
+        let hit = render_row(&row, &cols, &widths, Status::Clean, true, Some("ai"));
+        assert_eq!(
+            hit,
+            format!(
+                "1  \x1b[32mm\x1b[0m\x1b[{SEARCH_MATCH}mai\x1b[0m\x1b[32mn\x1b[0m"
+            )
+        );
+        // No color: search still highlights nothing extra, plain text only --
+        // ANSI never appears when the stream isn't a terminal.
+        let no_color = render_row(&row, &cols, &widths, Status::Clean, false, Some("ai"));
+        assert_eq!(no_color, "1  main");
     }
 
 }

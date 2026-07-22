@@ -800,11 +800,11 @@ fn run() -> Result<(), String> {
             return list_from_args(&root, &[]);
         }
         // A leading list flag with no `list` word: `git-wt --col 1,2`.
-        Some("--col") | Some("-c") | Some("--files") | Some("-f") => {
+        Some("--col") | Some("-c") | Some("--files") | Some("-f") | Some("--search") => {
             let root = repo_root()?;
             return list_from_args(&root, &args);
         }
-        Some(s) if s.starts_with("--col=") => {
+        Some(s) if s.starts_with("--col=") || s.starts_with("--search=") => {
             let root = repo_root()?;
             return list_from_args(&root, &args);
         }

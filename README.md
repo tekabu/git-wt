@@ -162,7 +162,7 @@ reinstall.
 
 ```
 git-wt                       List worktrees, numbered from 1
-git-wt list [SEARCH]         List, optionally fuzzy-filtered (indices stay put)
+git-wt list [SEARCH]         List, with matches highlighted (indices stay put)
 git-wt <N>                   == git-wt <N> switch
 git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
@@ -237,9 +237,10 @@ Enter to proceed; anything else — including bare Enter — aborts.
 ## List
 
 `git-wt` with no arguments lists worktrees numbered from 1. `git-wt list
-SEARCH` fuzzy-filters that list; the **numbers stay the original indices**, so
-`git-wt <N> remove` always means the same tree regardless of any filter. No
-match is an error (exit 1).
+SEARCH` (or `git-wt list --search SEARCH`) highlights every literal-substring
+match in the branch and path columns; it never drops a row, so the
+**numbers stay the original indices** and `git-wt <N> remove` always means
+the same tree regardless of any search.
 
 `--col` picks and orders columns — `1`=id, `2`=branch, `3`=dir (full path),
 `6`=merged (relative to the branch you are standing in):
@@ -1355,10 +1356,11 @@ Every form the CLI accepts. Examples assume:
 | `git-wt` | List all worktrees, numbered from 1 |
 | `git-wt list` | Same |
 | `git-wt ls` | Alias → same |
-| `git-wt list feat` | List fuzzy-filtered by `feat`; **indices stay original** |
-| `git-wt list zzz` (no match) | Error `no worktree matches 'zzz'`, exit 1 |
+| `git-wt list feat` | List with `feat` highlighted in branch/dir; **indices stay original**, no row dropped |
+| `git-wt list --search feat` | Same, as an explicit flag |
+| `git-wt list zzz` (no match) | Every row still prints, just unhighlighted |
 | `git-wt list --col 2,3` | Show only branch + dir columns (1=id, 2=branch, 3=dir) |
-| `git-wt list --col 3,2,1 feat` | Reorder columns; combines with a filter |
+| `git-wt list --col 3,2,1 feat` | Reorder columns; combines with a highlight |
 | `git-wt list --files` | Add each worktree's uncommitted files under its row (`-f`) |
 | `git-wt --files` | Same, without the `list` word |
 

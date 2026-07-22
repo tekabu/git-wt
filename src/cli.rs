@@ -421,7 +421,11 @@ pub(crate) fn show_path_from_rest(args: &[String]) -> bool {
     args.iter().any(|a| a == "-p" || a == "--show-path")
 }
 
-/// Parse `list` arguments (an optional SEARCH plus `--col`) then list. Shared
+const SEARCH_MISSING: &str = "--search needs a term, e.g. '--search main'";
+
+/// Parse `list` arguments (an optional SEARCH plus `--col`) then list. `SEARCH`
+/// is a bare positional or `--search`/`--search=`, never both -- either one
+/// only highlights matches now, it no longer drops the rows that miss. Shared
 /// by `list`/`ls`, the no-args default, and a bare leading `--col`/`--files`.
 pub(crate) fn list_from_args(root: &Path, args: &[String]) -> Result<(), String> {
     let mut search: Option<String> = None;
@@ -441,6 +445,26 @@ pub(crate) fn list_from_args(root: &Path, args: &[String]) -> Result<(), String>
             "--short" | "-s" => mode = ListMode::Short,
             "--show-path" | "-p" => show_path = true,
             "--files" | "-f" => files = true,
+            "--search" => {
+                if search.is_some() {
+                    return Err("too many arguments\nTry 'git-wt --help'".into());
+                }
+                let v = it.next().ok_or(SEARCH_MISSING)?;
+                if v.trim().is_empty() {
+                    return Err(SEARCH_MISSING.into());
+                }
+                search = Some(v.to_string());
+            }
+            s if s.starts_with("--search=") => {
+                if search.is_some() {
+                    return Err("too many arguments\nTry 'git-wt --help'".into());
+                }
+                let v = &s["--search=".len()..];
+                if v.trim().is_empty() {
+                    return Err(SEARCH_MISSING.into());
+                }
+                search = Some(v.to_string());
+            }
             s if s.starts_with('-') && s != "-" => {
                 return Err(format!("unknown option '{s}'\nTry 'git-wt --help'"));
             }

@@ -21,6 +21,11 @@ pub(crate) const DIM: &str = "2";
 /// nearest yellow, which is exactly the right failure.
 pub(crate) const MATCH: &str = "1;38;5;214";
 
+/// `list`'s search highlight: bold, 256-color 33, Material Blue 500 -- a
+/// different family from `MATCH`'s amber so the two searches (this one over
+/// worktrees, that one over commit text) never read as the same feature.
+pub(crate) const SEARCH_MATCH: &str = "1;38;5;33";
+
 /// Whether to emit ANSI for a stream that is (or isn't) a terminal. Honors the
 /// `NO_COLOR` (any value disables) and `CLICOLOR_FORCE` (nonzero forces on)
 /// conventions; otherwise follows the stream's TTY-ness.

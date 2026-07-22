@@ -862,6 +862,18 @@ fn run() -> Result<(), String> {
         return dispatch_target(&root, idx + 1, &args);
     }
 
+    // `merged --others` with no leading target — a one-worktree question
+    // (which of the others are already merged into the one you're standing
+    // in), so it takes the bare-`commits`/`remove` reading, not the
+    // bare-`merged`-needs-a-pair one below.
+    if first == "merged" && args[1..].iter().any(|a| a == "--others" || a == "--ot") {
+        let root = repo_root()?;
+        let trees = worktrees(&root)?;
+        let idx = current_worktree_index(&trees)
+            .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {first}'"))?;
+        return dispatch_target(&root, idx + 1, &args);
+    }
+
     // `diff`/`meld`/`merge`/`merged` with no leading target — same reading as
     // bare `commits -b`, but `-b` isn't optional: diff, meld and merge always
     // need a pair, and target-first `merged` already owns the no-source

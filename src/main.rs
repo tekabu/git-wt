@@ -43,6 +43,7 @@ USAGE:
     git-wt <N> remove [-y] [-f]  Remove worktree N
     git-wt <N>,<M> merge         Merge M into N
     git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
+    git-wt merge -b <M>          Merge M into the worktree you are in
     git-wt <N>,<M> merge review  What would that merge bring over?
     git-wt <N> merge continue|abort
     git-wt <N>,<M> merged        Is M's branch already in N's branch?
@@ -536,6 +537,7 @@ MERGE:
 
         git-wt 1,2 merge            # worktree 2's branch -> worktree 1's branch
         git-wt 1 merge feat/x       # a branch name works too
+        git-wt merge -b 2           # worktree 2's branch -> the worktree you're in
         git-wt 1,2 merge dry-run    # would it conflict? nothing is touched
         git-wt 1,2 merge theirs     # let 2 win every collision
 
@@ -723,12 +725,12 @@ fn run() -> Result<(), String> {
         return dispatch_target(&root, idx + 1, &args);
     }
 
-    // `diff`/`meld`/`merged` with no leading target — same reading as bare
-    // `commits -b`, but `-b` isn't optional: diff and meld always need a
-    // pair, and target-first `merged` already owns the no-source meaning
-    // ("is my branch merged into what I'm standing in"), so the bare verb
-    // needs `-b` to say what it's being compared against.
-    if first == "diff" || first == "meld" || first == "merged" {
+    // `diff`/`meld`/`merge`/`merged` with no leading target — same reading as
+    // bare `commits -b`, but `-b` isn't optional: diff, meld and merge always
+    // need a pair, and target-first `merged` already owns the no-source
+    // meaning ("is my branch merged into what I'm standing in"), so the bare
+    // verb needs `-b` to say what it's being compared against.
+    if first == "diff" || first == "meld" || first == "merge" || first == "merged" {
         let root = repo_root()?;
         let trees = worktrees(&root)?;
         let cur = current_worktree_index(&trees)

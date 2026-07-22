@@ -337,6 +337,11 @@ pub(crate) fn cmd_log(
     }
 
     let tty = std::io::stdout().is_terminal();
+    let color = color_enabled(tty);
+    let width = term_width(tty);
+    // Computed above, before the pager repoints stdout at a pipe -- `tty` and
+    // the `tput` behind `term_width` both need the real terminal, not it.
+    let _pager = crate::ui::Pager::start(tty);
     render_log(
         &rows,
         &stats,
@@ -349,8 +354,8 @@ pub(crate) fn cmd_log(
         &trailer,
         &author_match,
         picks.as_ref(),
-        color_enabled(tty),
-        term_width(tty),
+        color,
+        width,
         args.wrap,
         args.subjectw,
         args.branchw,

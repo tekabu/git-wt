@@ -1,5 +1,6 @@
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::os::unix::io::AsRawFd;
+use std::process::{Child, Command, Stdio};
 
 // ---------------------------------------------------------------------------
 // Color, status, and metadata (no dependencies; ANSI on a TTY only)
@@ -42,6 +43,99 @@ pub(crate) fn paint(s: &str, code: &str, on: bool) -> String {
         format!("\x1b[{code}m{s}{RESET}")
     } else {
         s.to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pager: `commits`/`log` page through `less -R` the same way `git diff` pages
+// through git's own pager -- a table is exactly the kind of output that runs
+// past a screen. Only bare libc calls, no crate: the fd swap is the same
+// `dup`/`dup2` trick git itself uses to hand its own stdout to a child.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn dup2(oldfd: i32, newfd: i32) -> i32;
+    fn close(fd: i32) -> i32;
+}
+
+/// While alive, this process's stdout is a pipe into a spawned pager; dropping
+/// it restores the original fd and waits for the pager to exit (i.e. for the
+/// user to quit `less`), so the command doesn't return before the view closes.
+pub(crate) struct Pager {
+    child: Option<Child>,
+    saved_stdout: Option<i32>,
+}
+
+impl Pager {
+    /// Start the pager when `enabled` (stdout is a terminal, decided by the
+    /// caller before this call, since the caller's own `is_terminal()` check
+    /// stops being true the moment stdout is repointed at a pipe). `PAGER` or
+    /// `GIT_WT_PAGER` (checked first, so it can differ from git's own pager)
+    /// override the default; either set to `cat` (or empty) turns paging off,
+    /// the same convention git honors.
+    pub(crate) fn start(enabled: bool) -> Pager {
+        let none = Pager { child: None, saved_stdout: None };
+        if !enabled {
+            return none;
+        }
+        let cmd = std::env::var("GIT_WT_PAGER")
+            .or_else(|_| std::env::var("PAGER"))
+            .unwrap_or_else(|_| "less".to_string());
+        let mut parts = cmd.split_whitespace();
+        let Some(prog) = parts.next() else { return none };
+        if prog == "cat" {
+            return none;
+        }
+        // `less`'s own defaults, unless the caller named a pager and its own
+        // flags: -R shows our color codes instead of escaping them, -F exits
+        // immediately when the table already fits one screen, -X leaves that
+        // screen on the terminal after quitting rather than clearing it.
+        let args: Vec<&str> = if parts.clone().next().is_some() {
+            parts.collect()
+        } else if prog == "less" {
+            vec!["-R", "-F", "-X"]
+        } else {
+            vec![]
+        };
+
+        let Ok(mut child) = Command::new(prog).args(&args).stdin(Stdio::piped()).spawn() else {
+            return none;
+        };
+        let Some(pager_stdin) = child.stdin.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return none;
+        };
+
+        let stdout_fd = std::io::stdout().as_raw_fd();
+        let saved = unsafe { dup(stdout_fd) };
+        if saved < 0 {
+            drop(pager_stdin);
+            let _ = child.wait();
+            return none;
+        }
+        unsafe { dup2(pager_stdin.as_raw_fd(), stdout_fd) };
+        // The pipe now lives at fd 1 too; dropping `pager_stdin` here would
+        // close that shared fd out from under it.
+        std::mem::forget(pager_stdin);
+
+        Pager { child: Some(child), saved_stdout: Some(saved) }
+    }
+}
+
+impl Drop for Pager {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else { return };
+        std::io::stdout().flush().ok();
+        if let Some(saved) = self.saved_stdout {
+            let stdout_fd = std::io::stdout().as_raw_fd();
+            unsafe {
+                dup2(saved, stdout_fd);
+                close(saved);
+            }
+        }
+        let _ = child.wait();
     }
 }
 

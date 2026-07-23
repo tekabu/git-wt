@@ -7,11 +7,12 @@ use crate::cli::check_index;
 use crate::cmd::commits::rows::{file_stat_lines, parse_numstat_z, sort_file_stats, FileStat};
 use crate::cmd::merged::{merged_text, merged_text_at};
 use crate::ui::{
-    color_enabled, ellipsize, fzf_pick_plain, paint, paint_matches, term_width, BRANCH_MIN, DIM,
-    HEADER_COLORS, SEARCH_MATCH,
+    color_enabled, ellipsize, fzf_pick_plain, paint, paint_matches, term_width, BLUE, BRANCH_MIN,
+    DIM, HEADER_COLORS, SEARCH_MATCH,
 };
 use crate::worktree::{
-    current_ref, label, status_color, status_text, worktree_status, worktrees, Status, Worktree,
+    current_ref, current_worktree_index, label, status_color, status_text, worktree_status,
+    worktrees, Status, Worktree,
 };
 
 /// Header label for a column id.
@@ -38,6 +39,10 @@ pub(crate) fn col_header(c: usize) -> &'static str {
 /// `search`, when given, lights every literal-substring occurrence in the
 /// branch (col 2) and path (col 3) cells in `SEARCH_MATCH`, overwriting
 /// whatever tint the cell already carries for just that span.
+///
+/// `current`, when set, marks the row as the worktree the caller is standing
+/// in: its branch (col 2) is tinted `BLUE` instead of by status, so the
+/// current tree stands out regardless of clean/dirty state.
 pub(crate) fn render_row(
     row: &[String],
     cols: &[usize],
@@ -45,6 +50,7 @@ pub(crate) fn render_row(
     st: Status,
     color: bool,
     search: Option<&str>,
+    current: bool,
 ) -> String {
     let mut line = String::new();
     let last = row.len() - 1;
@@ -57,7 +63,7 @@ pub(crate) fn render_row(
         } else {
             format!("{:<w$}", cell, w = widths[k])
         };
-        let code = status_color(st);
+        let code = if current && cols[k] == 2 { BLUE } else { status_color(st) };
         let tinted = matches!(cols[k], 2 | 4) && color && !code.is_empty();
         let searchable = matches!(cols[k], 2 | 3);
         if let Some(term) = search.filter(|_| searchable) {
@@ -222,6 +228,7 @@ pub(crate) fn cmd_list(
     merged_ref: Option<&str>,
 ) -> Result<(), String> {
     let trees = worktrees(root)?;
+    let cur_idx = current_worktree_index(&trees);
 
     // `search` only highlights now -- every worktree still gets a row, and its
     // original 1-based index, so `git-wt <N> ...` never shifts under a search.
@@ -402,13 +409,13 @@ pub(crate) fn cmd_list(
     // groups, so each worktree is fenced off by a blank line -- including the
     // ones with no files to show, which would otherwise huddle against the
     // block above them and read as part of it.
-    for (i, ((row, (st, _, _, _, _, _, _)), (_, w))) in
+    for (i, ((row, (st, _, _, _, _, _, _)), (orig_idx, w))) in
         cells.iter().zip(&meta).zip(&rows).enumerate()
     {
         if files && i > 0 {
             println!();
         }
-        let line = render_row(row, &cols, &widths, *st, color, search);
+        let line = render_row(row, &cols, &widths, *st, color, search, cur_idx == Some(*orig_idx));
         println!("{line}");
         // The same file block `commits --files` prints under a commit, here
         // under the branch it belongs to: every worktree that is not clean gets
@@ -583,10 +590,10 @@ mod tests {
         let row = vec!["1".to_string(), "main".to_string()];
         let widths = vec![1, 7];
         // No color: branch is left-padded to width, no ANSI.
-        let plain = render_row(&row, &cols, &widths, Status::Clean, false, None);
+        let plain = render_row(&row, &cols, &widths, Status::Clean, false, None, false);
         assert_eq!(plain, "1  main");
         // Color: branch cell tinted green (padding inside the escape).
-        let tinted = render_row(&row, &cols, &widths, Status::Clean, true, None);
+        let tinted = render_row(&row, &cols, &widths, Status::Clean, true, None, false);
         assert_eq!(tinted, "1  \x1b[32mmain\x1b[0m");
     }
 
@@ -597,7 +604,7 @@ mod tests {
         let widths = vec![1, 7];
         // The matched span is repainted SEARCH_MATCH; the rest of the cell
         // keeps its status tint -- the highlight overwrites, not replaces.
-        let hit = render_row(&row, &cols, &widths, Status::Clean, true, Some("ai"));
+        let hit = render_row(&row, &cols, &widths, Status::Clean, true, Some("ai"), false);
         assert_eq!(
             hit,
             format!(
@@ -606,7 +613,7 @@ mod tests {
         );
         // No color: search still highlights nothing extra, plain text only --
         // ANSI never appears when the stream isn't a terminal.
-        let no_color = render_row(&row, &cols, &widths, Status::Clean, false, Some("ai"));
+        let no_color = render_row(&row, &cols, &widths, Status::Clean, false, Some("ai"), false);
         assert_eq!(no_color, "1  main");
     }
 

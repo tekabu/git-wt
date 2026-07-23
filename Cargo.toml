@@ -5,6 +5,7 @@ edition = "2021"
 description = "Create git worktrees in sibling directories named <repo>-<branch>"
 
 [dependencies]
+stanza = "0.5.2"
 
 [profile.release]
 opt-level = "z"

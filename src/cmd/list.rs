@@ -6,11 +6,15 @@ use crate::git::git_stdout;
 use crate::cmd::commits::rows::{file_stat_lines, parse_numstat_z, sort_file_stats, FileStat};
 use crate::cmd::merged::{merged_text, merged_text_at};
 use crate::ui::{
-    color_enabled, ellipsize, paint, paint_matches, term_width, BRANCH_MIN, DIM, SEARCH_MATCH,
+    color_enabled, ellipsize, paint, term_width, BRANCH_MIN, DIM,
 };
 use crate::worktree::{
-    current_ref, label, status_color, status_text, worktree_status, worktrees, Status, Worktree,
+    current_ref, label, status_text, worktree_status, worktrees, Status, Worktree,
 };
+use stanza::renderer::console::Console;
+use stanza::renderer::Renderer;
+use stanza::style::{Bold, Header, MaxWidth, MinWidth, Palette16, Styles, TextFg};
+use stanza::table::{Col, Row, Table};
 
 /// Header label for a column id.
 pub(crate) fn col_header(c: usize) -> &'static str {
@@ -28,46 +32,22 @@ pub(crate) fn col_header(c: usize) -> &'static str {
     }
 }
 
-/// Join one row's cells with two-space gaps, padding all but the last column.
-/// When `color`, the branch (col 2) and status (col 4) cells are tinted by
-/// `st`. Padding is computed on the plain text, then color wraps it, so ANSI
-/// never affects alignment.
-///
-/// `search`, when given, lights every literal-substring occurrence in the
-/// branch (col 2) and path (col 3) cells in `SEARCH_MATCH`, overwriting
-/// whatever tint the cell already carries for just that span.
-pub(crate) fn render_row(
-    row: &[String],
-    cols: &[usize],
-    widths: &[usize],
-    st: Status,
-    color: bool,
-    search: Option<&str>,
-) -> String {
-    let mut line = String::new();
-    let last = row.len() - 1;
-    for (k, cell) in row.iter().enumerate() {
-        if k > 0 {
-            line.push_str("  ");
-        }
-        let padded = if k == last {
-            cell.clone()
-        } else {
-            format!("{:<w$}", cell, w = widths[k])
-        };
-        let code = status_color(st);
-        let tinted = matches!(cols[k], 2 | 4) && color && !code.is_empty();
-        let searchable = matches!(cols[k], 2 | 3);
-        if let Some(term) = search.filter(|_| searchable) {
-            let base = if tinted { code } else { "" };
-            line.push_str(&paint_matches(&padded, term, SEARCH_MATCH, base, color));
-        } else if tinted {
-            line.push_str(&paint(&padded, code, true));
-        } else {
-            line.push_str(&padded);
-        }
+/// Stanza text/foreground colour for a worktree status.
+fn status_fg(st: Status) -> Option<Palette16> {
+    match st {
+        Status::Clean => Some(Palette16::Green),
+        Status::Dirty => Some(Palette16::Red),
+        Status::Untracked => Some(Palette16::Red),
+        Status::Unknown => None,
     }
-    line
+}
+
+/// Whether `text` contains `term` case-insensitively.
+fn contains_ignore_case(text: &str, term: &str) -> bool {
+    if term.is_empty() {
+        return false;
+    }
+    text.to_lowercase().contains(&term.to_lowercase())
 }
 
 /// Parse `--col` value like "1,2,4" into column ids.
@@ -370,33 +350,101 @@ pub(crate) fn cmd_list(
         }
     }
 
+    // Build a Stanza table with the default double-outline console style.
+    // Widths are pre-computed so the branch column can be capped to the terminal
+    // budget. Stanza's own MinWidth/MaxWidth only pad on the align-fill side (the
+    // right, for the left-aligned default), which leaves the left border flush
+    // against the text -- so the one blank of padding on each side is baked into
+    // the cell content itself, and Min/MaxWidth just pin the column to a content
+    // that already fills it.
+    const PAD: usize = 1;
+    let table_cols = cols
+        .iter()
+        .enumerate()
+        .map(|(k, _)| {
+            let styles = Styles::default()
+                .with(MinWidth(widths[k] + 2 * PAD))
+                .with(MaxWidth(widths[k] + 2 * PAD));
+            Col::new(styles)
+        })
+        .collect();
+
+    let pad_cell = |s: &str, width: usize| format!(" {s:width$} ");
+
+    // Each column name gets its own color, cycled from the same six hues the
+    // commits/log header uses -- see HEADER_COLORS in ui.rs -- so the eye can
+    // jump straight to the column it wants instead of reading a flat row.
+    let mut table_rows = Vec::with_capacity(rows.len() + if header { 1 } else { 0 });
     if header {
-        let line = render_row(
-            &header_cells,
-            &cols,
-            &widths,
-            Status::Unknown,
-            false,
-            None,
-        );
-        println!("{}", paint(&line, DIM, color));
+        let header_hues = [
+            Palette16::BrightRed,
+            Palette16::BrightMagenta,
+            Palette16::BrightBlue,
+            Palette16::BrightCyan,
+            Palette16::BrightGreen,
+            Palette16::BrightYellow,
+        ];
+        let header_row_cells: Vec<stanza::table::Cell> = header_cells
+            .iter()
+            .enumerate()
+            .map(|(k, s)| {
+                let mut styles = Styles::default();
+                if color {
+                    styles = styles.with(TextFg(header_hues[k % header_hues.len()].clone()));
+                }
+                stanza::table::Cell::new(styles, pad_cell(s, widths[k]).into())
+            })
+            .collect();
+        table_rows.push(Row::new(Styles::default().with(Header(true)), header_row_cells));
+    }
+    for ((row, (st, _, _, _, _, _, _)), (_, _)) in cells.iter().zip(&meta).zip(&rows) {
+        let mut r = Vec::with_capacity(row.len());
+        for (k, cell) in row.iter().enumerate() {
+            let col_id = cols[k];
+            let mut styles = Styles::default();
+            let content: String = pad_cell(cell, widths[k]);
+            if color {
+                if matches!(col_id, 2 | 4) {
+                    if let Some(fg) = status_fg(*st) {
+                        styles = styles.with(TextFg(fg));
+                    }
+                }
+                if let Some(term) = search.filter(|_| matches!(col_id, 2 | 3)) {
+                    if contains_ignore_case(cell, term) {
+                        styles = styles.with(Bold(true)).with(TextFg(Palette16::BrightBlue));
+                    }
+                }
+            }
+            r.push(stanza::table::Cell::new(styles, content.into()));
+        }
+        table_rows.push(Row::new(Styles::default(), r));
+    }
+
+    let rendered = if table_rows.is_empty() {
+        String::new()
+    } else {
+        let table = Table::default().with_cols(table_cols).with_rows(table_rows);
+        Console::default().render(&table)
+    };
+
+    // Computed above, before the pager repoints stdout at a pipe -- `stdout_tty`
+    // and the `tput` behind `term_width` both need the real terminal, not it.
+    let _pager = crate::ui::Pager::start(stdout_tty);
+
+    // The renderer's last line (the bottom border) carries no trailing newline
+    // of its own, so without one here the shell prompt runs on right after it.
+    if !rendered.is_empty() {
+        println!("{rendered}");
     }
 
     // With file blocks the listing stops being a table and becomes a series of
     // groups, so each worktree is fenced off by a blank line -- including the
     // ones with no files to show, which would otherwise huddle against the
     // block above them and read as part of it.
-    for (i, ((row, (st, _, _, _, _, _, _)), (_, w))) in
-        cells.iter().zip(&meta).zip(&rows).enumerate()
-    {
+    for (i, (_, (_, w))) in cells.iter().zip(&rows).enumerate() {
         if files && i > 0 {
             println!();
         }
-        let line = render_row(row, &cols, &widths, *st, color, search);
-        println!("{line}");
-        // The same file block `commits --files` prints under a commit, here
-        // under the branch it belongs to: every worktree that is not clean gets
-        // one, and a clean one gets nothing.
         if files {
             let stats = worktree_files(w);
             if !stats.is_empty() {
@@ -468,36 +516,20 @@ mod tests {
 
 
     #[test]
-    fn render_row_pads_and_tints() {
-        let cols = vec![1, 2];
-        let row = vec!["1".to_string(), "main".to_string()];
-        let widths = vec![1, 7];
-        // No color: branch is left-padded to width, no ANSI.
-        let plain = render_row(&row, &cols, &widths, Status::Clean, false, None);
-        assert_eq!(plain, "1  main");
-        // Color: branch cell tinted green (padding inside the escape).
-        let tinted = render_row(&row, &cols, &widths, Status::Clean, true, None);
-        assert_eq!(tinted, "1  \x1b[32mmain\x1b[0m");
+    fn status_fg_maps_known_statuses() {
+        // Palette16 doesn't implement PartialEq, so match on the option instead.
+        assert!(matches!(status_fg(Status::Clean), Some(Palette16::Green)));
+        assert!(matches!(status_fg(Status::Dirty), Some(Palette16::Red)));
+        assert!(matches!(status_fg(Status::Untracked), Some(Palette16::Red)));
+        assert!(status_fg(Status::Unknown).is_none());
     }
 
     #[test]
-    fn render_row_search_overwrites_the_tint_for_the_match_only() {
-        let cols = vec![1, 2];
-        let row = vec!["1".to_string(), "main".to_string()];
-        let widths = vec![1, 7];
-        // The matched span is repainted SEARCH_MATCH; the rest of the cell
-        // keeps its status tint -- the highlight overwrites, not replaces.
-        let hit = render_row(&row, &cols, &widths, Status::Clean, true, Some("ai"));
-        assert_eq!(
-            hit,
-            format!(
-                "1  \x1b[32mm\x1b[0m\x1b[{SEARCH_MATCH}mai\x1b[0m\x1b[32mn\x1b[0m"
-            )
-        );
-        // No color: search still highlights nothing extra, plain text only --
-        // ANSI never appears when the stream isn't a terminal.
-        let no_color = render_row(&row, &cols, &widths, Status::Clean, false, Some("ai"));
-        assert_eq!(no_color, "1  main");
+    fn contains_ignore_case_matches_case_folded_substring() {
+        assert!(contains_ignore_case("feature-login", "LOGI"));
+        assert!(contains_ignore_case("feature-login", "login"));
+        assert!(!contains_ignore_case("feature-login", "zzz"));
+        assert!(!contains_ignore_case("feature-login", ""));
     }
 
 }

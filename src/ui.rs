@@ -397,6 +397,7 @@ pub(crate) fn confirm(prompt: &str) -> Result<bool, String> {
 /// The search runs on a lowercased copy but the offsets are mapped back, so
 /// what prints keeps the case it was written in -- lowercasing can change a
 /// string's byte length, and assuming it does not would slice mid-character.
+#[cfg(test)]
 pub(crate) fn paint_matches(s: &str, needle: &str, code: &str, base: &str, on: bool) -> String {
     paint_layers(s, &[(needle, code)], base, on)
 }

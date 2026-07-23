@@ -15,6 +15,7 @@ mod worktree;
 use crate::cli::{
     branch_targets, dispatch_target, dispatch_targets, extract_branch_flag, list_from_args,
     parse_target_list, resolve_target, resolve_target_list, unknown_command_msg,
+    warn_if_alias_shadows_branch,
 };
 use crate::cmd::add::cmd_add;
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp, ALL_HINT};
@@ -62,7 +63,8 @@ USAGE:
     git-wt --help                This: options, no prose
     git-wt --help -f             Full manual: every flag, every section
 
-    Aliases: ls = list, rm = remove, cd = switch, show = path.
+    Aliases: ls = list, rm = remove, cd = switch, show = path,
+    a = add, c = commits, l = log, m = merged, p = pull.
 
     A worktree may be named by the branch it holds instead of its number:
     'git-wt main commits', 'git-wt main,2 diff'.
@@ -155,7 +157,8 @@ USAGE:
     git-wt --help
     git-wt --help -f             Full manual, this (alias: --full, -hf)
 
-    Aliases: ls = list, rm = remove, cd = switch, show = path.
+    Aliases: ls = list, rm = remove, cd = switch, show = path,
+    a = add, c = commits, l = log, m = merged, p = pull.
 
     Anywhere <N> or a <N>,<M> list appears above, a worktree may be named by
     the branch it holds instead of its number, and the two spellings mix:
@@ -831,18 +834,28 @@ fn run() -> Result<(), String> {
         return list_from_args(&root, &args[1..]);
     }
 
-    if first == "add" {
+    if first == "add" || first == "a" {
         let root = repo_root()?;
+        if first == "a" {
+            if let Ok(trees) = worktrees(&root) {
+                warn_if_alias_shadows_branch(&trees, "a", "add");
+            }
+        }
         return cmd_add(&root, &args[1..]);
     }
 
     // `git-wt fetch --all` sweeps every worktree; bare `git-wt fetch` (no
     // target, no `--all`) stands for the current worktree, the same way bare
-    // `commits` and `remove` do below.
-    if let Some(op) = SyncOp::from_word(first) {
+    // `commits` and `remove` do below. "p" is the one-letter alias for `pull`
+    // specifically -- `fetch`/`push` keep only their full words.
+    let sync_op = if first == "p" { Some(SyncOp::Pull) } else { SyncOp::from_word(first) };
+    if let Some(op) = sync_op {
         let parsed = parse_sync_args(op, &args[1..])?;
         let root = repo_root()?;
         let trees = worktrees(&root)?;
+        if first == "p" {
+            warn_if_alias_shadows_branch(&trees, "p", "pull");
+        }
         if parsed.all {
             let idxs: Vec<usize> = (0..trees.len()).collect();
             return cmd_sync(&trees, &idxs, &parsed);
@@ -867,9 +880,14 @@ fn run() -> Result<(), String> {
     // (which of the others are already merged into the one you're standing
     // in), so it takes the bare-`commits`/`remove` reading, not the
     // bare-`merged`-needs-a-pair one below.
-    if first == "merged" && args[1..].iter().any(|a| a == "--others" || a == "--ot" || a == "-o") {
+    if (first == "merged" || first == "m")
+        && args[1..].iter().any(|a| a == "--others" || a == "--ot" || a == "-o")
+    {
         let root = repo_root()?;
         let trees = worktrees(&root)?;
+        if first == "m" {
+            warn_if_alias_shadows_branch(&trees, "m", "merged");
+        }
         let idx = current_worktree_index(&trees)
             .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {first}'"))?;
         return dispatch_target(&root, idx + 1, &args);
@@ -880,9 +898,12 @@ fn run() -> Result<(), String> {
     // need a pair, and target-first `merged` already owns the no-source
     // meaning ("is my branch merged into what I'm standing in"), so the bare
     // verb needs `-b` to say what it's being compared against.
-    if first == "diff" || first == "meld" || first == "merge" || first == "merged" {
+    if first == "diff" || first == "meld" || first == "merge" || first == "merged" || first == "m" {
         let root = repo_root()?;
         let trees = worktrees(&root)?;
+        if first == "m" {
+            warn_if_alias_shadows_branch(&trees, "m", "merged");
+        }
         let cur = current_worktree_index(&trees)
             .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N>,<M> {first}'"))?;
         let (rest, val) = extract_branch_flag(&args[1..])?;
@@ -918,9 +939,12 @@ fn run() -> Result<(), String> {
     // solo log doesn't require typing its own number back at it. `-b <N>`
     // still adds a comparison target, the same as the leading-`-b` form:
     // 'git-wt commits -b 2' is 'git-wt <cur>,2 commits'.
-    if first == "commits" {
+    if first == "commits" || first == "c" {
         let root = repo_root()?;
         let trees = worktrees(&root)?;
+        if first == "c" {
+            warn_if_alias_shadows_branch(&trees, "c", "commits");
+        }
         let cur = current_worktree_index(&trees)
             .ok_or("not inside a worktree; use 'git-wt <N> commits'")?;
         let (rest, val) = extract_branch_flag(&args[1..])?;
@@ -937,9 +961,12 @@ fn run() -> Result<(), String> {
     // `log` with no target — the worktree standing in for itself, same reading
     // as bare `commits` above: 'git-wt log src/ui.rs' is that worktree's own
     // history of the path, and '-b <N>' still adds a comparison target.
-    if first == "log" {
+    if first == "log" || first == "l" {
         let root = repo_root()?;
         let trees = worktrees(&root)?;
+        if first == "l" {
+            warn_if_alias_shadows_branch(&trees, "l", "log");
+        }
         let cur = current_worktree_index(&trees)
             .ok_or("not inside a worktree; use 'git-wt <N> log'")?;
         let (rest, val) = extract_branch_flag(&args[1..])?;

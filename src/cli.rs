@@ -78,10 +78,10 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
         // branch is asking about one branch, and quietly pulling in the
         // worktree you happen to be standing in answers a wider question than
         // was asked. 'git-wt {n},<M> commits' is still how you compare two.
-        "commits" => cmd_commits(root, &trees, &[idx], &rest[1..]),
+        "commits" | "c" => cmd_commits(root, &trees, &[idx], &rest[1..]),
         // A single target's own history of the path, no comparison columns --
         // the same "one worktree, no mark columns" rule 'commits' follows.
-        "log" => cmd_log(root, &trees, &[idx], &rest[1..]),
+        "log" | "l" => cmd_log(root, &trees, &[idx], &rest[1..]),
         "merge" => {
             let args = parse_merge_args(&rest[1..])?;
             if let MergeOp::Start(src) = &args.op {
@@ -96,7 +96,7 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
             }
             cmd_merge(root, &trees, idx, &args)
         }
-        "merged" => {
+        "merged" | "m" => {
             let args = &rest[1..];
             // `--others` asks for a table, not a yes/no answer.
             if args.iter().any(|a| a == "--others" || a == "--ot" || a == "-o") {
@@ -154,8 +154,14 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
             }
             cmd_merged(root, &src, &dest)
         }
-        "fetch" | "pull" | "push" => {
-            let op = SyncOp::from_word(action).expect("matched above");
+        "fetch" | "pull" | "push" | "p" => {
+            // "p" is the one-letter alias for `pull` specifically; `fetch`
+            // and `push` keep only their full words.
+            let op = if action == "p" {
+                SyncOp::Pull
+            } else {
+                SyncOp::from_word(action).expect("matched above")
+            };
             let args = parse_sync_args(op, &rest[1..])?;
             // `--all` is every worktree, so a target contradicts it; the target
             // is the more specific thing said, so name the form that keeps it.
@@ -177,7 +183,7 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
         )),
         other => Err(format!(
             "unknown action '{other}' (switch, path, remove, diff, commits, log, merge, meld, \
-             merged, fetch, pull, push)"
+             merged, fetch, pull, push; aliases: c=commits, l=log, m=merged, p=pull)"
         )),
     }
 }
@@ -290,6 +296,19 @@ pub(crate) fn worktree_on_branch(trees: &[Worktree], branch: &str) -> Option<usi
     trees.iter().position(|w| w.branch.as_deref() == Some(branch))
 }
 
+/// Warn on stderr when a bare one-letter alias is also the name of a
+/// checked-out branch: the alias wins, same as every other verb wins over a
+/// same-named branch, but a single letter is common enough as a real branch
+/// name that a silent shadow is worth flagging.
+pub(crate) fn warn_if_alias_shadows_branch(trees: &[Worktree], tok: &str, full_word: &str) {
+    if worktree_on_branch(trees, tok).is_some() {
+        eprintln!(
+            "warning: branch '{tok}' is checked out here; '{tok}' is read as the '{full_word}' \
+             alias, not the branch\nhint: 'heads/{tok}' reaches the branch's worktree"
+        );
+    }
+}
+
 /// The worktree number a lone leading token names, when it names one at all.
 ///
 /// The single-target twin of `resolve_target_list`, and deliberately quieter:
@@ -315,8 +334,8 @@ pub(crate) fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Re
     match rest.first().map(String::as_str) {
         Some("meld") => cmd_meld(root, &trees, &idxs, &rest[1..]),
         Some("diff") => cmd_diff(root, &trees, &idxs, &rest[1..]),
-        Some("commits") => cmd_commits(root, &trees, &idxs, &rest[1..]),
-        Some("log") => cmd_log(root, &trees, &idxs, &rest[1..]),
+        Some("commits") | Some("c") => cmd_commits(root, &trees, &idxs, &rest[1..]),
+        Some("log") | Some("l") => cmd_log(root, &trees, &idxs, &rest[1..]),
         // `1,2 merge`: the list reads dest-first, so 2 merges into 1.
         Some("merge") => {
             // The list already names the source, so a resume word contradicts
@@ -350,7 +369,7 @@ pub(crate) fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Re
             cmd_merge(root, &trees, idxs[0], &args)
         }
         // `1,2 merged` == "is 2 already in 1?" — same dest-first reading as merge.
-        Some("merged") => {
+        Some("merged") | Some("m") => {
             if idxs.len() != 2 {
                 return Err(format!(
                     "merged takes exactly two worktrees, not {}: 'git-wt <N>,<M> merged' \
@@ -369,8 +388,13 @@ pub(crate) fn dispatch_targets(root: &Path, ns: &[usize], rest: &[String]) -> Re
             cmd_merged(root, &src, &dest)
         }
         // `1,3 pull`: the sweep, narrowed to the worktrees you named.
-        Some(w) if SyncOp::from_word(w).is_some() => {
-            let op = SyncOp::from_word(w).expect("matched above");
+        Some(w) if SyncOp::from_word(w).is_some() || w == "p" => {
+            // "p" is the one-letter alias for `pull` specifically.
+            let op = if w == "p" {
+                SyncOp::Pull
+            } else {
+                SyncOp::from_word(w).expect("matched above")
+            };
             let args = parse_sync_args(op, &rest[1..])?;
             if args.all {
                 return Err(format!(

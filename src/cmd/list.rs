@@ -426,6 +426,11 @@ pub(crate) fn cmd_list(
     Ok(())
 }
 
+/// Sentinel string for "the picker was cancelled" -- ESC/Ctrl-C in fzf, or an
+/// empty Enter/EOF at the numbered prompt -- so `cmd_switch` can tell it apart
+/// from a real failure and exit quietly instead of printing it as an error.
+const CANCELLED: &str = "cancelled";
+
 /// Interactive `switch`: pick a worktree with fzf's arrow-key/type-to-filter
 /// list, falling back to a numbered prompt when fzf isn't installed -- the
 /// same two-step `add`'s own branch picker already takes. Only the picked
@@ -457,15 +462,24 @@ pub(crate) fn cmd_switch(root: &Path) -> Result<(), String> {
         })
         .collect();
 
-    let sel = match fzf_pick_plain(&items, "worktree> ", "no worktree selected")? {
-        Some(s) => s,
-        None => number_pick_worktree(&trees)?,
+    // Cancelling (ESC/Ctrl-C in fzf, empty Enter at the numbered prompt) is
+    // "changed my mind", not a failure -- it exits quietly, code 0, with
+    // nothing on either stream, the same as a plain `cd` typed and then
+    // abandoned.
+    let sel = match fzf_pick_plain(&items, "worktree> ", CANCELLED) {
+        Ok(Some(s)) => s,
+        Ok(None) => match number_pick_worktree(&trees) {
+            Ok(s) => s,
+            Err(e) if e == CANCELLED => std::process::exit(0),
+            Err(e) => return Err(e),
+        },
+        Err(e) if e == CANCELLED => std::process::exit(0),
+        Err(e) => return Err(e),
     };
-    let n: usize = sel
-        .split_whitespace()
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or("no worktree selected")?;
+    let n: usize = match sel.split_whitespace().next().and_then(|s| s.parse().ok()) {
+        Some(n) => n,
+        None => std::process::exit(0),
+    };
     let idx = check_index(n, trees.len())?;
 
     eprintln!("{}", label(&trees[idx]));
@@ -497,11 +511,11 @@ fn number_pick_worktree(trees: &[Worktree]) -> Result<String, String> {
     let mut line = String::new();
     let n = std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
     if n == 0 {
-        return Err("no worktree selected".into());
+        return Err(CANCELLED.into());
     }
     let s = line.trim();
     if s.is_empty() {
-        return Err("no worktree selected".into());
+        return Err(CANCELLED.into());
     }
     Ok(s.to_string())
 }

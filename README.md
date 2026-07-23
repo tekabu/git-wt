@@ -1456,6 +1456,8 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1,2 commits --md report.md` | Write that path, overwriting it |
 | `git-wt 1,2 commits --author nes` | Only commits whose author fuzzy-matches `nes` |
 | `git-wt 1,2 commits -m oauth` | Only commits with `oauth` in the subject or body (also `--message`) |
+| `git-wt 1,2 commits --search oauth` | Every row stays; `oauth` is highlighted wherever it sits — sha, author, date, subject, files |
+| `git-wt 1,2 commits --search 'merge\|only'` | Two terms, each its own color — quote it, or the shell reads `\|` as a pipe |
 | `git-wt 1,2 commits --filename api.php` | Only commits touching a matching path; implies `--files`, block cut to the matches |
 | `git-wt 1,2 commits --filename api.php --all-files` | Same rows, but each block is the commit's whole file list |
 | `git-wt 1,2 commits --squash` | Rows stay; one consolidated file block below, counts summed across them |

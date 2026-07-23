@@ -294,6 +294,9 @@ COMMITS OPTIONS:
                           and before
     -c, --commits IDS     Only these commits, comma-separated shas
     -m, --message TERM    Only commits whose subject or body contains TERM
+        --search TERM      Highlight every match of TERM; never drops a row.
+                          'a|b' highlights both, each its own color -- quote
+                          it, or the shell reads '|' as a pipe
         --filename, --fn TERM
                           Only commits touching a path containing TERM;
                           implies --files, and cuts the block to the matches
@@ -782,7 +785,23 @@ COLOR:
     NO_COLOR (disable) and CLICOLOR_FORCE (force on).
 ";
 
+// Rust starts every process with SIGPIPE ignored, so a write into a reader
+// that quit early (`git-wt commits | head`, or a shell word after a stray
+// unquoted `|` that isn't even a pipe into this process's stdout the reader
+// wants) surfaces as an `Err` on the write call -- which `println!` turns
+// into a panic instead of the quiet exit every other Unix tool makes. Putting
+// the handler back to its default restores that: the process just dies on
+// the signal, before the panic machinery ever runs.
+extern "C" {
+    fn signal(signum: i32, handler: usize) -> usize;
+}
+const SIGPIPE: i32 = 13;
+const SIG_DFL: usize = 0;
+
 fn main() {
+    unsafe {
+        signal(SIGPIPE, SIG_DFL);
+    }
     let code = match run() {
         Ok(()) => 0,
         Err(e) => {

@@ -26,6 +26,25 @@ pub(crate) const MATCH: &str = "1;38;5;214";
 /// worktrees, that one over commit text) never read as the same feature.
 pub(crate) const SEARCH_MATCH: &str = "1;38;5;33";
 
+/// `--search`'s palette for `commits`/`log`, cycled one color per `|`-joined
+/// term so `--search merge|only` reads as two questions, not one wider net.
+/// `SEARCH_MATCH` leads it, so a single term looks exactly as it always has.
+pub(crate) const SEARCH_COLORS: &[&str] = &[
+    SEARCH_MATCH,   // Blue 500
+    "1;38;5;46",    // Green 500
+    "1;38;5;213",   // Pink 400
+    "1;38;5;208",   // Orange 500
+    "1;38;5;93",    // Deep Purple A700
+    "1;38;5;51",    // Cyan 500
+];
+
+/// Split `--search`'s raw term on `|` into the words it names, trimmed,
+/// case-folded, and with the empties dropped -- `--search a||b` and
+/// `--search a|b|` both mean the same two words `a|b` does.
+pub(crate) fn search_terms(raw: &str) -> Vec<String> {
+    raw.split('|').map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect()
+}
+
 /// Whether to emit ANSI for a stream that is (or isn't) a terminal. Honors the
 /// `NO_COLOR` (any value disables) and `CLICOLOR_FORCE` (nonzero forces on)
 /// conventions; otherwise follows the stream's TTY-ness.
@@ -205,6 +224,15 @@ pub(crate) const BRANCH_HEAD_MAX: usize = 24;
 pub(crate) const MIN_TEXTW: usize = 24;
 /// Enough for a full name; past it, the subject has the better claim.
 pub(crate) const AUTHOR_MAX: usize = 16;
+/// `log`'s path column default cap: a single path name can still run long
+/// (deep directories, issue-shaped filenames), and unlike a rename or a
+/// multi-path call's extra names -- which wrap onto their own line instead --
+/// one name has nowhere else to go but an ellipsis. `--path-width full` opts
+/// out.
+pub(crate) const PATH_MAX: usize = 40;
+/// Below this, a cut path name is as uninformative as a cut branch name --
+/// see `BRANCH_MIN`.
+pub(crate) const PATH_MIN: usize = 8;
 
 /// The terminal's width, or None when stdout is not one.
 ///
@@ -370,9 +398,15 @@ pub(crate) fn confirm(prompt: &str) -> Result<bool, String> {
 /// what prints keeps the case it was written in -- lowercasing can change a
 /// string's byte length, and assuming it does not would slice mid-character.
 pub(crate) fn paint_matches(s: &str, needle: &str, code: &str, base: &str, on: bool) -> String {
-    let tint = |t: &str| if base.is_empty() { t.to_string() } else { paint(t, base, on) };
-    if !on || needle.is_empty() {
-        return tint(s);
+    paint_layers(s, &[(needle, code)], base, on)
+}
+
+/// Every case-folded byte-range of `needle` in `s`, mapped back to real
+/// offsets so a folding that changes length never returns a range that lands
+/// mid-character.
+fn find_matches(s: &str, needle: &str) -> Vec<(usize, usize)> {
+    if needle.is_empty() {
+        return Vec::new();
     }
     // Where each byte of the lowercased copy came from, plus the end, so both
     // bounds of a match always map back to a real offset in `s`.
@@ -387,7 +421,7 @@ pub(crate) fn paint_matches(s: &str, needle: &str, code: &str, base: &str, on: b
     origin.push(s.len());
 
     let needle = needle.to_lowercase();
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut cut = 0;
     let mut from = 0;
     while let Some(rel) = lower[from..].find(&needle) {
@@ -396,16 +430,49 @@ pub(crate) fn paint_matches(s: &str, needle: &str, code: &str, base: &str, on: b
         // A folding that changes length can put a bound inside a character.
         // Skip such a match rather than slice one in half.
         if start >= cut && s.is_char_boundary(start) && s.is_char_boundary(end) {
-            out.push_str(&tint(&s[cut..start]));
-            out.push_str(&paint(&s[start..end], code, on));
+            out.push((start, end));
             cut = end;
         }
         from = hi.max(lo + 1);
     }
-    if cut == 0 {
+    out
+}
+
+/// Paint `s` under `base`, then light every match from each `(needle, code)`
+/// layer in turn -- a later layer wins wherever it overlaps an earlier one, so
+/// two searches over the same text (say, a filter's term and `--search`'s)
+/// both show, with the later one taking the more specific spans.
+///
+/// Every match range starts and ends on a char boundary (`find_matches`
+/// guarantees it), so every layer's boundaries do too, and slicing at any of
+/// them is always safe.
+pub(crate) fn paint_layers(s: &str, layers: &[(&str, &str)], base: &str, on: bool) -> String {
+    let tint = |t: &str| if base.is_empty() { t.to_string() } else { paint(t, base, on) };
+    if !on {
         return tint(s);
     }
-    out.push_str(&tint(&s[cut..]));
+    let mut mark: Vec<Option<&str>> = vec![None; s.len()];
+    for (needle, code) in layers {
+        for (start, end) in find_matches(s, needle) {
+            for m in &mut mark[start..end] {
+                *m = Some(code);
+            }
+        }
+    }
+    let mut out = String::new();
+    let mut i = 0;
+    while i < s.len() {
+        let cur = mark[i];
+        let mut j = i + 1;
+        while j < s.len() && mark[j] == cur {
+            j += 1;
+        }
+        out.push_str(&match cur {
+            Some(code) => paint(&s[i..j], code, on),
+            None => tint(&s[i..j]),
+        });
+        i = j;
+    }
     out
 }
 

@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::cmd::commits::args::{BranchWidth, SubjectWidth, Wrap};
-use crate::cmd::commits::render::Highlight;
+use crate::cmd::commits::args::{BranchWidth, PathWidth, SubjectWidth, Wrap};
+use crate::cmd::commits::render::{search_layers, Highlight};
 use crate::cmd::commits::rows::{file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
-    abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, BLUE, BRANCH_HEAD_MAX, CHECK,
-    DIM, EQUIV, FINGERPRINT, GREEN, HEADER_COLORS, MAGENTA, MATCH, MIN_TEXTW, MISS, PICK_HEAD,
-    TRAILER, YELLOW,
+    abbrev, ellipsize, paint, paint_layers, wrap_wide, AUTHOR_MAX, BLUE, BRANCH_HEAD_MAX, CHECK,
+    DIM, EQUIV, FINGERPRINT, GREEN, HEADER_COLORS, MAGENTA, MATCH, MIN_TEXTW, MISS, PATH_MAX,
+    PICK_HEAD, TRAILER, YELLOW,
 };
 
 /// One row's `±` cell: churn scoped to the path alone.
@@ -23,7 +23,7 @@ pub(crate) fn stat_cell(added: Option<usize>, removed: Option<usize>) -> String 
 pub(crate) fn render_log(
     rows: &[CommitRow],
     stats: &[(Option<usize>, Option<usize>)],
-    row_paths: Option<&[String]>,
+    row_paths: Option<&[Vec<String>]>,
     row_files: &[Vec<FileStat>],
     row_bodies: &[(Vec<String>, usize)],
     names: &[String],
@@ -37,12 +37,18 @@ pub(crate) fn render_log(
     wrap: Wrap,
     subjectw: Option<SubjectWidth>,
     branchw: Option<BranchWidth>,
+    pathw_arg: Option<PathWidth>,
     hl: &Highlight,
 ) {
     let cap = match branchw {
         Some(BranchWidth::Full) => usize::MAX,
         Some(BranchWidth::Cols(n)) => n,
         None => BRANCH_HEAD_MAX,
+    };
+    let path_cap = match pathw_arg {
+        Some(PathWidth::Full) => usize::MAX,
+        Some(PathWidth::Cols(n)) => n,
+        None => PATH_MAX,
     };
     let names: Vec<String> = names.iter().map(|n| ellipsize(n, cap)).collect();
     let names = &names;
@@ -88,14 +94,21 @@ pub(crate) fn render_log(
 
     let pathw = row_paths.map(|p| {
         p.iter()
+            .flat_map(|list| list.iter())
             .map(|s| s.chars().count())
             .chain(std::iter::once("path".len()))
             .max()
             .unwrap_or(0)
+            .min(path_cap)
     });
     let pathcol = pathw.map_or(0, |w| w + 2);
 
     let fixed = shaw + 2 + pickcol + authw + 2 + datew + marksw + 2 + statw + 2 + pathcol;
+    // Where a row's second-and-later path (a rename's other name, or a
+    // multi-path call's other file) lands: right under the path column,
+    // on its own line, rather than the comma-joined cell this used to be
+    // -- and the ellipsis that then had to eat whatever overflowed it.
+    let path_prefix = fixed - pathcol;
 
     let textw = match subjectw {
         Some(SubjectWidth::Cols(n)) => Some(n),
@@ -190,15 +203,15 @@ pub(crate) fn render_log(
         }
         let anchored = hl.shas.contains(&row.sha);
         let sha_cell = format!("{:<shaw$}  ", row.short);
-        let mut line = if anchored { paint(&sha_cell, MATCH, color) } else { sha_cell };
+        let mut line = hl_cell(&sha_cell, hl, if anchored { MATCH } else { "" }, color);
         if let Some(w) = pickw {
             let cell = picks.and_then(|p| p.get(&row.sha)).map(|s| abbrev(s, shaw)).unwrap_or_default();
-            line.push_str(&paint(&format!("{cell:<w$}"), YELLOW, color));
+            line.push_str(&hl_cell(&format!("{cell:<w$}"), hl, YELLOW, color));
             line.push_str("  ");
         }
         let author_cell = format!("{:<authw$}", author);
         let date_cell = format!("{:>datew$}", row.date);
-        let dim_or = |cell: &str, lit: bool| paint(cell, if lit { MATCH } else { DIM }, color);
+        let dim_or = |cell: &str, lit: bool| hl_cell(cell, hl, if lit { MATCH } else { DIM }, color);
         line.push_str(&dim_or(&author_cell, hl.author));
         line.push_str("  ");
         line.push_str(&dim_or(&date_cell, hl.date));
@@ -212,14 +225,20 @@ pub(crate) fn render_log(
         }
         line.push_str("  ");
         line.push_str(&paint(&format!("{:>statw$}", stat_cells[i]), DIM, color));
+        let row_path_list: &[String] = row_paths.and_then(|ps| ps.get(i)).map(Vec::as_slice).unwrap_or(&[]);
         if let Some(w) = pathw {
             line.push_str("  ");
-            let p = row_paths.and_then(|ps| ps.get(i)).map(String::as_str).unwrap_or("");
-            line.push_str(&paint(&format!("{p:<w$}"), DIM, color));
+            let p = row_path_list.first().map(String::as_str).unwrap_or("");
+            line.push_str(&hl_cell(&format!("{:<w$}", ellipsize(p, w)), hl, DIM, color));
         }
         line.push_str("  ");
         line.push_str(&hl_text(&text[0], hl, color));
         println!("{}", line.trim_end());
+        if let Some(w) = pathw {
+            for p in row_path_list.iter().skip(1) {
+                println!("{}{}", " ".repeat(path_prefix), hl_cell(&ellipsize(p, w), hl, DIM, color));
+            }
+        }
         for more in &text[1..] {
             println!("{}{}", " ".repeat(fixed), hl_text(more.trim_end(), hl, color));
         }
@@ -227,9 +246,11 @@ pub(crate) fn render_log(
         if let Some((lines, extra)) = row_bodies.get(i) {
             if !lines.is_empty() {
                 println!();
-                let term = hl.message.as_deref().unwrap_or_default();
+                let mut layers: Vec<(&str, &str)> =
+                    hl.message.as_deref().map(|t| (t, MATCH)).into_iter().collect();
+                layers.extend(search_layers(hl));
                 for body_line in lines {
-                    println!("{}{}", " ".repeat(fixed), paint_matches(body_line, term, MATCH, DIM, color));
+                    println!("{}{}", " ".repeat(fixed), paint_layers(body_line, &layers, DIM, color));
                 }
                 if *extra > 0 {
                     println!("{}{}", " ".repeat(fixed), paint(&format!("+{extra} more"), DIM, color));
@@ -241,7 +262,7 @@ pub(crate) fn render_log(
             if !files.is_empty() {
                 println!();
                 for file_line in file_stat_lines(files) {
-                    println!("{}", paint(&file_line, DIM, color));
+                    println!("{}", hl_cell(&file_line, hl, DIM, color));
                 }
             }
         }
@@ -249,8 +270,21 @@ pub(crate) fn render_log(
 }
 
 fn hl_text(line: &str, hl: &Highlight, color: bool) -> String {
-    match &hl.message {
-        None => line.to_string(),
-        Some(t) => paint_matches(line, t, MATCH, "", color),
+    let mut layers: Vec<(&str, &str)> = hl.message.as_deref().map(|t| (t, MATCH)).into_iter().collect();
+    layers.extend(search_layers(hl));
+    if layers.is_empty() {
+        line.to_string()
+    } else {
+        paint_layers(line, &layers, "", color)
+    }
+}
+
+/// See `commits::render::hl_cell` -- same rule, `log`'s own cells.
+fn hl_cell(cell: &str, hl: &Highlight, base: &str, color: bool) -> String {
+    let layers = search_layers(hl);
+    if layers.is_empty() {
+        if base.is_empty() { cell.to_string() } else { paint(cell, base, color) }
+    } else {
+        paint_layers(cell, &layers, base, color)
     }
 }

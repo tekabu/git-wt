@@ -16,7 +16,7 @@ use crate::cmd::commits::rows::{
     equivalents, path_shas, pick_ids, ref_shas, trailer_sets, window_to_divergent, CommitRow,
     FileStat,
 };
-use crate::ui::{color_enabled, is_subseq, term_width};
+use crate::ui::{color_enabled, is_subseq, search_terms, term_width};
 use crate::worktree::{label, ref_of, Worktree};
 
 /// Print a commit-by-branch table for the listed worktrees.
@@ -517,6 +517,7 @@ fn commits_view(
             // the whole cell holding it.
             message: msg.clone(),
             file: args.filename.as_ref().map(|s| s.to_lowercase()),
+            search: args.search.as_deref().map(search_terms).unwrap_or_default(),
         },
     );
     Ok(())

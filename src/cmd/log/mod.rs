@@ -15,7 +15,7 @@ use crate::cmd::commits::rows::{
 };
 use crate::cmd::log::paths::resolve_pathspec;
 use crate::cmd::log::render::{render_log, stat_cell};
-use crate::ui::{color_enabled, is_subseq, term_width};
+use crate::ui::{color_enabled, is_subseq, search_terms, term_width};
 use crate::worktree::{label, ref_of, Worktree};
 
 /// Print one file's history, across the listed branches: the same table
@@ -190,15 +190,22 @@ pub(crate) fn cmd_log(
     // pathspec.
     let mut stats: Vec<(Option<usize>, Option<usize>)> = Vec::with_capacity(rows.len());
     let mut row_path_labels: Vec<String> = Vec::with_capacity(rows.len());
+    let mut row_path_lists: Vec<Vec<String>> = Vec::with_capacity(rows.len());
     for r in &rows {
         let (added, removed, names) = path_row_stat(root, &r.sha, &paths)?;
         stats.push((added, removed));
-        row_path_labels.push(if names.is_empty() { paths.join(", ") } else { names.join(", ") });
+        let list = if names.is_empty() { paths.clone() } else { names };
+        row_path_labels.push(list.join(", "));
+        row_path_lists.push(list);
     }
     // Printed only when it varies: otherwise it is the header's job, not a
     // column's.
     let varies = row_path_labels.iter().any(|p| p != &row_path_labels[0]);
+    // The comma-joined form still backs the header/`--md` prefix, where a
+    // single-line label is what fits; the table itself gets each row's
+    // paths unjoined, so extras can land on their own line instead.
     let row_paths: Option<&[String]> = if varies { Some(&row_path_labels) } else { None };
+    let row_path_lists: Option<&[Vec<String>]> = if varies { Some(&row_path_lists) } else { None };
 
     // -f: the *other* files each of these commits touched -- the blast radius
     // of every change to this path, since the row already carries the path's
@@ -345,7 +352,7 @@ pub(crate) fn cmd_log(
     render_log(
         &rows,
         &stats,
-        row_paths,
+        row_path_lists,
         &row_files,
         &row_bodies,
         &names,
@@ -359,12 +366,14 @@ pub(crate) fn cmd_log(
         args.wrap,
         args.subjectw,
         args.branchw,
+        args.pathw,
         &Highlight {
             date: !args.dates.is_empty(),
             author: args.author.is_some(),
             shas: anchors,
             message: msg.clone(),
             file: None,
+            search: args.search.as_deref().map(search_terms).unwrap_or_default(),
         },
     );
     Ok(())

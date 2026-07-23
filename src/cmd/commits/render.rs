@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use crate::cmd::commits::args::{BranchWidth, SubjectWidth, Wrap};
 use crate::cmd::commits::rows::{consolidate_file_stats, file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
-    abbrev, ellipsize, paint, paint_matches, wrap_wide, AUTHOR_MAX, BLUE, BRANCH_HEAD_MAX, CHECK,
+    abbrev, ellipsize, paint, paint_layers, wrap_wide, AUTHOR_MAX, BLUE, BRANCH_HEAD_MAX, CHECK,
     DIM, EQUIV, FINGERPRINT, GREEN, HEADER_COLORS, MAGENTA, MATCH, MIN_TEXTW, MISS, PICK_HEAD,
-    TRAILER, YELLOW,
+    SEARCH_COLORS, TRAILER, YELLOW,
 };
 
 /// Which cells a filter acted on, so the eye can find them in a long table.
@@ -26,16 +26,50 @@ pub(crate) struct Highlight {
     /// Lowercased terms, or None when the filter was not asked for.
     pub(crate) message: Option<String>,
     pub(crate) file: Option<String>,
+    /// `--search`'s `|`-split terms, lowercased, each its own `SEARCH_COLORS`
+    /// hue in order. Highlight only -- unlike every other field here it names
+    /// nothing a row was kept or dropped for, so it is lit wherever it sits:
+    /// sha, author, date, subject, file paths.
+    pub(crate) search: Vec<String>,
 }
 
-/// Light a --message match where it sits in a subject line.
+/// `--search`'s terms as `paint_layers` layers, one `SEARCH_COLORS` hue each,
+/// cycled if there are more terms than colors. Shared with `log`'s renderer,
+/// which reuses this `Highlight` outright rather than keeping its own copy.
+pub(crate) fn search_layers(hl: &Highlight) -> Vec<(&str, &str)> {
+    hl.search
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.as_str(), SEARCH_COLORS[i % SEARCH_COLORS.len()]))
+        .collect()
+}
+
+/// Light a --message and/or --search match where either sits in a subject
+/// line. `--search`'s layers are painted last, so where a term overlaps
+/// --message's it is what wins -- see `paint_layers`.
 ///
-/// The term may be in the body instead, in which case nothing here matches and
-/// the body block below the row is what shows it.
+/// A --message term may be in the body instead, in which case nothing here
+/// matches and the body block below the row is what shows it.
 fn hl_text(line: &str, hl: &Highlight, color: bool) -> String {
-    match &hl.message {
-        None => line.to_string(),
-        Some(t) => paint_matches(line, t, MATCH, "", color),
+    let mut layers: Vec<(&str, &str)> = hl.message.as_deref().map(|t| (t, MATCH)).into_iter().collect();
+    layers.extend(search_layers(hl));
+    if layers.is_empty() {
+        line.to_string()
+    } else {
+        paint_layers(line, &layers, "", color)
+    }
+}
+
+/// Light every --search match in a cell that otherwise gets a flat `base`
+/// tint (or none, for `base` == ""). Every non-subject cell uses this:
+/// `--search` is the one field here that never changes which rows print,
+/// only where the eye lands on the ones that do.
+fn hl_cell(cell: &str, hl: &Highlight, base: &str, color: bool) -> String {
+    let layers = search_layers(hl);
+    if layers.is_empty() {
+        if base.is_empty() { cell.to_string() } else { paint(cell, base, color) }
+    } else {
+        paint_layers(cell, &layers, base, color)
     }
 }
 
@@ -265,11 +299,7 @@ pub(crate) fn render_commits(
         // of the answer, but is the answer.
         let anchored = hl.shas.contains(&row.sha);
         let sha_cell = format!("{:<shaw$}  ", row.short);
-        let mut line = if anchored {
-            paint(&sha_cell, MATCH, color)
-        } else {
-            sha_cell
-        };
+        let mut line = hl_cell(&sha_cell, hl, if anchored { MATCH } else { "" }, color);
         if let Some(w) = pickw {
             // Blank, not '·': the column names a sha or it has nothing to say,
             // where the marks' '·' is an answer about a branch.
@@ -278,7 +308,7 @@ pub(crate) fn render_commits(
                 .map(|s| abbrev(s, shaw))
                 .unwrap_or_default();
             // Yellow, like the '≈' it explains.
-            line.push_str(&paint(&format!("{cell:<w$}"), YELLOW, color));
+            line.push_str(&hl_cell(&format!("{cell:<w$}"), hl, YELLOW, color));
             line.push_str("  ");
         }
         // Dim, so the marks and the subject stay what the eye lands on -- unless
@@ -286,9 +316,7 @@ pub(crate) fn render_commits(
         // for. Padded before coloring, so the escapes never skew the column.
         let author_cell = format!("{:<authw$}", row.author);
         let date_cell = format!("{:>datew$}", row.date);
-        let dim_or = |cell: &str, lit: bool| {
-            paint(cell, if lit { MATCH } else { DIM }, color)
-        };
+        let dim_or = |cell: &str, lit: bool| hl_cell(cell, hl, if lit { MATCH } else { DIM }, color);
         line.push_str(&dim_or(&author_cell, hl.author));
         line.push_str("  ");
         line.push_str(&dim_or(&date_cell, hl.date));
@@ -328,12 +356,14 @@ pub(crate) fn render_commits(
         if let Some((lines, extra)) = row_bodies.get(i) {
             if !lines.is_empty() {
                 println!();
-                let term = hl.message.as_deref().unwrap_or_default();
+                let mut layers: Vec<(&str, &str)> =
+                    hl.message.as_deref().map(|t| (t, MATCH)).into_iter().collect();
+                layers.extend(search_layers(hl));
                 for body_line in lines {
                     println!(
                         "{}{}",
                         " ".repeat(fixed),
-                        paint_matches(body_line, term, MATCH, DIM, color)
+                        paint_layers(body_line, &layers, DIM, color)
                     );
                 }
                 if *extra > 0 {
@@ -349,12 +379,14 @@ pub(crate) fn render_commits(
         if let Some(file_stats) = (!squash).then(|| row_files.get(i)).flatten() {
             if !file_stats.is_empty() {
                 println!();
+                let mut layers: Vec<(&str, &str)> =
+                    hl.file.as_deref().map(|t| (t, MATCH)).into_iter().collect();
+                layers.extend(search_layers(hl));
                 for file_line in file_stat_lines(file_stats) {
                     // Every file the commit touched, even under --filename: the
                     // filter chose the row, and a trimmed block could not answer
                     // what that commit did. The matched paths are lit instead.
-                    let term = hl.file.as_deref().unwrap_or_default();
-                    println!("{}", paint_matches(&file_line, term, MATCH, DIM, color));
+                    println!("{}", paint_layers(&file_line, &layers, DIM, color));
                 }
             }
         }
@@ -370,9 +402,11 @@ pub(crate) fn render_commits(
         if !consolidated.is_empty() {
             println!();
             println!("{}", paint("consolidated files", DIM, color));
-            let term = hl.file.as_deref().unwrap_or_default();
+            let mut layers: Vec<(&str, &str)> =
+                hl.file.as_deref().map(|t| (t, MATCH)).into_iter().collect();
+            layers.extend(search_layers(hl));
             for file_line in file_stat_lines(&consolidated) {
-                println!("{}", paint_matches(&file_line, term, MATCH, DIM, color));
+                println!("{}", paint_layers(&file_line, &layers, DIM, color));
             }
         }
     }

@@ -1,4 +1,4 @@
-use crate::ui::{BRANCH_MIN, MIN_TEXTW};
+use crate::ui::{BRANCH_MIN, MIN_TEXTW, PATH_MIN};
 
 
 
@@ -114,6 +114,19 @@ pub(crate) enum BranchWidth {
     Full,
 }
 
+/// How wide `log`'s `path` column gets, when a single name runs past
+/// `PATH_MAX`. A rename's or a multi-path call's *other* names already wrap
+/// onto their own line rather than compete for this width -- this only
+/// bounds one name at a time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum PathWidth {
+    /// Exactly this many columns. Below it a cut name says nothing -- see
+    /// `parse_pathw`.
+    Cols(usize),
+    /// However many the path is. Nothing is cut.
+    Full,
+}
+
 /// How many terminal lines a subject may take before it is cut.
 ///
 /// One line is the table's shape -- a row is a commit -- so more of it is
@@ -168,6 +181,10 @@ pub(crate) struct CommitsArgs {
     /// typed from memory, where a message is prose -- a subsequence over prose
     /// matches nearly all of it.
     pub(crate) message: Option<String>,
+    /// Highlight only -- never drops a row. Lit wherever it appears: sha,
+    /// author, date, subject, file paths. Unlike `--message` it names nothing
+    /// to filter on, so a row with no match still prints, plain.
+    pub(crate) search: Option<String>,
     /// Only commits touching a path containing this, case-folded.
     pub(crate) filename: Option<String>,
     /// Show every file a commit touched, not only the paths --filename
@@ -205,6 +222,9 @@ pub(crate) struct CommitsArgs {
     /// Columns a branch-name header gets cut to. None is the default cap
     /// (`BRANCH_HEAD_MAX`); `Full` never cuts.
     pub(crate) branchw: Option<BranchWidth>,
+    /// `log` only: columns its `path` column gets cut to. None is the
+    /// default cap (`PATH_MAX`); `Full` never cuts.
+    pub(crate) pathw: Option<PathWidth>,
     /// `log` only: don't follow a rename, even with one path given. The
     /// escape hatch for the empty-result hint ("it may live under another
     /// name") -- an explicit opt-out for the one case `log` would otherwise
@@ -376,9 +396,11 @@ pub(crate) fn parse_commits_args_with(
     let mut all = false;
     let mut files = false;
     let mut squash = false;
+    let mut search = None;
     let mut wrap = None;
     let mut subjectw = None;
     let mut branchw = None;
+    let mut pathw = None;
     let mut no_follow = false;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
@@ -455,6 +477,18 @@ pub(crate) fn parse_commits_args_with(
             s if s.starts_with("--branchw=") => {
                 branchw = Some(parse_branchw(&s["--branchw=".len()..])?);
             }
+            // Same shape again, and `log`-only the same way `--no-follow` is:
+            // no other verb has a `path` column for it to widen.
+            "--path-width" | "--pathw" if mode == Mode::Log => {
+                let v = it.next().ok_or(PATHW_MISSING)?;
+                pathw = Some(parse_pathw(v)?);
+            }
+            s if s.starts_with("--path-width=") && mode == Mode::Log => {
+                pathw = Some(parse_pathw(&s["--path-width=".len()..])?);
+            }
+            s if s.starts_with("--pathw=") && mode == Mode::Log => {
+                pathw = Some(parse_pathw(&s["--pathw=".len()..])?);
+            }
             "--time" => fmt.time = true,
             "--date-human" | "--dh" => fmt.human = true,
             // The path is optional, so the next word is only it when it is not
@@ -499,15 +533,18 @@ pub(crate) fn parse_commits_args_with(
             s if s.starts_with("--author=") => author = Some(s["--author=".len()..].to_string()),
             s if s.starts_with("--au=") => author = Some(s["--au=".len()..].to_string()),
             // The text filter. Its term has to end up somewhere on the row it
-            // keeps -- see the --wrap implication below. `--search` is the
-            // same filter under the name `list --search` already uses, so
-            // the word means one thing across the whole CLI.
-            "--message" | "-m" | "--search" => message = Some(term(it.next(), MESSAGE_MISSING)?),
+            // keeps -- see the --wrap implication below.
+            "--message" | "-m" => message = Some(term(it.next(), MESSAGE_MISSING)?),
             s if s.starts_with("--message=") => {
                 message = Some(term_of(&s["--message=".len()..], MESSAGE_MISSING)?);
             }
+            // `list`'s word, same meaning here: light every match, drop
+            // nothing. Unlike `--message` it names no filter, so it never
+            // implies `--wrap full` or `--files` the way a term that has to
+            // prove itself on the row does.
+            "--search" => search = Some(term(it.next(), SEARCH_MISSING)?),
             s if s.starts_with("--search=") => {
-                message = Some(term_of(&s["--search=".len()..], MESSAGE_MISSING)?);
+                search = Some(term_of(&s["--search=".len()..], SEARCH_MISSING)?);
             }
             // A merge can carry a hundred files and match on three, so the
             // block is cut to the matches by default. --all-files buys the
@@ -628,10 +665,10 @@ pub(crate) fn parse_commits_args_with(
     }
 
     Ok(CommitsArgs {
-        limit, dates, commit_since, commit_until, commits, author, message, filename, all_files,
+        limit, dates, commit_since, commit_until, commits, author, message, search, filename, all_files,
         topo, merges, fmt, md,
         reverse, no_cherry, pick, union,
-        all, files, squash, wrap, subjectw, branchw, no_follow,
+        all, files, squash, wrap, subjectw, branchw, pathw, no_follow,
     })
 }
 
@@ -685,6 +722,21 @@ pub(crate) fn parse_branchw(v: &str) -> Result<BranchWidth, String> {
     }
 }
 
+/// Read `--path-width`'s value: a column count, or 'full' for no cut at all.
+pub(crate) fn parse_pathw(v: &str) -> Result<PathWidth, String> {
+    if v.eq_ignore_ascii_case("full") || v.eq_ignore_ascii_case("all") {
+        return Ok(PathWidth::Full);
+    }
+    match v.parse::<usize>() {
+        Ok(n) if n >= PATH_MIN => Ok(PathWidth::Cols(n)),
+        Ok(n) if n > 0 => Err(format!(
+            "--path-width needs {PATH_MIN} columns or more: below that, a cut path says nothing\n\
+             hint: '--pathw full' never cuts, however long the path\n  got: '{n}'"
+        )),
+        _ => Err(format!("{PATHW_BAD}\n  got: '{v}'")),
+    }
+}
+
 /// Read `--wrap`'s value: a line count, or 'full' for as many as it takes.
 pub(crate) fn parse_wrap(v: &str) -> Result<Wrap, String> {
     if v.eq_ignore_ascii_case("full") || v.eq_ignore_ascii_case("all") {
@@ -705,9 +757,15 @@ pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'fu
 pub(crate) const BRANCHW_MISSING: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'";
 pub(crate) const BRANCHW_BAD: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'\n\
      hint: 'full' never cuts a branch name, however long it is";
+pub(crate) const PATHW_MISSING: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'";
+pub(crate) const PATHW_BAD: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'\n\
+     hint: 'full' never cuts a path name, however long it is";
 pub(crate) const MESSAGE_MISSING: &str =
     "--message needs a term, e.g. '--message ISSUE-42'\n\
      hint: it searches the subject and the body";
+pub(crate) const SEARCH_MISSING: &str =
+    "--search needs a term, e.g. '--search ISSUE-42'\n\
+     hint: it only highlights -- use --message to filter rows down to a match";
 pub(crate) const FILENAME_MISSING: &str =
     "--filename needs a term, e.g. '--filename render.rs'";
 pub(crate) const ALL_FILES_MSG: &str =
@@ -1388,6 +1446,26 @@ mod tests {
         // Below BRANCH_MIN a cut name cannot tell two branches apart.
         assert!(parse(&["--branchw=8"]).unwrap_err().contains("columns or more"));
         assert!(parse(&["--branchw=0"]).unwrap_err().contains("needs a column count"));
+    }
+
+    /// `--path-width` is a `log`-only word, the same way `--no-follow` is: no
+    /// other verb has a `path` column for it to widen.
+    #[test]
+    fn path_width_is_a_log_only_word() {
+        // None is the default cap (PATH_MAX), applied at render time.
+        assert_eq!(parse_log(&[]).unwrap().pathw, None);
+        assert_eq!(parse_log(&["--path-width", "60"]).unwrap().pathw, Some(PathWidth::Cols(60)));
+        assert_eq!(parse_log(&["--path-width=60"]).unwrap().pathw, Some(PathWidth::Cols(60)));
+        assert_eq!(parse_log(&["--pathw", "60"]).unwrap().pathw, Some(PathWidth::Cols(60)));
+        assert_eq!(parse_log(&["--pathw=full"]).unwrap().pathw, Some(PathWidth::Full));
+        assert!(parse_log(&["--path-width"]).unwrap_err().contains("needs a column count"));
+        assert!(parse_log(&["--pathw=wide"]).unwrap_err().contains("needs a column count"));
+        // Below PATH_MIN a cut path name says nothing.
+        assert!(parse_log(&["--pathw=4"]).unwrap_err().contains("columns or more"));
+        assert!(parse_log(&["--pathw=0"]).unwrap_err().contains("needs a column count"));
+        // Not a word outside `log`.
+        assert!(parse(&["--path-width", "60"]).unwrap_err().contains("unexpected argument '--path-width'"));
+        assert!(parse_review(&["--pathw", "60"]).is_err());
     }
 
     #[test]

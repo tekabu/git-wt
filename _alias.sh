@@ -52,7 +52,7 @@ $alias_name() {
   case "\${1:-}" in
     ""|-h|--help|-V|--version|version|help|list|ls)
       git-wt "\$@"; return \$? ;;
-    add)
+    add|a)
       # Create, then cd into the new worktree — unless --stay was passed.
       local stay=0 a
       for a in "\$@"; do [ "\$a" = "--stay" ] && stay=1; done

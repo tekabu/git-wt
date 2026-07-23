@@ -250,9 +250,11 @@ pub(crate) fn cmd_list(
         (None, Some(_), _) if stdout_tty => vec![1, 2, 4, 5, 7, 8],
         (None, Some(_), _) => vec![1, 2, 3, 7, 8],
         (None, None, ListMode::Short) => vec![1, 2, 4],
-        (None, None, ListMode::Long) => vec![1, 2, 3, 4, 5, 9, 10],
-        (None, None, ListMode::Normal) if stdout_tty && show_path => vec![1, 2, 3, 4, 5, 9, 10],
-        (None, None, ListMode::Normal) if stdout_tty => vec![1, 2, 4, 5, 9, 10],
+        (None, None, ListMode::Long) => vec![1, 2, 3, 4, 5, 6, 9, 10],
+        (None, None, ListMode::Normal) if stdout_tty && show_path => {
+            vec![1, 2, 3, 4, 5, 6, 9, 10]
+        }
+        (None, None, ListMode::Normal) if stdout_tty => vec![1, 2, 4, 5, 6, 9, 10],
         (None, None, ListMode::Normal) => vec![1, 2, 3],
     };
 

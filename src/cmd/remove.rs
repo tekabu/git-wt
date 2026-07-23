@@ -12,6 +12,7 @@ pub(crate) fn cmd_remove(
     idx: usize,
     yes: bool,
     force: bool,
+    delete_branch: bool,
 ) -> Result<(), String> {
     let wanted = &trees[idx];
 
@@ -19,6 +20,13 @@ pub(crate) fn cmd_remove(
     // a checkout to remove.
     if idx == 0 || wanted.bare {
         return Err("refusing to remove the main worktree".into());
+    }
+
+    // `-D` names a branch to delete; a detached worktree has none, so the
+    // flag has nothing to act on. Fail before touching anything rather than
+    // quietly doing half of what was asked.
+    if delete_branch && wanted.branch.is_none() {
+        return Err("worktree has no branch to delete".into());
     }
 
     // Was the shell standing inside the tree we're about to remove? Capture it
@@ -30,14 +38,18 @@ pub(crate) fn cmd_remove(
     };
 
     let path_s = wanted.path.to_string_lossy().to_string();
-    if !yes
-        && !confirm(&format!(
-            "Remove worktree '{}' at {path_s}? [y/N] ",
-            label(wanted)
-        ))?
-    {
-        eprintln!("Aborted.");
-        return Ok(());
+    if !yes {
+        let prompt = match (&wanted.branch, delete_branch) {
+            (Some(b), true) => format!(
+                "Remove worktree '{}' at {path_s} and delete branch '{b}'? [y/N] ",
+                label(wanted)
+            ),
+            _ => format!("Remove worktree '{}' at {path_s}? [y/N] ", label(wanted)),
+        };
+        if !confirm(&prompt)? {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
     }
 
     let mut argv = vec!["worktree", "remove"];
@@ -56,9 +68,16 @@ pub(crate) fn cmd_remove(
 
     git_run(root, &["worktree", "prune"])?;
 
-    // The `remove` verb only detaches the worktree; the branch itself stays.
+    // `remove` alone only detaches the worktree, leaving the branch; `-D`
+    // deletes it too, `-f` alongside `-D` forcing that delete (`-D` vs. `-d`)
+    // the same way it forces the worktree removal above.
     let leaf = leaf_of(&wanted.path);
     let branch_note = match &wanted.branch {
+        Some(b) if delete_branch => {
+            let flag = if force { "-D" } else { "-d" };
+            git_run(root, &["branch", flag, b])?;
+            format!("branch {b} deleted")
+        }
         Some(b) => format!("branch {b} kept"),
         None => "detached".into(),
     };

@@ -54,16 +54,18 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
         "remove" | "rm" => {
             let mut yes = false;
             let mut force = false;
+            let mut delete_branch = false;
             for a in &rest[1..] {
                 match a.as_str() {
                     "-y" => yes = true,
                     "-f" | "--force" => force = true,
+                    "-D" | "--delete-branch" => delete_branch = true,
                     other => {
                         return Err(format!("unexpected argument '{other}' for remove"));
                     }
                 }
             }
-            cmd_remove(root, &trees, idx, yes, force)
+            cmd_remove(root, &trees, idx, yes, force, delete_branch)
         }
         // `1 diff 2` was the old grammar; point at the list form meld already
         // uses. `merge` keeps the single-target form for branch sources and for

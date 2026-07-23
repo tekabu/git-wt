@@ -59,6 +59,13 @@ $alias_name() {
       local d; d="\$(git-wt "\$@")" || return \$?
       [ "\$stay" = 0 ] && [ -n "\$d" ] && cd "\$d"
       return 0 ;;
+    remove|rm)
+      # Bare remove/rm (no leading <N>) acts on the worktree you're standing
+      # in, same as '<N> remove' below — and needs the same cd-back-to-main
+      # when git-wt prints a path (i.e. you were inside the tree it removed).
+      local d; d="\$(git-wt "\$@")" || return \$?
+      [ -n "\$d" ] && cd "\$d"
+      return 0 ;;
   esac
   # A leading token that is not a numeric target index (e.g. an unknown verb
   # or a stray flag) passes straight through, so git-wt prints its own error

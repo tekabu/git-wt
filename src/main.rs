@@ -36,7 +36,7 @@ USAGE:
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
-    git-wt <N> remove [-y] [-f]  Remove worktree N
+    git-wt <N> remove [-y] [-f] [-D]  Remove worktree N (-D: delete branch too)
     git-wt <N>,<M> merge         Merge M into N
     git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
     git-wt merge -b <M>          Merge M into the worktree you are in
@@ -129,7 +129,7 @@ USAGE:
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
-    git-wt <N> remove [-y] [-f]  Remove worktree N
+    git-wt <N> remove [-y] [-f] [-D]  Remove worktree N (-D: delete branch too)
     git-wt <N>,<M> merge         Merge M into N
     git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
     git-wt merge -b <M>          Merge M into the worktree you are in
@@ -212,7 +212,10 @@ ADD OPTIONS:
 
 REMOVE OPTIONS:
     -y                    Skip the confirmation prompt
-    -f, --force           Discard uncommitted/untracked changes
+    -f, --force           Discard uncommitted/untracked changes; alongside
+                          -D, also force-deletes the branch (git branch -D)
+    -D, --delete-branch   Delete the worktree's branch too (git branch -d;
+                          -D above forces it). Errors on a detached worktree.
 
 DIFF OPTIONS:
     live                  Compare the files on disk, not the commits

@@ -166,7 +166,7 @@ git-wt list [SEARCH]         List, with matches highlighted (indices stay put)
 git-wt <N>                   == git-wt <N> switch
 git-wt <N> switch            cd into worktree N (alias: cd)
 git-wt <N> path              Print worktree N's path only (alias: show)
-git-wt <N> remove [-y] [-f]  Remove worktree N
+git-wt <N> remove [-y] [-f] [-D]  Remove worktree N (-D also deletes its branch)
 git-wt <N>,<M> merge         Merge M into N
 git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
 git-wt <N>,<M> merge review  What would that merge bring over?
@@ -227,8 +227,9 @@ the listing, never a worktree on a branch called `list`. Reach that one as
     --stay              wrapper: create but do NOT cd into the new worktree
 ```
 
-`-y` skips the remove confirmation; `-f`/`--force` discards uncommitted changes.
-They are independent.
+`-y` skips the remove confirmation; `-f`/`--force` discards uncommitted changes;
+`-D`/`--delete-branch` also deletes the worktree's branch (`-f` alongside `-D`
+force-deletes the branch too, not just the worktree). They compose freely.
 
 Prompts appear `[y/N]` when creating a branch that does not exist, before
 `remove`, and whenever a flag is silently overridden. Type `y` (or `yes`) and
@@ -345,10 +346,18 @@ suffix.
 git-wt 2 remove             # prompt, then remove worktree 2
 git-wt 2 remove -y          # no prompt
 git-wt 2 remove -f          # also discard uncommitted changes
+git-wt 2 remove -D          # also delete branch (safe: git branch -d)
+git-wt 2 remove -D -f       # force both: discard dirty tree, force-delete branch
 ```
 
 Removes the worktree directory and prunes git's admin data; the branch is left
-alone. Refuses to remove the main/bare worktree.
+alone unless `-D`/`--delete-branch` is given, in which case it's deleted too
+(the confirmation prompt then names both the worktree and the branch). Without
+`-f`, the branch delete is the safe `git branch -d`, which git itself refuses
+if the branch isn't fully merged anywhere; `-f` alongside `-D` forces it
+(`git branch -D`), the same way it already forces a dirty worktree's removal.
+`-D` on a detached worktree is an error — there's no branch to delete. Refuses
+to remove the main/bare worktree.
 
 On success it prints the main worktree path **only when you were standing inside
 the tree you just removed** (your cwd now dangles), so the `wt` wrapper cd's you
@@ -1375,6 +1384,8 @@ Every form the CLI accepts. Examples assume:
 | `git-wt 1 remove -y` | Remove, no prompt |
 | `git-wt 1 remove -f` | Remove, discard dirty (still prompts) |
 | `git-wt 1 remove -y -f` | Remove, no prompt, discard dirty |
+| `git-wt 1 remove -D` | Prompt (names branch too), remove + delete branch (safe) |
+| `git-wt 1 remove -D -f -y` | No prompt, force both: discard dirty, force-delete branch |
 | `git-wt 1 rm` | Alias → remove |
 | `git-wt 1,2 merge` | Merge worktree 2's branch into worktree 1's |
 | `git-wt 1 merge feat/x` | Merge branch `feat/x` into worktree 1's branch |

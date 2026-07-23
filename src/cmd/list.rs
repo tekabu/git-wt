@@ -6,7 +6,8 @@ use crate::git::git_stdout;
 use crate::cmd::commits::rows::{file_stat_lines, parse_numstat_z, sort_file_stats, FileStat};
 use crate::cmd::merged::{merged_text, merged_text_at};
 use crate::ui::{
-    color_enabled, ellipsize, paint, paint_matches, term_width, BRANCH_MIN, DIM, SEARCH_MATCH,
+    color_enabled, ellipsize, paint, paint_matches, term_width, BRANCH_MIN, DIM, HEADER_COLORS,
+    SEARCH_MATCH,
 };
 use crate::worktree::{
     current_ref, label, status_color, status_text, worktree_status, worktrees, Status, Worktree,
@@ -370,16 +371,30 @@ pub(crate) fn cmd_list(
         }
     }
 
+    // Computed above, before the pager repoints stdout at a pipe -- `stdout_tty`
+    // and the `tput` behind `term_width` both need the real terminal, not it.
+    let _pager = crate::ui::Pager::start(stdout_tty);
+
     if header {
-        let line = render_row(
-            &header_cells,
-            &cols,
-            &widths,
-            Status::Unknown,
-            false,
-            None,
-        );
-        println!("{}", paint(&line, DIM, color));
+        // Each label its own bright color, cycled, so the header reads as a row
+        // of named columns rather than one flat dim line -- the same treatment
+        // `commits`/`log` give their headers. Padded before coloring, like
+        // `render_row`, so the escapes never skew the columns.
+        let mut hue = HEADER_COLORS.iter().cycle();
+        let last = header_cells.len() - 1;
+        let mut line = String::new();
+        for (k, cell) in header_cells.iter().enumerate() {
+            if k > 0 {
+                line.push_str("  ");
+            }
+            let padded = if k == last {
+                cell.clone()
+            } else {
+                format!("{:<w$}", cell, w = widths[k])
+            };
+            line.push_str(&paint(&padded, hue.next().unwrap(), color));
+        }
+        println!("{}", line);
     }
 
     // With file blocks the listing stops being a table and becomes a series of

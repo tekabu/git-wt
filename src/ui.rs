@@ -185,9 +185,9 @@ pub(crate) const BLUE: &str = "34";
 pub(crate) const MAGENTA: &str = "35";
 
 /// Material Design 500-weight colors (256-color approximations), cycled
-/// across the commits table's header labels so each column name is its own
-/// color and the eye can jump straight to the one it wants instead of
-/// reading a flat dim row left to right.
+/// across a table's header labels so each column name is its own color and
+/// the eye can jump straight to the one it wants instead of reading a flat
+/// dim row left to right.
 pub(crate) const HEADER_COLORS: &[&str] = &[
     "1;38;5;203", // Red 500
     "1;38;5;127", // Purple 500

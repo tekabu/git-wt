@@ -98,19 +98,111 @@ const SHORT_HELP_SECTIONS: &[&str] = &[
 fn short_help() -> String {
     let mut out = String::from(SHORT_USAGE);
     out.push('\n');
+    out.push_str(&sections_text(SHORT_HELP_SECTIONS));
+    out.push_str(SHORT_FOOTER);
+    out
+}
+
+/// Pulls the named sections (by header, text before ':') out of `HELP`,
+/// verbatim, in the order `HELP` already has them.
+fn sections_text(names: &[&str]) -> String {
+    let mut out = String::new();
     let mut keep = false;
     for line in HELP.lines() {
         let is_header = !line.is_empty() && !line.starts_with(' ');
         if is_header {
             let name = line.split(':').next().unwrap_or("").trim();
-            keep = SHORT_HELP_SECTIONS.contains(&name);
+            keep = names.contains(&name);
         }
         if keep {
             out.push_str(line);
             out.push('\n');
         }
     }
-    out.push_str(SHORT_FOOTER);
+    out
+}
+
+/// Alias -> canonical verb, so `--help` after an alias still finds the
+/// right USAGE line and OPTIONS sections (both spelled with the full word).
+fn canonical_verb(v: &str) -> &str {
+    match v {
+        "ls" => "list",
+        "a" => "add",
+        "rm" => "remove",
+        "cd" => "switch",
+        "show" => "path",
+        "c" => "commits",
+        "l" => "log",
+        "m" => "merged",
+        "p" => "pull",
+        other => other,
+    }
+}
+
+/// Every word that can stand as a command verb -- checked against each
+/// token in argv to find which command `--help` is asking about.
+const VERB_WORDS: &[&str] = &[
+    "list", "ls", "add", "a", "remove", "rm", "fetch", "pull", "push", "p", "merge", "merged",
+    "m", "diff", "commits", "c", "log", "l", "meld", "switch", "cd", "path", "show", "version",
+];
+
+/// OPTIONS-table sections in `HELP` relevant to one verb -- pure flag
+/// tables, no prose, same spirit as `SHORT_HELP_SECTIONS`.
+fn verb_sections(verb: &str) -> &'static [&'static str] {
+    match verb {
+        "add" => &["ADD OPTIONS"],
+        "remove" => &["REMOVE OPTIONS"],
+        "diff" => &["DIFF OPTIONS"],
+        "commits" => &["COMMITS OPTIONS"],
+        "log" => &["COMMITS OPTIONS"],
+        "merge" => &["MERGE OPTIONS", "MERGE WORDS"],
+        "fetch" | "pull" | "push" => &["SYNC OPTIONS"],
+        _ => &[],
+    }
+}
+
+/// The USAGE line(s) for one verb, pulled out of `SHORT_USAGE`: the primary
+/// `git-wt ...` line naming it, plus any wrapped continuation lines that
+/// follow (more-indented, no `git-wt` prefix) up to the next command or a
+/// blank line.
+fn usage_snippet(verb: &str) -> String {
+    let mut out = String::new();
+    let mut lines = SHORT_USAGE.lines().peekable();
+    while let Some(line) = lines.next() {
+        let is_primary = line.trim_start().starts_with("git-wt");
+        if is_primary && line.split_whitespace().any(|w| w == verb) {
+            out.push_str(line);
+            out.push('\n');
+            while let Some(&next) = lines.peek() {
+                if next.trim().is_empty() || next.trim_start().starts_with("git-wt") {
+                    break;
+                }
+                out.push_str(next);
+                out.push('\n');
+                lines.next();
+            }
+        }
+    }
+    out
+}
+
+/// `git-wt <verb> --help`: that verb's USAGE line(s) plus its OPTIONS/prose
+/// sections, instead of the whole manual.
+fn command_help(verb: &str) -> String {
+    let canon = canonical_verb(verb);
+    let usage = usage_snippet(canon);
+    let sections = sections_text(verb_sections(canon));
+    let mut out = String::new();
+    if usage.is_empty() && sections.is_empty() {
+        out.push_str(&format!("git-wt {canon}: no extra options.\n"));
+    } else {
+        out.push_str(&usage);
+        if !sections.is_empty() {
+            out.push('\n');
+            out.push_str(&sections);
+        }
+    }
+    out.push_str("\n'git-wt --help -f' for prose and the full manual.\n");
     out
 }
 
@@ -892,6 +984,16 @@ fn run() -> Result<(), String> {
             return Ok(());
         }
         _ => {}
+    }
+
+    // `git-wt <verb> --help` (target and flags optional/anywhere around it):
+    // that verb's own help, not the whole manual. `--help`/`-h` as args[0]
+    // is already caught above, so this only fires for the trailing spelling.
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        if let Some(verb) = args.iter().find(|a| VERB_WORDS.contains(&a.as_str())) {
+            print!("{}", command_help(verb));
+            return Ok(());
+        }
     }
 
     let first = &args[0];

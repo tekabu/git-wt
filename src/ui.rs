@@ -169,6 +169,40 @@ impl Drop for Pager {
     }
 }
 
+/// Run fzf over `items` with no preview pane, returning the chosen line
+/// verbatim (whitespace-trimmed). `Ok(None)` means fzf isn't on PATH, so the
+/// caller can fall back to a numbered prompt, the same two-step `add`'s own
+/// picker already takes. An empty/aborted selection (ESC, Ctrl-C) is an
+/// error worded from `what` (e.g. "no worktree selected").
+pub(crate) fn fzf_pick_plain(items: &[String], prompt: &str, what: &str) -> Result<Option<String>, String> {
+    let mut child = match Command::new("fzf")
+        .args(["--prompt", prompt, "--height", "40%", "--reverse"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return Ok(None), // fzf not available
+    };
+
+    child
+        .stdin
+        .as_mut()
+        .ok_or("fzf: no stdin")?
+        .write_all(items.join("\n").as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(what.to_string()); // ESC / Ctrl-C in fzf
+    }
+    let sel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sel.is_empty() {
+        return Err(what.to_string());
+    }
+    Ok(Some(sel))
+}
+
 pub(crate) const CHECK: &str = "✓";
 pub(crate) const MISS: &str = "·";
 /// Not this commit, but this patch: a cherry-pick or a rebase's copy.

@@ -19,6 +19,7 @@ use crate::cli::{
 };
 use crate::cmd::add::cmd_add;
 use crate::cmd::doctor::cmd_doctor;
+use crate::cmd::list::cmd_switch;
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp, ALL_HINT};
 use crate::worktree::{current_worktree_index, repo_root, worktrees};
 
@@ -32,10 +33,12 @@ const SHORT_USAGE: &str = "\
 git-wt — worktrees in sibling directories named <repo>-<branch>
 
 USAGE:
-    git-wt                       List worktrees, numbered from 1
+    git-wt                       Interactive picker (fzf, or numbered fallback)
     git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path] [--files]
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
+    git-wt switch                Interactive picker (fzf, or numbered
+                                 fallback); cd's into the pick (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f] [-D]  Remove worktree N (-D: delete branch too)
     git-wt <N>,<M> merge         Merge M into N
@@ -67,7 +70,7 @@ USAGE:
     git-wt --help -f             Full manual: every flag, every section
 
     Aliases: ls = list, rm = remove, cd = switch, show = path,
-    a = add, c = commits, l = log, m = merged, p = pull.
+    a = add, c = commits, l = log, m = merged, p = pull, s = switch.
 
     A worktree may be named by the branch it holds instead of its number:
     'git-wt main commits', 'git-wt main,2 diff'.
@@ -135,6 +138,7 @@ fn canonical_verb(v: &str) -> &str {
         "l" => "log",
         "m" => "merged",
         "p" => "pull",
+        "s" => "switch",
         other => other,
     }
 }
@@ -143,7 +147,7 @@ fn canonical_verb(v: &str) -> &str {
 /// token in argv to find which command `--help` is asking about.
 const VERB_WORDS: &[&str] = &[
     "list", "ls", "add", "a", "remove", "rm", "fetch", "pull", "push", "p", "merge", "merged",
-    "m", "diff", "commits", "c", "log", "l", "meld", "switch", "cd", "path", "show", "version",
+    "m", "diff", "commits", "c", "log", "l", "meld", "switch", "cd", "s", "path", "show", "version",
 ];
 
 /// OPTIONS-table sections in `HELP` relevant to one verb -- pure flag
@@ -210,7 +214,7 @@ const HELP: &str = "\
 git-wt — worktrees in sibling directories named <repo>-<branch>
 
 USAGE:
-    git-wt                       List worktrees, numbered from 1
+    git-wt                       Interactive picker (fzf, or numbered fallback)
     git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path] [--files]
                                  List, optional fuzzy filter; --col picks/orders
                                  columns (1=id, 2=branch, 3=dir, 4=status,
@@ -223,6 +227,8 @@ USAGE:
                                  worktree's uncommitted files under its row.
     git-wt <N>                   == git-wt <N> switch
     git-wt <N> switch            cd into worktree N (alias: cd)
+    git-wt switch                Interactive picker (fzf, or numbered
+                                 fallback); cd's into the pick (alias: cd)
     git-wt <N> path              Print worktree N's path only (alias: show)
     git-wt <N> remove [-y] [-f] [-D]  Remove worktree N (-D: delete branch too)
     git-wt <N>,<M> merge         Merge M into N
@@ -254,7 +260,7 @@ USAGE:
     git-wt --help -f             Full manual, this (alias: --full, -hf)
 
     Aliases: ls = list, rm = remove, cd = switch, show = path,
-    a = add, c = commits, l = log, m = merged, p = pull.
+    a = add, c = commits, l = log, m = merged, p = pull, s = switch.
 
     Anywhere <N> or a <N>,<M> list appears above, a worktree may be named by
     the branch it holds instead of its number, and the two spellings mix:
@@ -271,7 +277,8 @@ GRAMMAR:
                           worktree; 'heads/<name>' forces branch over number
         <N>,<M>[,...]     Comma list, no spaces; numbers and branches mix
                           freely: '1,main,3'
-        (omitted)         Defaults to 'list', or 'fetch|pull|push --all'
+        (omitted)         Defaults to 'switch' (interactive), or
+                          'fetch|pull|push --all'
     -b/--branch LIST is not a target itself; it prepends the current
     worktree to whatever list the command already has:
         git-wt -b 1,2 commits   == git-wt <cur>,1,2 commits
@@ -913,10 +920,12 @@ DOCTOR:
     repair.
 
 STDOUT:
-    Only 'switch'/'path' (bare <N>), 'add', and 'remove' print a path, alone,
-    on stdout, so a shell can cd into it or capture it. Status goes to stderr.
+    Only 'switch'/'path' (bare <N>), bare 'switch'/'cd', 'add', and 'remove'
+    print a path, alone, on stdout, so a shell can cd into it or capture it.
+    Status (and, for bare 'switch', the picker prompt) goes to stderr.
 
         cd \"$(git-wt 1 path)\"
+        cd \"$(git-wt switch)\"
         dir=\"$(git-wt add feature/login)\"
 
 COLOR:
@@ -959,7 +968,7 @@ fn run() -> Result<(), String> {
     match args.first().map(String::as_str) {
         None => {
             let root = repo_root()?;
-            return list_from_args(&root, &[]);
+            return cmd_switch(&root);
         }
         // A leading list flag with no `list` word: `git-wt --col 1,2`.
         Some("--col") | Some("-c") | Some("--files") | Some("-f") | Some("--search") => {
@@ -1001,6 +1010,19 @@ fn run() -> Result<(), String> {
     if first == "list" || first == "ls" {
         let root = repo_root()?;
         return list_from_args(&root, &args[1..]);
+    }
+
+    // Bare `switch`/`cd`/`s`, no target: the interactive picker, since a
+    // target's own `<N> switch`/`<N> cd`/`<N> s` already means "this one, no
+    // picking needed".
+    if (first == "switch" || first == "cd" || first == "s") && args.len() == 1 {
+        let root = repo_root()?;
+        if first == "s" {
+            if let Ok(trees) = worktrees(&root) {
+                warn_if_alias_shadows_branch(&trees, "s", "switch");
+            }
+        }
+        return cmd_switch(&root);
     }
 
     if first == "doctor" {

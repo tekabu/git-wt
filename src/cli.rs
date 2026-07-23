@@ -41,7 +41,7 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
 
     let action = rest.first().map(String::as_str).unwrap_or("switch");
     match action {
-        "switch" | "cd" | "path" | "show" => {
+        "switch" | "cd" | "s" | "path" | "show" => {
             if rest.len() > 1 {
                 return Err("too many arguments\nTry 'git-wt --help'".into());
             }
@@ -185,7 +185,7 @@ pub(crate) fn dispatch_target(root: &Path, n: usize, rest: &[String]) -> Result<
         )),
         other => Err(format!(
             "unknown action '{other}' (switch, path, remove, diff, commits, log, merge, meld, \
-             merged, fetch, pull, push; aliases: c=commits, l=log, m=merged, p=pull)"
+             merged, fetch, pull, push; aliases: c=commits, l=log, m=merged, p=pull, s=switch)"
         )),
     }
 }

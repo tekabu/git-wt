@@ -40,17 +40,19 @@ gitwt_write_alias() {
        s==0{print}' "$rc" > "$tmp"
 
   # Wrapper for the target-first grammar. Two names, one behavioral difference:
-  # cd. For `<N>` with switch/cd (or nothing) it cd's into the worktree; for
-  # `<N> remove` it cd's back to the main worktree git prints; path/show and every
-  # non-target verb (list/add/help/...) pass straight through, printing only. A
-  # declined prompt or an error prints nothing, so the guard skips the cd.
+  # cd. For `<N>` with switch/cd (or nothing) it cd's into the worktree; bare
+  # (no args) or bare switch/cd/s runs the interactive picker and cd's into
+  # the pick; for `<N> remove` it cd's back to the main worktree git prints;
+  # path/show and every other non-target verb (list/add/help/...) pass
+  # straight through, printing only. A declined prompt or an error prints
+  # nothing, so the guard skips the cd.
   cat >> "$tmp" <<EOF
 
 # >>> git-wt alias >>>
 # Managed by git-wt; edits here are overwritten on reinstall.
 $alias_name() {
   case "\${1:-}" in
-    ""|-h|--help|-V|--version|version|help|list|ls)
+    -h|--help|-V|--version|version|help|list|ls)
       git-wt "\$@"; return \$? ;;
     add|a)
       # Create, then cd into the new worktree — unless --stay was passed.
@@ -66,6 +68,12 @@ $alias_name() {
       local d; d="\$(git-wt "\$@")" || return \$?
       [ -n "\$d" ] && cd "\$d"
       return 0 ;;
+    ""|switch|cd|s)
+      # No args, or bare switch/cd/s: the interactive picker. Its prompts
+      # live on stderr, so they still show through the \$(...) capture below.
+      local d; d="\$(git-wt "\$@")" || return \$?
+      [ -n "\$d" ] && cd "\$d"
+      return 0 ;;
   esac
   # A leading token that is not a numeric target index (e.g. an unknown verb
   # or a stray flag) passes straight through, so git-wt prints its own error
@@ -75,7 +83,7 @@ $alias_name() {
   esac
   # <N> [action]: switch (default) & remove cd the shell; path/show print.
   case "\${2:-}" in
-    ""|switch|cd)
+    ""|switch|cd|s)
       local d; d="\$(git-wt "\$1" path)" || return \$?
       [ -n "\$d" ] && cd "\$d" ;;
     remove|rm)

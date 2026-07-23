@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 use crate::git::git_stdout;
+use crate::cli::check_index;
 use crate::cmd::commits::rows::{file_stat_lines, parse_numstat_z, sort_file_stats, FileStat};
 use crate::cmd::merged::{merged_text, merged_text_at};
 use crate::ui::{
-    color_enabled, ellipsize, paint, paint_matches, term_width, BRANCH_MIN, DIM, HEADER_COLORS,
-    SEARCH_MATCH,
+    color_enabled, ellipsize, fzf_pick_plain, paint, paint_matches, term_width, BRANCH_MIN, DIM,
+    HEADER_COLORS, SEARCH_MATCH,
 };
 use crate::worktree::{
     current_ref, label, status_color, status_text, worktree_status, worktrees, Status, Worktree,
@@ -423,6 +424,86 @@ pub(crate) fn cmd_list(
         }
     }
     Ok(())
+}
+
+/// Interactive `switch`: pick a worktree with fzf's arrow-key/type-to-filter
+/// list, falling back to a numbered prompt when fzf isn't installed -- the
+/// same two-step `add`'s own branch picker already takes. Only the picked
+/// path goes to stdout, so the shell wrapper's `cd "$(git-wt switch)"` stays
+/// clean; the branch, like `<N> switch`, is status and goes to stderr.
+pub(crate) fn cmd_switch(root: &Path) -> Result<(), String> {
+    let trees = worktrees(root)?;
+    if trees.is_empty() {
+        return Err("no worktrees (see 'git-wt list')".into());
+    }
+
+    // Each line leads with its 1-based number so the selection maps straight
+    // back to an index, whichever picker made it and however branch names
+    // collide (a detached worktree has none at all).
+    let numw = trees.len().to_string().len();
+    let bw = trees.iter().map(|w| label(w).chars().count()).max().unwrap_or(0);
+    let items: Vec<String> = trees
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            format!(
+                "{:>numw$}  {:<bw$}  {}",
+                i + 1,
+                label(w),
+                w.path.display(),
+                numw = numw,
+                bw = bw
+            )
+        })
+        .collect();
+
+    let sel = match fzf_pick_plain(&items, "worktree> ", "no worktree selected")? {
+        Some(s) => s,
+        None => number_pick_worktree(&trees)?,
+    };
+    let n: usize = sel
+        .split_whitespace()
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or("no worktree selected")?;
+    let idx = check_index(n, trees.len())?;
+
+    eprintln!("{}", label(&trees[idx]));
+    println!("{}", trees[idx].path.display());
+    Ok(())
+}
+
+/// Numbered fallback for `cmd_switch`, in the same shape as `add`'s own
+/// `number_pick`: the list on stderr, a number read from stdin. Returns just
+/// the typed number, which `cmd_switch` parses the same way it would parse
+/// fzf's picked line (that line also leads with the number).
+fn number_pick_worktree(trees: &[Worktree]) -> Result<String, String> {
+    let color = color_enabled(std::io::stderr().is_terminal());
+    eprintln!("Worktrees:");
+    let numw = trees.len().to_string().len();
+    let bw = trees.iter().map(|w| label(w).chars().count()).max().unwrap_or(0);
+    for (i, w) in trees.iter().enumerate() {
+        eprintln!(
+            "  {:>numw$}  {:<bw$}  {}",
+            i + 1,
+            label(w),
+            paint(&w.path.display().to_string(), DIM, color),
+            numw = numw,
+            bw = bw
+        );
+    }
+    eprint!("Pick a number (Enter to cancel): ");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    let n = std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("no worktree selected".into());
+    }
+    let s = line.trim();
+    if s.is_empty() {
+        return Err("no worktree selected".into());
+    }
+    Ok(s.to_string())
 }
 
 /// Text for the "push" (col 9) and "pull" (col 10) columns: how far the

@@ -4,9 +4,7 @@ use std::process::Stdio;
 
 use crate::cmd::commits::args::{DateFmt, Order};
 use crate::git::{git_cmd, git_stdout};
-use crate::ui::{
-    width_bound, BLUE, CHECK, DIM, EQUIV, FINGERPRINT, GREEN, MAGENTA, MISS, TRAILER, YELLOW,
-};
+use crate::ui::{width_bound, CHECK, EQUIV, FINGERPRINT, MISS, TRAILER};
 
 /// One table row: a commit, its short name, who wrote it when, and its subject.
 #[derive(Clone)]
@@ -921,17 +919,6 @@ impl Mark {
             Mark::Trailer => TRAILER,
             Mark::AuthorMatch => FINGERPRINT,
             Mark::Missing => MISS,
-        }
-    }
-
-    pub(crate) fn color(self) -> &'static str {
-        match self {
-            Mark::Has => GREEN,
-            // Yellow: present, but not as the commit in this row.
-            Mark::Equivalent => YELLOW,
-            Mark::Trailer => BLUE,
-            Mark::AuthorMatch => MAGENTA,
-            Mark::Missing => DIM,
         }
     }
 }

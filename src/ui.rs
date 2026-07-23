@@ -11,32 +11,6 @@ pub(crate) const GREEN: &str = "32";
 pub(crate) const YELLOW: &str = "33";
 pub(crate) const RED: &str = "31";
 pub(crate) const DIM: &str = "2";
-/// The cell a filter acted on: amber, bold.
-///
-/// Yellow is the right family -- it is the warmest thing on a dark terminal and
-/// the first color the eye finds -- but plain yellow is spent on '≈'. So this is
-/// a step over into amber (256-color 214), which reads as the same family
-/// without being the same color, and is bold so it carries on a light
-/// background too. Terminals that cannot do 256 colors fall back to their
-/// nearest yellow, which is exactly the right failure.
-pub(crate) const MATCH: &str = "1;38;5;214";
-
-/// `list`'s search highlight: bold, 256-color 33, Material Blue 500 -- a
-/// different family from `MATCH`'s amber so the two searches (this one over
-/// worktrees, that one over commit text) never read as the same feature.
-pub(crate) const SEARCH_MATCH: &str = "1;38;5;33";
-
-/// `--search`'s palette for `commits`/`log`, cycled one color per `|`-joined
-/// term so `--search merge|only` reads as two questions, not one wider net.
-/// `SEARCH_MATCH` leads it, so a single term looks exactly as it always has.
-pub(crate) const SEARCH_COLORS: &[&str] = &[
-    SEARCH_MATCH,   // Blue 500
-    "1;38;5;46",    // Green 500
-    "1;38;5;213",   // Pink 400
-    "1;38;5;208",   // Orange 500
-    "1;38;5;93",    // Deep Purple A700
-    "1;38;5;51",    // Cyan 500
-];
 
 /// Split `--search`'s raw term on `|` into the words it names, trimmed,
 /// case-folded, and with the empties dropped -- `--search a||b` and
@@ -183,19 +157,6 @@ pub(crate) const ELLIPSIS: char = '…';
 pub(crate) const BLUE: &str = "34";
 /// ANSI magenta.
 pub(crate) const MAGENTA: &str = "35";
-
-/// Material Design 500-weight colors (256-color approximations), cycled
-/// across the commits table's header labels so each column name is its own
-/// color and the eye can jump straight to the one it wants instead of
-/// reading a flat dim row left to right.
-pub(crate) const HEADER_COLORS: &[&str] = &[
-    "1;38;5;203", // Red 500
-    "1;38;5;127", // Purple 500
-    "1;38;5;33",  // Blue 500
-    "1;38;5;30",  // Teal 500
-    "1;38;5;71",  // Green 500
-    "1;38;5;208", // Orange 500
-];
 
 /// The header over `--pick-id`'s shas.
 pub(crate) const PICK_HEAD: &str = "pick";
@@ -385,98 +346,6 @@ pub(crate) fn confirm(prompt: &str) -> Result<bool, String> {
 // Text matching
 // ---------------------------------------------------------------------------
 
-/// Paint every case-folded occurrence of `needle` in `s` with `code`, leaving
-/// the rest of the string under `base`.
-///
-/// Widths are measured on the plain text and color applied after -- the rule
-/// the table already follows -- so a highlight never shifts a column. `base`
-/// exists because a file block is already dim: the RESET that ends a highlight
-/// would otherwise drop the rest of the line out of dim, and the block would
-/// brighten from its first match onward.
-///
-/// The search runs on a lowercased copy but the offsets are mapped back, so
-/// what prints keeps the case it was written in -- lowercasing can change a
-/// string's byte length, and assuming it does not would slice mid-character.
-#[cfg(test)]
-pub(crate) fn paint_matches(s: &str, needle: &str, code: &str, base: &str, on: bool) -> String {
-    paint_layers(s, &[(needle, code)], base, on)
-}
-
-/// Every case-folded byte-range of `needle` in `s`, mapped back to real
-/// offsets so a folding that changes length never returns a range that lands
-/// mid-character.
-fn find_matches(s: &str, needle: &str) -> Vec<(usize, usize)> {
-    if needle.is_empty() {
-        return Vec::new();
-    }
-    // Where each byte of the lowercased copy came from, plus the end, so both
-    // bounds of a match always map back to a real offset in `s`.
-    let mut lower = String::with_capacity(s.len());
-    let mut origin: Vec<usize> = Vec::with_capacity(s.len() + 1);
-    for (i, c) in s.char_indices() {
-        for l in c.to_lowercase() {
-            lower.push(l);
-            origin.resize(lower.len(), i);
-        }
-    }
-    origin.push(s.len());
-
-    let needle = needle.to_lowercase();
-    let mut out = Vec::new();
-    let mut cut = 0;
-    let mut from = 0;
-    while let Some(rel) = lower[from..].find(&needle) {
-        let (lo, hi) = (from + rel, from + rel + needle.len());
-        let (start, end) = (origin[lo], origin[hi]);
-        // A folding that changes length can put a bound inside a character.
-        // Skip such a match rather than slice one in half.
-        if start >= cut && s.is_char_boundary(start) && s.is_char_boundary(end) {
-            out.push((start, end));
-            cut = end;
-        }
-        from = hi.max(lo + 1);
-    }
-    out
-}
-
-/// Paint `s` under `base`, then light every match from each `(needle, code)`
-/// layer in turn -- a later layer wins wherever it overlaps an earlier one, so
-/// two searches over the same text (say, a filter's term and `--search`'s)
-/// both show, with the later one taking the more specific spans.
-///
-/// Every match range starts and ends on a char boundary (`find_matches`
-/// guarantees it), so every layer's boundaries do too, and slicing at any of
-/// them is always safe.
-pub(crate) fn paint_layers(s: &str, layers: &[(&str, &str)], base: &str, on: bool) -> String {
-    let tint = |t: &str| if base.is_empty() { t.to_string() } else { paint(t, base, on) };
-    if !on {
-        return tint(s);
-    }
-    let mut mark: Vec<Option<&str>> = vec![None; s.len()];
-    for (needle, code) in layers {
-        for (start, end) in find_matches(s, needle) {
-            for m in &mut mark[start..end] {
-                *m = Some(code);
-            }
-        }
-    }
-    let mut out = String::new();
-    let mut i = 0;
-    while i < s.len() {
-        let cur = mark[i];
-        let mut j = i + 1;
-        while j < s.len() && mark[j] == cur {
-            j += 1;
-        }
-        out.push_str(&match cur {
-            Some(code) => paint(&s[i..j], code, on),
-            None => tint(&s[i..j]),
-        });
-        i = j;
-    }
-    out
-}
-
 /// True when every char of `needle` appears in `hay`, in order.
 pub(crate) fn is_subseq(hay: &str, needle: &str) -> bool {
     let mut chars = hay.chars();
@@ -594,54 +463,6 @@ mod tests {
         }
     }
 
-
-    #[test]
-    fn paint_matches_lights_every_hit_and_nothing_else() {
-        let amber = |s: &str, n: &str| paint_matches(s, n, MATCH, "", true);
-        // Color off is the plain string, whatever matched.
-        assert_eq!(paint_matches("fix: the thing", "the", MATCH, "", false), "fix: the thing");
-        // No match, and an empty needle, both leave the string alone -- an
-        // empty needle matches at every position, which would paint nothing
-        // and everything at once.
-        assert_eq!(amber("fix: the thing", "zzz"), "fix: the thing");
-        assert_eq!(amber("fix: the thing", ""), "fix: the thing");
-        // The match is wrapped and the rest is untouched.
-        assert_eq!(amber("a fix b", "fix"), format!("a \x1b[{MATCH}mfix\x1b[0m b"));
-        // Every occurrence, not just the first.
-        assert_eq!(amber("fix fix", "fix").matches("\x1b[0m").count(), 2);
-        // Case-folded, and the original case is what prints.
-        assert_eq!(amber("FIX it", "fix"), format!("\x1b[{MATCH}mFIX\x1b[0m it"));
-        // Either end of the string, where an off-by-one would panic or drop text.
-        assert_eq!(amber("fix", "fix"), format!("\x1b[{MATCH}mfix\x1b[0m"));
-        assert_eq!(amber("a fix", "fix"), format!("a \x1b[{MATCH}mfix\x1b[0m"));
-        // Multi-byte text must not be sliced mid-character.
-        assert!(amber("héllo wörld", "wörld").contains("wörld"));
-        assert!(amber("日本語のコミット", "コミット").contains("コミット"));
-        // Painting never loses a character: strip the escapes and it is the
-        // string that went in.
-        for (hay, needle) in [("fix: héllo", "héllo"), ("🚀 fix 🚀", "fix"), ("aaa", "a")] {
-            let plain = amber(hay, needle)
-                .replace(&format!("\x1b[{MATCH}m"), "")
-                .replace("\x1b[0m", "");
-            assert_eq!(plain, hay, "{hay:?} / {needle:?}");
-        }
-    }
-
-    #[test]
-    fn paint_matches_keeps_the_rest_of_a_dim_line_dim() {
-        // A file block is dim before it is highlighted, so the text after a
-        // match has to be put back under DIM -- the highlight's RESET ends the
-        // dim as well as the amber.
-        let out = paint_matches("\tM  src/ui.rs  +1  -0", "ui.rs", MATCH, DIM, true);
-        let tail = &out[out.rfind("\x1b[0m").unwrap()..];
-        assert!(out.matches(&format!("\x1b[{DIM}m")).count() >= 2, "{out:?}");
-        assert!(tail.starts_with("\x1b[0m"), "{out:?}");
-        // And with color off it is the bare line, no escapes at all.
-        assert_eq!(
-            paint_matches("\tM  src/ui.rs", "ui.rs", MATCH, DIM, false),
-            "\tM  src/ui.rs"
-        );
-    }
 
     #[test]
     fn subseq_matches_in_order() {

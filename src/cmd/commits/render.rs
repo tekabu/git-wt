@@ -3,10 +3,13 @@ use std::collections::{HashMap, HashSet};
 use crate::cmd::commits::args::{BranchWidth, SubjectWidth, Wrap};
 use crate::cmd::commits::rows::{consolidate_file_stats, file_stat_lines, CommitRow, FileStat, Mark};
 use crate::ui::{
-    abbrev, ellipsize, paint, paint_layers, wrap_wide, AUTHOR_MAX, BLUE, BRANCH_HEAD_MAX, CHECK,
-    DIM, EQUIV, FINGERPRINT, GREEN, HEADER_COLORS, MAGENTA, MATCH, MIN_TEXTW, MISS, PICK_HEAD,
-    SEARCH_COLORS, TRAILER, YELLOW,
+    abbrev, ellipsize, paint, wrap_wide, AUTHOR_MAX, BLUE, BRANCH_HEAD_MAX, CHECK, DIM, EQUIV,
+    FINGERPRINT, GREEN, MAGENTA, MIN_TEXTW, MISS, PICK_HEAD, TRAILER, YELLOW,
 };
+use stanza::renderer::console::Console;
+use stanza::renderer::Renderer;
+use stanza::style::{Bold, HAlign, Header, MaxWidth, MinWidth, Palette16, Styles, TextFg};
+use stanza::table::{Cell, Col, Row, Table};
 
 /// Which cells a filter acted on, so the eye can find them in a long table.
 ///
@@ -26,63 +29,80 @@ pub(crate) struct Highlight {
     /// Lowercased terms, or None when the filter was not asked for.
     pub(crate) message: Option<String>,
     pub(crate) file: Option<String>,
-    /// `--search`'s `|`-split terms, lowercased, each its own `SEARCH_COLORS`
-    /// hue in order. Highlight only -- unlike every other field here it names
-    /// nothing a row was kept or dropped for, so it is lit wherever it sits:
-    /// sha, author, date, subject, file paths.
+    /// `--search`'s `|`-split terms, lowercased. Highlight only -- unlike every
+    /// other field here it names nothing a row was kept or dropped for, so it
+    /// is lit wherever it sits: sha, author, date, subject, file paths.
+    ///
+    /// Stanza colors a cell, not a character, so a hit no longer picks out its
+    /// own span within the text -- it tints the whole cell one accent instead.
     pub(crate) search: Vec<String>,
 }
 
-/// `--search`'s terms as `paint_layers` layers, one `SEARCH_COLORS` hue each,
-/// cycled if there are more terms than colors. Shared with `log`'s renderer,
-/// which reuses this `Highlight` outright rather than keeping its own copy.
-pub(crate) fn search_layers(hl: &Highlight) -> Vec<(&str, &str)> {
-    hl.search
+/// Does `text` contain any of `hl.search`'s terms, or `term`, case-insensitively?
+fn hits(text: &str, hl: &Highlight, term: Option<&str>) -> bool {
+    let text = text.to_lowercase();
+    term.is_some_and(|t| !t.is_empty() && text.contains(&t.to_lowercase()))
+        || hl.search.iter().any(|t| !t.is_empty() && text.contains(&t.to_lowercase()))
+}
+
+/// The one accent every search/filter hit shares -- bold bright blue, the same
+/// hue `list --search` uses, so a hit reads the same way in every table.
+const HIT: Palette16 = Palette16::BrightBlue;
+
+/// The header row's per-column hues -- the same six `list`'s header cycles,
+/// so every migrated table's header reads the same way.
+const HEADER_HUES: [Palette16; 6] = [
+    Palette16::BrightRed,
+    Palette16::BrightMagenta,
+    Palette16::BrightBlue,
+    Palette16::BrightCyan,
+    Palette16::BrightGreen,
+    Palette16::BrightYellow,
+];
+
+/// Stanza foreground for a mark glyph, or None for `Missing` -- Stanza's
+/// 16-color palette has no dim/gray, so a miss just stays the terminal's
+/// default rather than fighting for a hue that isn't there.
+pub(crate) fn mark_fg(m: Mark) -> Option<Palette16> {
+    match m {
+        Mark::Has => Some(Palette16::Green),
+        Mark::Equivalent => Some(Palette16::Yellow),
+        Mark::Trailer => Some(Palette16::Blue),
+        Mark::AuthorMatch => Some(Palette16::Magenta),
+        Mark::Missing => None,
+    }
+}
+
+/// One space of padding on each side, baked into the cell content itself --
+/// see the comment on `list`'s `pad_cell`. `lines` may be more than one: a
+/// wrapped subject is still one cell, each of its lines padded the same way
+/// and joined back with the newlines Stanza's own wrapper already respects.
+fn pad_lines(lines: &[String], width: usize) -> String {
+    lines
         .iter()
-        .enumerate()
-        .map(|(i, t)| (t.as_str(), SEARCH_COLORS[i % SEARCH_COLORS.len()]))
-        .collect()
+        .map(|l| format!(" {l:width$} "))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-/// Light a --message and/or --search match where either sits in a subject
-/// line. `--search`'s layers are painted last, so where a term overlaps
-/// --message's it is what wins -- see `paint_layers`.
-///
-/// A --message term may be in the body instead, in which case nothing here
-/// matches and the body block below the row is what shows it.
-fn hl_text(line: &str, hl: &Highlight, color: bool) -> String {
-    let mut layers: Vec<(&str, &str)> = hl.message.as_deref().map(|t| (t, MATCH)).into_iter().collect();
-    layers.extend(search_layers(hl));
-    if layers.is_empty() {
-        line.to_string()
-    } else {
-        paint_layers(line, &layers, "", color)
-    }
+fn pad_cell(s: &str, width: usize) -> String {
+    format!(" {s:width$} ")
 }
 
-/// Light every --search match in a cell that otherwise gets a flat `base`
-/// tint (or none, for `base` == ""). Every non-subject cell uses this:
-/// `--search` is the one field here that never changes which rows print,
-/// only where the eye lands on the ones that do.
-fn hl_cell(cell: &str, hl: &Highlight, base: &str, color: bool) -> String {
-    let layers = search_layers(hl);
-    if layers.is_empty() {
-        if base.is_empty() { cell.to_string() } else { paint(cell, base, color) }
-    } else {
-        paint_layers(cell, &layers, base, color)
-    }
+fn fixed_col(width: usize, align: HAlign) -> Col {
+    Col::new(
+        Styles::default()
+            .with(MinWidth(width + 2))
+            .with(MaxWidth(width + 2))
+            .with(align),
+    )
 }
 
 /// Print the table: sha, author, date, a mark per branch, then the subject.
 ///
 /// The subject comes last because it is the only cell holding arbitrary text.
-/// Padding a cell means knowing its rendered width, and an emoji subject is
-/// wider than its `chars().count()` -- so a padded subject column shifts every
-/// column after it, which is precisely the table failing to line up. Last, it
-/// is never padded, and no width table is needed to keep the marks straight.
-///
-/// Widths are measured on the plain text and color applied after, so the ANSI
-/// escapes never skew the columns either.
+/// Stanza wraps and pads it itself, so an emoji-widened subject can no longer
+/// throw off a column the way it could when this table padded cells by hand.
 pub(crate) fn render_commits(
     rows: &[CommitRow],
     row_files: &[Vec<FileStat>],
@@ -113,7 +133,7 @@ pub(crate) fn render_commits(
     let names: Vec<String> = names.iter().map(|n| ellipsize(n, cap)).collect();
     let names = &names;
     let widths: Vec<usize> = names.iter().map(|n| n.chars().count().max(1)).collect();
-    let marksw: usize = widths.iter().map(|w| w + 2).sum();
+    let marksw: usize = widths.iter().map(|w| w + 2 + 2).sum();
 
     let shaw = rows
         .iter()
@@ -126,7 +146,7 @@ pub(crate) fn render_commits(
     // the two columns read as the one kind of thing they are -- and so a sha
     // named here is a sha you can find in the commit column of another row.
     let pickw = picks.map(|_| shaw.max(PICK_HEAD.len()));
-    let pickcol = pickw.map_or(0, |w| w + 2);
+    let pickcol = pickw.map_or(0, |w| w + 2 + 2);
 
     // The author column is sized to its longest name, but a name is not worth
     // unbounded width when the subject is competing for the same line; on a
@@ -150,30 +170,49 @@ pub(crate) fn render_commits(
         .max()
         .unwrap_or(0);
 
-    // Everything left of the subject, which is both what the subject has to
-    // fit beside and what a wrapped line is indented past to line up under it.
-    let fixed = shaw + 2 + pickcol + authw + 2 + datew + marksw + 2;
+    // Everything left of the subject -- used only to size it, since Stanza now
+    // owns every column's actual position.
+    let fixed = shaw + 2 + 2 + pickcol + authw + 2 + 2 + datew + 2 + 2 + marksw + 2 + 2;
 
     // What the subject gets. A width asked for is the width, terminal or not:
     // an explicit one is an answer, where the terminal's is only a default --
     // so '--subject-width 100' on an 80-column terminal runs the line past the
     // edge on purpose, and off a terminal it cuts where nothing was cut before.
+    // File and body lines now live in the subject column too -- see the loop
+    // below -- so an unbudgeted (piped, no terminal) table widens to fit their
+    // longest line as well, the same "never cut off a terminal" rule the
+    // subject itself gets. A budgeted (terminal) table leaves them to be
+    // ellipsized instead, same as a long branch or path name elsewhere.
+    let extra_lines_max = row_files
+        .iter()
+        .flat_map(|f| file_stat_lines(f))
+        .chain(row_bodies.iter().flat_map(|(l, _)| l.iter().cloned()))
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
+
     let textw = match subjectw {
-        Some(SubjectWidth::Cols(n)) => Some(n),
-        Some(SubjectWidth::Full) => None,
+        Some(SubjectWidth::Cols(n)) => n,
+        Some(SubjectWidth::Full) => rows.iter().map(|r| r.text.chars().count()).max().unwrap_or(MIN_TEXTW).max(MIN_TEXTW),
         // Only the tail is budgeted, and only to keep a long subject from
         // wrapping where it was not asked to; piped output has no terminal to
         // fit, so it is never cut and never wrapped.
-        None => width.map(|w| w.saturating_sub(fixed).max(MIN_TEXTW)),
+        None => match width {
+            Some(w) => w.saturating_sub(fixed).max(MIN_TEXTW),
+            None => rows
+                .iter()
+                .map(|r| r.text.chars().count())
+                .chain(std::iter::once(extra_lines_max))
+                .max()
+                .unwrap_or(MIN_TEXTW)
+                .max(MIN_TEXTW),
+        },
     };
 
     let rows: Vec<(CommitRow, Vec<String>)> = rows
         .iter()
         .map(|r| {
-            let text = match textw {
-                Some(tw) => wrap_wide(&r.text, tw, wrap.lines()),
-                None => vec![r.text.clone()],
-            };
+            let text = wrap_wide(&r.text, textw, wrap.lines());
             let row = CommitRow {
                 sha: r.sha.clone(),
                 short: r.short.clone(),
@@ -191,12 +230,8 @@ pub(crate) fn render_commits(
         .collect();
     let rows = &rows;
 
-    // The date is right-aligned so the years line up under --date-human, where
-    // an unpadded day makes 'Jan. 1, 2026' a character shorter than
-    // 'Sep. 15, 2026'; left-aligned, that ragged edge is the first thing you
-    // see. ISO is one width, so the alignment is moot there -- and free.
-    // Legend above the header: the marks are the point of the table and the
-    // '≈'/'·' distinction is not self-evident, so name each glyph once up top.
+    // Legend above the table: the marks are the point of it and the '≈'/'·'
+    // distinction is not self-evident, so name each glyph once up top.
     // '≈' is named only when it can appear: --no-cherry skips the patch-id walk
     // and leaves every equivalence set empty, so advertising the glyph there
     // promises a mark the table can never carry.
@@ -259,47 +294,87 @@ pub(crate) fn render_commits(
         }
     }
 
-    // Each label its own bright color, cycled, so the header reads as a row of
-    // named columns rather than one flat dim line -- padded before coloring,
-    // as everywhere else, so the escapes never skew the columns.
-    let mut hue = HEADER_COLORS.iter().cycle();
-    let mut next_hue = || hue.next().unwrap();
-    let mut head = paint(&format!("{:<shaw$}", "commit"), next_hue(), color);
-    head.push_str("  ");
+    // Columns: commit, [pick], author, date, one per branch mark, subject.
+    let mut table_cols = vec![fixed_col(shaw, HAlign::Left)];
     if let Some(w) = pickw {
-        head.push_str(&paint(&format!("{PICK_HEAD:<w$}"), next_hue(), color));
-        head.push_str("  ");
+        table_cols.push(fixed_col(w, HAlign::Left));
     }
-    head.push_str(&paint(&format!("{:<authw$}", "author"), next_hue(), color));
-    head.push_str("  ");
-    head.push_str(&paint(&format!("{:>datew$}", "date"), next_hue(), color));
-    for (n, w) in names.iter().zip(&widths) {
-        head.push_str("  ");
-        head.push_str(&paint(&format!("{n:<w$}"), next_hue(), color));
+    table_cols.push(fixed_col(authw, HAlign::Left));
+    table_cols.push(fixed_col(datew, HAlign::Right));
+    for w in &widths {
+        table_cols.push(fixed_col(*w, HAlign::Centred));
     }
-    head.push_str("  ");
-    head.push_str(&paint("subject", next_hue(), color));
-    println!("{}", head);
+    table_cols.push(
+        Col::new(
+            Styles::default()
+                .with(MinWidth(textw + 2))
+                .with(MaxWidth(textw + 2)),
+        ),
+    );
 
-    // With file blocks the table becomes a series of groups, so every commit is
-    // fenced off by a blank line -- including one whose block is empty, which
-    // would otherwise huddle against the block above and read as part of it.
-    // Under --squash the per-commit blocks are gone -- one consolidated block
-    // prints below the whole table instead -- so the rows are not fenced by
-    // them. A --message body block still groups them, squash or no.
-    let grouped = (!squash && row_files.iter().any(|f| !f.is_empty()))
-        || row_bodies.iter().any(|(lines, _)| !lines.is_empty());
+    let mut hue = HEADER_HUES.iter().cycle();
+    let mut next_hue = || {
+        let h = hue.next().unwrap().clone();
+        if color {
+            Styles::default().with(TextFg(h))
+        } else {
+            Styles::default()
+        }
+    };
+    let mut header_cells = vec![Cell::new(next_hue(), pad_cell("commit", shaw).into())];
+    if let Some(w) = pickw {
+        header_cells.push(Cell::new(next_hue(), pad_cell(PICK_HEAD, w).into()));
+    }
+    header_cells.push(Cell::new(next_hue(), pad_cell("author", authw).into()));
+    header_cells.push(Cell::new(next_hue(), pad_cell("date", datew).into()));
+    for (n, w) in names.iter().zip(&widths) {
+        header_cells.push(Cell::new(next_hue(), pad_cell(n, *w).into()));
+    }
+    header_cells.push(Cell::new(next_hue(), pad_cell("subject", textw).into()));
+    let mut table_rows = vec![Row::new(Styles::default().with(Header(true)), header_cells)];
+
+    // A supplementary line (a matched body line, a touched file) that belongs
+    // to the row above it rather than being a commit of its own: every column
+    // but the subject stays blank, so it reads as an indented continuation of
+    // that row instead of a row in its own right.
+    let blank_lead = |cells: &mut Vec<Cell>| {
+        cells.push(Cell::new(Styles::default(), pad_cell("", shaw).into()));
+        if let Some(w) = pickw {
+            cells.push(Cell::new(Styles::default(), pad_cell("", w).into()));
+        }
+        cells.push(Cell::new(Styles::default(), pad_cell("", authw).into()));
+        cells.push(Cell::new(Styles::default(), pad_cell("", datew).into()));
+        for w in &widths {
+            cells.push(Cell::new(Styles::default(), pad_cell("", *w).into()));
+        }
+    };
+    let push_extra_line = |table_rows: &mut Vec<Row>, text: &str, fg: Option<Palette16>| {
+        let mut cells = Vec::new();
+        blank_lead(&mut cells);
+        let content = format!("  {}", ellipsize(text, textw.saturating_sub(2)));
+        cells.push(Cell::new(fg_style(fg), pad_cell(&content, textw).into()));
+        table_rows.push(Row::new(Styles::default(), cells));
+    };
 
     for (i, (row, text)) in rows.iter().enumerate() {
-        if grouped && i > 0 {
-            println!();
-        }
         // A sha the filter named outright, or the anchor a bound was measured
         // from: the one row in the table that is not merely on the right side
         // of the answer, but is the answer.
         let anchored = hl.shas.contains(&row.sha);
-        let sha_cell = format!("{:<shaw$}  ", row.short);
-        let mut line = hl_cell(&sha_cell, hl, if anchored { MATCH } else { "" }, color);
+        let sha_fg = if !color {
+            None
+        } else if hits(&row.short, hl, None) {
+            Some(HIT)
+        } else if anchored {
+            Some(Palette16::BrightYellow)
+        } else {
+            None
+        };
+        let mut cells = vec![Cell::new(
+            fg_style(sha_fg),
+            pad_cell(&row.short, shaw).into(),
+        )];
+
         if let Some(w) = pickw {
             // Blank, not '·': the column names a sha or it has nothing to say,
             // where the marks' '·' is an answer about a branch.
@@ -307,107 +382,133 @@ pub(crate) fn render_commits(
                 .and_then(|p| p.get(&row.sha))
                 .map(|s| abbrev(s, shaw))
                 .unwrap_or_default();
-            // Yellow, like the '≈' it explains.
-            line.push_str(&hl_cell(&format!("{cell:<w$}"), hl, YELLOW, color));
-            line.push_str("  ");
-        }
-        // Dim, so the marks and the subject stay what the eye lands on -- unless
-        // a filter read this cell, in which case it is exactly what the eye came
-        // for. Padded before coloring, so the escapes never skew the column.
-        let author_cell = format!("{:<authw$}", row.author);
-        let date_cell = format!("{:>datew$}", row.date);
-        let dim_or = |cell: &str, lit: bool| hl_cell(cell, hl, if lit { MATCH } else { DIM }, color);
-        line.push_str(&dim_or(&author_cell, hl.author));
-        line.push_str("  ");
-        line.push_str(&dim_or(&date_cell, hl.date));
-        for (col, w) in widths.iter().enumerate() {
-            let mark = Mark::of(
-                &row.sha,
-                &sets[col],
-                &equiv[col],
-                &trailer[col],
-                &author_match[col],
-            );
-            // Center the one-cell mark under its header.
-            let pad = (w - 1) / 2;
-            line.push_str("  ");
-            line.push_str(&" ".repeat(pad));
-            line.push_str(&paint(mark.glyph(), mark.color(), color));
-            line.push_str(&" ".repeat(w - 1 - pad));
-        }
-        line.push_str("  ");
-        // Painted after the wrap, never before: the budget is measured on plain
-        // text, and an escape counted as a column would cut the subject short.
-        // A term split across a wrap boundary lights on neither half -- the row
-        // is still right, just unmarked.
-        line.push_str(&hl_text(&text[0], hl, color));
-        println!("{}", line.trim_end());
-        // The rest of a wrapped subject, indented to the column it belongs to:
-        // the row is still one commit, and the marks stay the leftmost thing
-        // the eye has to scan.
-        for more in &text[1..] {
-            println!("{}{}", " ".repeat(fixed), hl_text(more.trim_end(), hl, color));
+            let fg = if !color {
+                None
+            } else if hits(&cell, hl, None) {
+                Some(HIT)
+            } else {
+                Some(Palette16::Yellow)
+            };
+            cells.push(Cell::new(fg_style(fg), pad_cell(&cell, w).into()));
         }
 
-        // The body lines --message matched on, indented to the subject column
-        // they continue. Printed because the row was kept for words that are
-        // in none of the cells above: without them the match is invisible and
-        // the table is asserting something it never shows.
+        let author_fg = if !color {
+            None
+        } else if hits(&row.author, hl, None) {
+            Some(HIT)
+        } else if hl.author {
+            Some(Palette16::BrightYellow)
+        } else {
+            None
+        };
+        cells.push(Cell::new(
+            fg_style(author_fg),
+            pad_cell(&row.author, authw).into(),
+        ));
+
+        let date_fg = if !color {
+            None
+        } else if hits(&row.date, hl, None) {
+            Some(HIT)
+        } else if hl.date {
+            Some(Palette16::BrightYellow)
+        } else {
+            None
+        };
+        cells.push(Cell::new(fg_style(date_fg), pad_cell(&row.date, datew).into()));
+
+        for (col, _) in widths.iter().enumerate() {
+            let mark = Mark::of(&row.sha, &sets[col], &equiv[col], &trailer[col], &author_match[col]);
+            let fg = if color { mark_fg(mark) } else { None };
+            cells.push(Cell::new(fg_style(fg), mark.glyph().into()));
+        }
+
+        let subject_fg = if color && hits(&row.text, hl, hl.message.as_deref()) {
+            Some(HIT)
+        } else {
+            None
+        };
+        cells.push(Cell::new(fg_style(subject_fg), pad_lines(text, textw).into()));
+
+        table_rows.push(Row::new(Styles::default(), cells));
+
+        // The body lines --message matched on, folded into the table right
+        // under the commit they belong to -- see `push_extra_line`. Printed
+        // because the row was kept for words that are in none of the cells
+        // above: without them the match is invisible and the table is
+        // asserting something it never shows.
         if let Some((lines, extra)) = row_bodies.get(i) {
-            if !lines.is_empty() {
-                println!();
-                let mut layers: Vec<(&str, &str)> =
-                    hl.message.as_deref().map(|t| (t, MATCH)).into_iter().collect();
-                layers.extend(search_layers(hl));
-                for body_line in lines {
-                    println!(
-                        "{}{}",
-                        " ".repeat(fixed),
-                        paint_layers(body_line, &layers, DIM, color)
-                    );
-                }
-                if *extra > 0 {
-                    let more = format!("+{extra} more");
-                    println!("{}{}", " ".repeat(fixed), paint(&more, DIM, color));
-                }
+            for body_line in lines {
+                let fg = if color && hits(body_line, hl, hl.message.as_deref()) { Some(HIT) } else { None };
+                push_extra_line(&mut table_rows, body_line, fg);
+            }
+            if *extra > 0 {
+                push_extra_line(&mut table_rows, &format!("+{extra} more"), None);
             }
         }
 
-        // File block, tab-indented under the commit row. Kept dim so the commit
-        // rows remain the primary scan target. Off under --squash: the files
-        // are consolidated into one block below, not repeated per commit.
+        // File block, folded into the table right under the commit row it
+        // belongs to. Off under --squash: the files are consolidated into
+        // one block below, not repeated per commit.
         if let Some(file_stats) = (!squash).then(|| row_files.get(i)).flatten() {
-            if !file_stats.is_empty() {
-                println!();
-                let mut layers: Vec<(&str, &str)> =
-                    hl.file.as_deref().map(|t| (t, MATCH)).into_iter().collect();
-                layers.extend(search_layers(hl));
-                for file_line in file_stat_lines(file_stats) {
-                    // Every file the commit touched, even under --filename: the
-                    // filter chose the row, and a trimmed block could not answer
-                    // what that commit did. The matched paths are lit instead.
-                    println!("{}", paint_layers(&file_line, &layers, DIM, color));
-                }
+            for file_line in file_stat_lines(file_stats) {
+                // Every file the commit touched, even under --filename: the
+                // filter chose the row, and a trimmed block could not answer
+                // what that commit did. A line the filter or --search read
+                // is lit; the rest stays plain.
+                let fg = if color && hits(&file_line, hl, hl.file.as_deref()) { Some(HIT) } else { None };
+                push_extra_line(&mut table_rows, &file_line, fg);
             }
         }
     }
 
     // The one block --squash prints in place of the per-commit ones: every file
-    // the shown commits touched, counts summed, once, below the whole table. A
-    // dim header sets it off from the rows so it does not read as the last
-    // commit's block. Empty when no shown commit touched a file -- then nothing
-    // to consolidate, and the header would announce a block that never comes.
+    // the shown commits touched, counts summed, once, folded into the table
+    // right after the last commit row. Empty when no shown commit touched a
+    // file -- then nothing to consolidate, and no rows are added for it.
     if squash {
         let consolidated = consolidate_file_stats(row_files);
         if !consolidated.is_empty() {
-            println!();
-            println!("{}", paint("consolidated files", DIM, color));
-            let mut layers: Vec<(&str, &str)> =
-                hl.file.as_deref().map(|t| (t, MATCH)).into_iter().collect();
-            layers.extend(search_layers(hl));
+            push_extra_line(&mut table_rows, "consolidated files", None);
             for file_line in file_stat_lines(&consolidated) {
-                println!("{}", paint_layers(&file_line, &layers, DIM, color));
+                let fg = if color && hits(&file_line, hl, hl.file.as_deref()) { Some(HIT) } else { None };
+                push_extra_line(&mut table_rows, &file_line, fg);
             }
         }
+    }
+
+    let table = Table::new(Styles::default(), table_cols, table_rows);
+    println!("{}", Console::default().render(&table));
+}
+
+fn fg_style(fg: Option<Palette16>) -> Styles {
+    match fg {
+        Some(p) => Styles::default().with(Bold(true)).with(TextFg(p)),
+        None => Styles::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_fg_maps_known_marks() {
+        assert!(matches!(mark_fg(Mark::Has), Some(Palette16::Green)));
+        assert!(matches!(mark_fg(Mark::Equivalent), Some(Palette16::Yellow)));
+        assert!(matches!(mark_fg(Mark::Trailer), Some(Palette16::Blue)));
+        assert!(matches!(mark_fg(Mark::AuthorMatch), Some(Palette16::Magenta)));
+        assert!(mark_fg(Mark::Missing).is_none());
+    }
+
+    #[test]
+    fn hits_checks_search_terms_and_an_extra_needle_case_insensitively() {
+        let hl = Highlight {
+            search: vec!["EAT".to_string()],
+            ..Default::default()
+        };
+        assert!(hits("feature", &hl, None));
+        assert!(hits("anything", &hl, Some("thing")));
+        assert!(!hits("nothing here", &hl, Some("")));
     }
 }

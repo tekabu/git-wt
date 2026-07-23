@@ -57,6 +57,11 @@ The normal `git-wt list` also accepts the new columns, using the branch you are 
 git-wt list --col 1,2,7,8
 ```
 
+`git-wt list` now shows `merged` (col 6, relative to the branch you are
+standing in) by default on a terminal — no `--col` needed. The `merged`
+command's grammar and `--others` flag are unchanged; this only changes what
+`list` shows without asking.
+
 ## Implementation notes
 
 - Added in `src/main.rs`:

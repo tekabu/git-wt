@@ -243,6 +243,11 @@ match in the branch and path columns; it never drops a row, so the
 **numbers stay the original indices** and `git-wt <N> remove` always means
 the same tree regardless of any search.
 
+On a terminal, the default listing includes a `merged` column (relative to the
+branch you are standing in) alongside status, last-commit, and push/pull — the
+piped `id`/`branch`/`dir` contract is unchanged. `git-wt <N> merged --others`
+still answers the same question against a chosen worktree's branch instead.
+
 `--col` picks and orders columns — `1`=id, `2`=branch, `3`=dir (full path),
 `6`=merged (relative to the branch you are standing in):
 

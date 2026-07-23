@@ -294,7 +294,7 @@ GRAMMAR:
     spell it 'heads/continue' on the rare branch actually called that.
 
     FLAGS combine freely after the verb, in any order, short or long:
-        git-wt 1,2 commits --author nino --all-files --filename api.php -n 5
+        git-wt 1,2 commits --author alex --all-files --filename api.php -n 5
         git-wt 1,2 commits -af          # bundle: -a (--all) + -f (--files)
         git-wt 1,2 commits -fn 20       # bundle ending in a value-flag
     Bundling (see -af above) only applies to single-dash letters in
@@ -459,7 +459,7 @@ COMMITS FILTERS:
     Filters narrow the rows; the columns stay whatever the worktree list
     named. They AND together, and -n counts what survives them.
 
-        git-wt 1,2 commits --author nino
+        git-wt 1,2 commits --author alex
         git-wt 1,2 commits --date 2026-01-31        # exactly that day
         git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30
         git-wt 1,2 commits --commit-since 5568a21 --commit-until HEAD
@@ -490,7 +490,7 @@ COMMITS FILTERS:
     --date compares the date the table prints, which is the AUTHOR date;
     git's own --since/--until read committer dates and would disagree
     with the column, so they are not flags here. --author is a fuzzy subsequence, case-folded, the
-    same match 'git-wt list SEARCH' uses: 'nes' finds 'Nino Escalera'.
+    same match 'git-wt list SEARCH' uses: 'ach' finds 'Alex Chen'.
 
     Date bounds are whole days: '--date 2026-07-17' takes every commit
     of that day, 09:00 and 23:30 alike. The day is the author's own --
@@ -616,14 +616,14 @@ COMMITS DATES:
     Merge commits show the diff against their first parent.
 
         git-wt 1,2 commits -n 10 --files
-        git-wt 1,2 commits --author regoso --files
+        git-wt 1,2 commits --author chen --files
 
 LOG:
     'log' is the same table as 'commits' -- same rows, columns, filters,
     renderer -- with a pathspec selecting the rows instead of a branch range.
 
         git-wt 1,2 log src/cmd/commits/render.rs
-        git-wt log src/ui.rs --author nino --date-since 2026-01-01 -w
+        git-wt log src/ui.rs --author alex --date-since 2026-01-01 -w
 
     Targets are worktrees or branches, exactly like 'commits': the first is
     the row source, the rest are mark columns. PATH always comes after the
@@ -808,7 +808,7 @@ MERGE REVIEW:
 
         git-wt 1,2 merge --review        # what would 2 bring into 1?
         git-wt 1,2 merge --review -f     # + the files under each commit
-        git-wt 1,2 merge --review -n 5 --author nino
+        git-wt 1,2 merge --review -n 5 --author alex
 
     '--review' ends merge's own flags. Everything after it is a 'commits'
     flag and is passed through untouched, which is the only way both can keep

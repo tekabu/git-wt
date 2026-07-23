@@ -1831,11 +1831,11 @@ mod tests {
             &[],
         );
         git(&tmp,
-            &["config", "user.email", "kevin.mensah@fireflyelectric.com"],
+            &["config", "user.email", "test.author@example.com"],
             &[],
         );
         git(&tmp,
-            &["config", "user.name", "Kevin Mensah"],
+            &["config", "user.name", "Test Author"],
             &[],
         );
         write(&tmp, "f.txt", "base\n");

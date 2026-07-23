@@ -256,7 +256,7 @@ fn commits_view(
     }
 
     // Fuzzy, and the same fuzzy `list` uses: a subsequence, case-folded, so
-    // '--author nes' finds 'Nino Escalera' and nobody types a full name twice.
+    // '--author ach' finds 'Alex Chen' and nobody types a full name twice.
     let needle = args.author.as_ref().map(|a| a.to_lowercase());
 
     // A substring rather than a subsequence: a name is one word typed from

@@ -781,7 +781,7 @@ pub(crate) const COMMIT_UNTIL_MISSING: &str =
     "--commit-until needs a commit, e.g. '--commit-until HEAD~3'";
 pub(crate) const COMMITS_MISSING: &str =
     "--commits needs one or more commits, e.g. '--commits af48509,f9e2427'";
-pub(crate) const AUTHOR_MISSING: &str = "--author needs a name, e.g. '--author nino'";
+pub(crate) const AUTHOR_MISSING: &str = "--author needs a name, e.g. '--author alex'";
 
 /// Parse `>=2026-01-01`, `<=2026-06-30`, `=2026-01-01`, or a bare date (`=`).
 pub(crate) fn parse_date_filter(s: &str) -> Result<DateFilter, String> {
@@ -1178,7 +1178,7 @@ mod tests {
         let a = parse(&["--commit-since", "abc123", "--commit-until=def456"]).unwrap();
         assert_eq!(a.commit_since.as_deref(), Some("abc123"));
         assert_eq!(a.commit_until.as_deref(), Some("def456"));
-        assert_eq!(parse(&["--author=nino"]).unwrap().author.as_deref(), Some("nino"));
+        assert_eq!(parse(&["--author=alex"]).unwrap().author.as_deref(), Some("alex"));
         assert!(!parse(&[]).unwrap().topo);
         assert!(parse(&["--topo"]).unwrap().topo);
         assert!(parse(&["--topo-order"]).unwrap().topo);
@@ -1270,8 +1270,8 @@ mod tests {
 
         // --author matches many commits and named none of them, so the slice
         // stays the question; --all is there to be typed.
-        assert!(!parse(&["--author", "nino"]).unwrap().all);
-        assert!(parse(&["--author", "nino", "--all"]).unwrap().all);
+        assert!(!parse(&["--author", "alex"]).unwrap().all);
+        assert!(parse(&["--author", "alex", "--all"]).unwrap().all);
 
         // Nothing is implied without a selector, and a --union the user typed
         // is never overridden -- nor does the implied --all trip its guard.
@@ -1473,7 +1473,7 @@ mod tests {
         let parse = |a: &[&str]| {
             parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), Mode::Commits)
         };
-        assert_eq!(parse(&["--au", "nino"]).unwrap().author, parse(&["--author", "nino"]).unwrap().author);
+        assert_eq!(parse(&["--au", "alex"]).unwrap().author, parse(&["--author", "alex"]).unwrap().author);
         assert_eq!(parse(&["--dh"]).unwrap().fmt.human, parse(&["--date-human"]).unwrap().fmt.human);
         assert_eq!(
             parse(&["--filename", "ui.rs", "--af"]).unwrap().all_files,

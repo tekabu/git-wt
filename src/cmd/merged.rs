@@ -29,6 +29,9 @@ pub(crate) fn merged_text(root: &Path, w: &Worktree, here: &str) -> String {
     let Some(src) = w.branch.as_deref() else {
         return "-".into();
     };
+    if src == here {
+        return "self".into();
+    }
     merged_status_text(root, src, here)
 }
 

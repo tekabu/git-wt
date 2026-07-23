@@ -10,6 +10,14 @@ pub(crate) struct Worktree {
     pub(crate) branch: Option<String>,
     pub(crate) detached: bool,
     pub(crate) bare: bool,
+    /// Set when git's porcelain output carries a `locked` line: `Some("")` for
+    /// a lock with no reason given, `Some(reason)` otherwise.
+    pub(crate) locked: Option<String>,
+    /// Set when git's porcelain output carries a `prunable` line: git's own
+    /// verdict that this worktree's directory is gone or its administrative
+    /// files no longer point at a live one -- the same signal `git worktree
+    /// prune` acts on.
+    pub(crate) prunable: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +226,8 @@ pub(crate) fn worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
                 branch: None,
                 detached: false,
                 bare: false,
+                locked: None,
+                prunable: None,
             });
         } else if let Some(w) = cur.as_mut() {
             if let Some(b) = line.strip_prefix("branch ") {
@@ -226,6 +236,14 @@ pub(crate) fn worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
                 w.detached = true;
             } else if line == "bare" {
                 w.bare = true;
+            } else if line == "locked" {
+                w.locked = Some(String::new());
+            } else if let Some(r) = line.strip_prefix("locked ") {
+                w.locked = Some(r.to_string());
+            } else if line == "prunable" {
+                w.prunable = Some(String::new());
+            } else if let Some(r) = line.strip_prefix("prunable ") {
+                w.prunable = Some(r.to_string());
             }
         }
     }

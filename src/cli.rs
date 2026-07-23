@@ -567,6 +567,8 @@ mod tests {
                 branch: Some((*b).to_string()),
                 detached: false,
                 bare: false,
+                locked: None,
+                prunable: None,
             })
             .collect()
     }

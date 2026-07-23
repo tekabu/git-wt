@@ -18,6 +18,7 @@ use crate::cli::{
     warn_if_alias_shadows_branch,
 };
 use crate::cmd::add::cmd_add;
+use crate::cmd::doctor::cmd_doctor;
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp, ALL_HINT};
 use crate::worktree::{current_worktree_index, repo_root, worktrees};
 
@@ -59,6 +60,8 @@ USAGE:
     git-wt <N>,<M> pull          Run it in each worktree listed
     git-wt fetch|pull|push --all Run it in every worktree
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
+    git-wt doctor [--repair]     Report worktree issues (moved/deleted dirs,
+                                 locked, corrupt); --repair attempts fixes
     git-wt version
     git-wt --help                This: options, no prose
     git-wt --help -f             Full manual: every flag, every section
@@ -153,6 +156,7 @@ USAGE:
     git-wt <N>,<M> pull          Run it in each worktree listed
     git-wt fetch|pull|push --all Run it in every worktree
     git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
+    git-wt doctor [--repair]     Report worktree issues; --repair attempts fixes
     git-wt version
     git-wt --help
     git-wt --help -f             Full manual, this (alias: --full, -hf)
@@ -775,6 +779,47 @@ ADD:
     With no BRANCH, a picker lists local branches: fzf when installed,
     otherwise a numbered prompt.
 
+DOCTOR:
+    Reports what is wrong with a worktree's registration -- not its working
+    tree contents, which 'list' already covers -- read straight off git's own
+    'worktree list --porcelain' and the filesystem, so it costs no extra
+    history walk:
+
+        prunable        git's own verdict: the directory is gone or its
+                          administrative files no longer point at a live one
+                          (the same signal 'git worktree prune' acts on) --
+                          this is what a moved or deleted worktree looks like
+        directory not found on disk   the filesystem check, for a git that
+                          has not rescanned yet
+        '.git' points to a missing admin dir   the directory is still there,
+                          but its back-pointer names an admin dir that no
+                          longer exists -- what a linked worktree looks like
+                          after the *main* worktree gets moved or renamed,
+                          since git never updates that pointer on its own
+        HEAD unreadable   the directory exists but git can't read its HEAD
+        locked            not broken -- why 'remove'/'prune' refuse to
+                          touch it -- reported alongside, never suppressing
+                          the checks above it
+
+        git-wt doctor              # report only, nothing changed
+        git-wt doctor --repair     # attempt to fix what it found
+
+    '--repair' runs 'git worktree repair' over every candidate this repo
+    might mean: every worktree's own recorded path (the fix when the *main*
+    worktree moved -- each linked worktree's stale '.git' file is rewritten
+    using the path 'worktree list' already had), plus every sibling of the
+    repo root whose '.git' is a plain file (the fix when a *linked* worktree
+    moved -- 'add' puts every worktree it creates there, so one moved by
+    hand usually still turns up in the list even though its old recorded
+    path does not name it anymore). 'repair' only relinks a candidate whose
+    '.git' file already agrees with one of this repo's admin dirs, so
+    handing it every candidate is safe: an unrelated directory is left
+    untouched. Whatever neither fixes -- a directory truly deleted, not
+    moved -- is swept by 'git worktree prune' afterward, which only removes
+    entries git already marked prunable. The report then re-runs, so the
+    output says what is actually still wrong, not what was true before the
+    repair.
+
 STDOUT:
     Only 'switch'/'path' (bare <N>), 'add', and 'remove' print a path, alone,
     on stdout, so a shell can cd into it or capture it. Status goes to stderr.
@@ -854,6 +899,19 @@ fn run() -> Result<(), String> {
     if first == "list" || first == "ls" {
         let root = repo_root()?;
         return list_from_args(&root, &args[1..]);
+    }
+
+    if first == "doctor" {
+        let repair = args[1..].iter().any(|a| a == "--repair" || a == "-r");
+        if let Some(bad) = args[1..]
+            .iter()
+            .find(|a| a.as_str() != "--repair" && a.as_str() != "-r")
+        {
+            return Err(format!("unknown option '{bad}' for doctor\nTry 'git-wt --help'"));
+        }
+        let root = repo_root()?;
+        let trees = worktrees(&root)?;
+        return cmd_doctor(&root, &trees, repair);
     }
 
     if first == "add" || first == "a" {

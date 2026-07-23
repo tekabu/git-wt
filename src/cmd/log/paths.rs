@@ -106,6 +106,8 @@ mod tests {
             branch: Some("main".into()),
             detached: false,
             bare: false,
+            locked: None,
+            prunable: None,
         }
     }
 

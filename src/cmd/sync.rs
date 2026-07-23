@@ -390,18 +390,24 @@ mod tests {
             branch: None,
             detached: false,
             bare: true,
+            locked: None,
+            prunable: None,
         };
         let detached = Worktree {
             path: PathBuf::from("/code/myapp-x"),
             branch: None,
             detached: true,
             bare: false,
+            locked: None,
+            prunable: None,
         };
         let normal = Worktree {
             path: PathBuf::from("/code/myapp"),
             branch: Some("main".into()),
             detached: false,
             bare: false,
+            locked: None,
+            prunable: None,
         };
         assert_eq!(sync_skip(&bare, SyncOp::Fetch), Some("bare"));
         assert_eq!(sync_skip(&bare, SyncOp::Push), Some("bare"));

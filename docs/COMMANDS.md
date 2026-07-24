@@ -2,6 +2,32 @@
 
 Quick reference. Happy path only.
 
+Aliases: `ls`=list, `rm`=remove, `cd`=switch, `show`=path, `a`=add, `c`=commits,
+`l`=log, `m`=merged, `p`=pull, `s`=switch.
+
+`git-wt` (binary) always prints a path; `wt` (the `--alias` shell function)
+`cd`'s into it for `switch`/`cd`/`add`/`remove`. Everything else behaves
+identically either way.
+
+### Branch names instead of numbers
+
+Anywhere a target or target list takes `<N>`, a worktree may be named by its
+branch instead, mixed freely with numbers: `git-wt diff main,2`. The branch
+must be checked out in a worktree. A bare number always means a worktree
+number, even if a branch shares that name — write `heads/2` for a branch
+literally called `2`. A command word likewise wins over a same-named branch —
+reach a branch called `list` as `heads/list`.
+
+### `-b`/`--branch` — append extra targets
+
+`-b`/`--branch LIST` appends to whatever target list the positional already
+named (or to the current worktree if the positional is omitted):
+
+```sh
+git-wt commits -b 1,2       # == git-wt commits <current>,1,2
+git-wt merge -b 2           # == git-wt merge <current>,2
+```
+
 ## switch / cd / s
 
     git-wt                      list worktrees

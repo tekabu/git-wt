@@ -23,7 +23,7 @@ use crate::cmd::doctor::cmd_doctor;
 use crate::cmd::list::cmd_list;
 use crate::cmd::log::cmd_log;
 use crate::cmd::meld::cmd_meld;
-use crate::cmd::merge::{cmd_merge, parse_merge_args, retired_bare_word};
+use crate::cmd::merge::{cmd_merge, parse_merge_args};
 use crate::cmd::merged::{cmd_merged, cmd_merged_others};
 use crate::cmd::remove::cmd_remove;
 use crate::cmd::switch::{cmd_path, cmd_switch};
@@ -92,11 +92,11 @@ fn run() -> Result<(), String> {
         }
     };
 
-    // The new grammar is verb-first: the optional positional target list comes
-    // after the subcommand. Any target captured at the top level means the user
-    // wrote target-first (e.g. `git-wt 2 diff`), which has been retired.
+    // Grammar is verb-first: the optional positional target list comes after
+    // the subcommand. Any target captured at the top level means the user
+    // wrote target-first.
     if cli.targets.is_some() {
-        return Err("target list must come after the verb, e.g. 'git-wt diff 1,2'".into());
+        return Err("unexpected argument for the verb\nTry 'git-wt --help'".into());
     }
 
     // The one-letter alias each of these matched, if that's the spelling the
@@ -331,19 +331,12 @@ fn run() -> Result<(), String> {
                 // A target was already given (a plain number, or a
                 // dest,source comma list already handled above), so a
                 // further bare word can no longer double as the source --
-                // that two-positional form ("merge 1 feat/x") is retired in
-                // favor of a comma list or '-b'.
+                // that two-positional form ("merge 1 feat/x") isn't accepted;
+                // use a comma list or '-b'.
                 if let Some(first) = merge_rest.first() {
-                    if let Some(dashed) = retired_bare_word(first) {
-                        return Err(format!(
-                            "bare '{first}' is no longer accepted for merge; use '{dashed}'"
-                        ));
-                    }
                     if !first.starts_with('-') && first != "review" {
                         return Err(format!(
-                            "merge no longer takes a bare branch after a target ('{first}')\n\
-                             hint: 'git-wt merge {n},{first}' or 'git-wt merge {n} -b {first}'",
-                            n = idxs[0] + 1
+                            "unexpected argument '{first}' for merge\nTry 'git-wt --help'"
                         ));
                     }
                 }

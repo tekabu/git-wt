@@ -288,7 +288,6 @@ fi
 # --- switch / path ----------------------------------------------------------
 check "switch N prints path"           exit=0 out="myapp" -- switch 1
 check "path N prints path"             exit=0 out="$APP" -- path 1
-# 'show' is retired; the old alias now reads as an unexpected argument.
 check "show alias works"               exit=0 out="$APP" -- show 1
 check "switch N too many args"         exit=2 err="unexpected argument 'path' found" -- switch 1 path
 check "index 0 errors"                 exit=1 err="no worktree #0" -- switch 0
@@ -299,7 +298,7 @@ check "long flag on bare switch"       exit=2 err="unexpected argument '--stat' 
 
 # --- legacy / unknown -------------------------------------------------------
 check "legacy show order now works"    exit=0 out="$APP" -- show 1
-check "legacy remove order rejected"   exit=1 err="target list must come after the verb" -- 1 remove
+check "legacy remove order rejected"   exit=1 err="unexpected argument for the verb" -- 1 remove
 check "bare branch name rejected"      exit=1 err="no worktree named 'feat/x'" -- feat/x
 check "typo verb rejected"             exit=1 err="no worktree named 'lsit'" -- lsit
 
@@ -704,7 +703,6 @@ if [ "$nm" = 0 ]; then
 else
   report FAIL HAPPY "commits hides merges by default" "$nmc" "merge row survived the default"
 fi
-# --no-merges is retired: the default already drops them, and the error says so.
 check "commits --no-merges is gone"  exit=1 err="unexpected argument '--no-merges' for commits" -- commits "1,$didx" --no-merges
 # The work the merge joined must survive: only the merge row goes.
 check "commits default keeps work"   exit=0 out="mainside" -- commits "1,$didx"
@@ -830,7 +828,6 @@ fi
 check "commits --all-files widens"     exit=0 out="blockother.txt" -- commits "1,$didx" --filename blockmatch --all --all-files
 check "commits --all-files keeps match" exit=0 out="blockmatch.txt" -- commits "1,$didx" --filename blockmatch --all --all-files
 check "commits --all-files alone errors" exit=1 err="--all-files needs" -- commits "1,$didx" --all-files
-# --match-only is retired: --filename does its job, and the error says so.
 check "commits --match-only is gone"   exit=1 err="unexpected argument '--match-only' for commits" -- commits "1,$didx" --filename blockmatch --match-only
 # The flags these two get confused with, each naming the one that is here.
 check "commits --subject is gone"         exit=1 err="unexpected argument '--subject' for commits" -- commits "1,$didx" --subject fix
@@ -1298,10 +1295,10 @@ check "list form dry-run clean"      exit=0 err="merges into" -- merge "1,$A" dr
 check "list form takes options"      exit=1 err="does NOT merge" -- merge "$C1,$M3" dry-run
 check "list form rejects 3"          exit=1 err="exactly two worktrees" -- merge "1,$A,$C1"
 check "bare list without verb rejected" exit=1 err="switch takes a single worktree, not '1,$A'" -- "1,$A"
-check "malformed list with verb rejected" exit=1 err="target list must come after the verb" -- "1," merge
-check "list form + verb order rejected" exit=1 err="target list must come after the verb" -- "1,$A" merge continue
-check "list form + short flag order rejected" exit=1 err="target list must come after the verb" -- "1,$A" merge -a
-check "bad list + verb order rejected" exit=1 err="target list must come after the verb" -- "1,x" merge
+check "malformed list with verb rejected" exit=1 err="unexpected argument for the verb" -- "1," merge
+check "list form + verb order rejected" exit=1 err="unexpected argument for the verb" -- "1,$A" merge continue
+check "list form + short flag order rejected" exit=1 err="unexpected argument for the verb" -- "1,$A" merge -a
+check "bad list + verb order rejected" exit=1 err="unexpected argument for the verb" -- "1,x" merge
 # The real thing: worktree M's branch lands in worktree N, list-style.
 check "list form merges M into N"    exit=0 err="Merged feat-a into" -- merge "$LM,$A"
 if [ -f "$ROOT/mrg/w-lm/a.txt" ]; then

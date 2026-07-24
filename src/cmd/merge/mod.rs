@@ -103,24 +103,6 @@ pub(crate) fn start_only_flags(
     v
 }
 
-/// Bare option words merge no longer accepts, paired with the dashed form
-/// that replaced them -- only the ones that also read as plain identifiers
-/// (`ours`, `theirs`, ...) were ambiguous with a branch/source name, which is
-/// why they were retired; `review` stays bare since it isn't a merge option.
-const RETIRED_BARE_WORDS: [(&str, &str); 5] = [
-    ("dry-run", "--dry-run"),
-    ("theirs", "--theirs"),
-    ("ours", "--ours"),
-    ("continue", "--continue"),
-    ("abort", "--abort"),
-];
-
-/// The dashed replacement for a retired bare merge option word, if `word` is
-/// one of them.
-pub(crate) fn retired_bare_word(word: &str) -> Option<&'static str> {
-    RETIRED_BARE_WORDS.iter().find(|(bare, _)| *bare == word).map(|(_, dashed)| *dashed)
-}
-
 pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, String> {
     let mut source: Option<String> = None;
     let mut op: Option<MergeOp> = None;
@@ -142,10 +124,6 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
             "--ours" | "-o" => set_side(&mut side, Side::Ours)?,
             "--theirs" | "-t" => set_side(&mut side, Side::Theirs)?,
             "--dry-run" | "-d" => dry_run = true,
-            s if retired_bare_word(s).is_some() => {
-                let dashed = retired_bare_word(s).unwrap();
-                return Err(format!("bare '{s}' is no longer accepted for merge; use '{dashed}'"));
-            }
             "-m" | "--message" => {
                 message = Some(it.next().ok_or("--message needs a message")?.clone());
             }
@@ -690,23 +668,6 @@ mod tests {
         for w in ["--dry-run", "-d"] {
             assert!(merge_args(&["2", w]).unwrap().dry_run, "{w}");
         }
-    }
-
-    #[test]
-    fn merge_rejects_retired_bare_option_words() {
-        for (bare, dashed) in [
-            ("dry-run", "--dry-run"),
-            ("theirs", "--theirs"),
-            ("ours", "--ours"),
-            ("continue", "--continue"),
-            ("abort", "--abort"),
-        ] {
-            let e = merge_args(&["2", bare]).unwrap_err();
-            assert!(e.contains(&format!("'{bare}'")), "{bare}: {e}");
-            assert!(e.contains(&format!("'{dashed}'")), "{bare}: {e}");
-        }
-        // 'review' is not a merge option and stays bare.
-        assert!(merge_args(&["2", "review"]).unwrap().review.is_some());
     }
 
     #[test]

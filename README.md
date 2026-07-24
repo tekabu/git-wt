@@ -109,6 +109,7 @@ The release binary lands at `target/release/git-wt`, and the shareable file at
 from [Install](#from-the-one-file-installer-no-rust-needed): gzipped binary
 embedded, no repo or toolchain needed to run it.
 
-`./linux-test.sh` builds and runs the test suite in a throwaway Debian
-container; `./linux-test.sh --build-install` also verifies the one-file
-installer end-to-end on Linux.
+`./test.sh` auto-detects the host OS and runs the test suite natively.
+`./test.sh --docker` builds and runs the suite in a throwaway Debian
+container instead; `./test.sh --build-install` also verifies the one-file
+installer end-to-end on Linux, via Docker.

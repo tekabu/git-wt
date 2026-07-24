@@ -34,8 +34,8 @@ pub(crate) struct Cli {
     /// the command, alongside the target. Can be given multiple times.
     ///
     /// Not `-t/--target`: that flag exists per-command instead (see each
-    /// command's own `*Args`), because `merge` already claims `-t` for
-    /// `theirs` and a global flag can't be un-global for one subcommand.
+    /// command's own `*Args`), since not every command takes a target the
+    /// same way.
     #[arg(short, long, action = ArgAction::Append, global = true, value_name = "TARGET_LIST")]
     pub(crate) branch: Vec<String>,
 

@@ -122,7 +122,7 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
             "--continue" | "-c" => set_merge_op(&mut op, MergeOp::Continue)?,
             "--abort" | "-a" => set_merge_op(&mut op, MergeOp::Abort)?,
             "--ours" | "-o" => set_side(&mut side, Side::Ours)?,
-            "--theirs" | "-t" => set_side(&mut side, Side::Theirs)?,
+            "--theirs" => set_side(&mut side, Side::Theirs)?,
             "--dry-run" | "-d" => dry_run = true,
             "-m" | "--message" => {
                 message = Some(it.next().ok_or("--message needs a message")?.clone());
@@ -657,14 +657,12 @@ mod tests {
             assert_eq!(merge_args(&[dashed]).unwrap().op, want, "{dashed}");
             assert_eq!(merge_args(&[short]).unwrap().op, want, "{short}");
         }
-        for (dashed, short, want) in [
-            ("--ours", "-o", Side::Ours),
-            ("--theirs", "-t", Side::Theirs),
-        ] {
+        for (dashed, short, want) in [("--ours", "-o", Side::Ours)] {
             for w in [dashed, short] {
                 assert_eq!(merge_args(&["2", w]).unwrap().side, Some(want), "{w}");
             }
         }
+        assert_eq!(merge_args(&["2", "--theirs"]).unwrap().side, Some(Side::Theirs));
         for w in ["--dry-run", "-d"] {
             assert!(merge_args(&["2", w]).unwrap().dry_run, "{w}");
         }

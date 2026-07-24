@@ -1,20 +1,35 @@
 #!/usr/bin/env bash
-# Live end-to-end test for git-wt.
+# Live end-to-end test for git-wt. Auto-detects the host OS and runs natively;
+# --docker/--shell/--build-install cross-test Linux from any host via Docker.
 #
 # Builds the binary, spins up a dummy repo under /tmp, drives every command in
 # the verb-first grammar, and prints a PASS/FAIL report. Exits non-zero if any
 # case fails. Cleans up the /tmp scratch dir on exit.
 #
-#   ./test.sh                  # release build (cargo build --release)
-#   ./test.sh --debug          # debug build (faster compile)
-#   ./test.sh --md             # also write docs/test-report.md
-#   ./test.sh --md out.md      # ...to out.md instead
+#   ./test.sh                  # native: release build, run here
+#   ./test.sh --debug          # native: debug build (faster compile)
+#   ./test.sh --md             # native: also write docs/test-report.md
+#   ./test.sh --md out.md      # native: ...to out.md instead
+#
+#   ./test.sh --docker         # build a Debian image, run unit + live tests there
+#   ./test.sh --shell          # build the image, drop into a shell
+#   ./test.sh --build-install  # verify build.sh + install.sh on Linux, via Docker
+#   ./test.sh --rebuild        # force image rebuild (no cache); combine with the above
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+os="$(uname -s)"
+case "$os" in
+  Darwin) os_name="macOS" ;;
+  Linux)  os_name="Linux" ;;
+  *)      os_name="$os" ;;
+esac
+
 profile="release"
 MD=""
+docker_mode=""
+docker_build_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --debug) profile="debug"; shift ;;
@@ -26,9 +41,61 @@ while [ $# -gt 0 ]; do
         ""|-*) MD="$here/docs/test-report.md" ;;
         *)     MD="$1"; shift ;;
       esac ;;
+    --docker)        docker_mode="test"; shift ;;
+    --shell)         docker_mode="shell"; shift ;;
+    --build-install) docker_mode="build-install"; shift ;;
+    --rebuild)       docker_build_args+=(--no-cache); shift ;;
     *) echo "unknown option '$1'" >&2; exit 2 ;;
   esac
 done
+
+echo "Detected OS: $os_name"
+
+if [ -n "$docker_mode" ]; then
+  image="git-wt-test"
+  command -v docker >/dev/null 2>&1 || {
+    echo "error: docker not found on PATH" >&2; exit 1
+  }
+  [ "$os" = "Linux" ] && echo "note: already on Linux — Docker still gives an isolated, throwaway environment."
+
+  echo "Building image '$image' (Linux)..."
+  docker build ${docker_build_args[@]+"${docker_build_args[@]}"} -t "$image" "$here"
+
+  if [ "$docker_mode" = "shell" ]; then
+    echo "Dropping into container shell. Run: cargo test --release && ./test.sh"
+    exec docker run --rm -it "$image" bash
+  fi
+
+  if [ "$docker_mode" = "build-install" ]; then
+    echo "Verifying build.sh, one-file installer, and install.sh (source) on Linux..."
+    exec docker run --rm -e SHELL=/bin/bash "$image" bash -euc '
+      echo "=== build.sh: version + compile + one file ==="
+      ./build.sh
+      ls -1 dist/
+
+      echo "=== one-file installer (no repo, no toolchain) ==="
+      # Copy ONLY the self-installing script to an empty dir to prove isolation.
+      inst="$(ls dist/git-wt-*.install.sh)"
+      mkdir -p /tmp/only && cp "$inst" /tmp/only/
+      cd /tmp/only && ./git-wt-*.install.sh --alias wt
+      export PATH="$HOME/.local/bin:$PATH"
+      echo "-- binary on PATH:"; command -v git-wt; git-wt version
+      grep -q "# >>> git-wt alias >>>" "$HOME/.bashrc" || { echo "alias block missing" >&2; exit 1; }
+      eval "$(sed -n "/# >>> git-wt alias >>>/,/# <<< git-wt alias <<</p" "$HOME/.bashrc")"
+      mkdir -p /tmp/r/app && cd /tmp/r/app && git init -q && git commit -q --allow-empty -m i
+      echo "-- wt list via alias:"; wt list
+
+      echo "=== install.sh: from source (cargo) ==="
+      cd /work && ./install.sh
+      "${CARGO_HOME:-$HOME/.cargo}/bin/git-wt" version
+
+      echo "OK: build.sh + one-file installer + source install verified"
+    '
+  fi
+
+  echo "Running unit + live tests on Linux (Docker)..."
+  exec docker run --rm "$image"
+fi
 
 # Resolve before the suite cd's into the scratch repo, so a relative --md path
 # means "relative to where the user ran this", not to /tmp.

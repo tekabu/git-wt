@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Install git-wt FROM SOURCE (requires Rust/`cargo`).
+# Install git-wt FROM SOURCE (requires Rust/`cargo`). Auto-detects macOS/Linux.
 #
-#   ./install-mac.sh             # build + install, adds default `wt` alias
-#   ./install-mac.sh --alias xy  # use `xy` instead of `wt` for the shell fn
-#   ./install-mac.sh --no-alias  # install the binary only, no shell function
+#   ./install.sh             # build + install, adds default `wt` alias
+#   ./install.sh --alias xy  # use `xy` instead of `wt` for the shell fn
+#   ./install.sh --no-alias  # install the binary only, no shell function
 #
 # No toolchain? Use the one-file installer that build.sh produces
 # (dist/git-wt-<version>-<os>-<arch>.install.sh) — see the README.
@@ -25,20 +25,34 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ "$(uname -s)" = "Darwin" ] || echo "warning: this script targets macOS; on Linux use ./install-linux.sh" >&2
+os="$(uname -s)"
+case "$os" in
+  Darwin) echo "Detected OS: macOS" ;;
+  Linux)  echo "Detected OS: Linux" ;;
+  *) echo "warning: this script targets macOS/Linux; unrecognized OS '$os', proceeding anyway" >&2 ;;
+esac
 
 command -v cargo >/dev/null || {
-  echo "error: cargo not found; install Rust, or use the one-file installer (see README)" >&2
+  echo "error: cargo not found; install Rust (https://rustup.rs), or use the" >&2
+  echo "       one-file installer (see README)" >&2
   exit 1
 }
 
-# cargo needs a linker; without the Xcode command line tools the build fails deep
-# inside rustc with a confusing message. Check up front.
-command -v cc >/dev/null || {
-  echo "error: no C linker found (cc); rustc needs one to link the binary." >&2
-  echo "       run 'xcode-select --install'" >&2
-  exit 1
-}
+# cargo needs a linker; without it the build fails deep inside rustc with a
+# confusing message. Check up front.
+if [ "$os" = "Darwin" ]; then
+  command -v cc >/dev/null || {
+    echo "error: no C linker found (cc); rustc needs one to link the binary." >&2
+    echo "       run 'xcode-select --install'" >&2
+    exit 1
+  }
+else
+  command -v cc >/dev/null || command -v gcc >/dev/null || {
+    echo "error: no C linker found (cc/gcc); rustc needs one to link the binary." >&2
+    echo "       e.g. 'apt install build-essential' or 'dnf install gcc'" >&2
+    exit 1
+  }
+fi
 
 echo "Installing git-wt from source via cargo..."
 cargo install --path "$here" --force
@@ -58,7 +72,12 @@ echo "Ensure $(dirname "$bin") is on your PATH."
 # with no branch) uses fzf's fuzzy search instead of a numbered prompt. Not a
 # build dependency and not required — just hint how to get the nicer picker.
 if ! command -v fzf >/dev/null; then
-  echo "Tip: install fzf for a fuzzy branch picker ('brew install fzf'). Optional."
+  if [ "$os" = "Darwin" ]; then
+    echo "Tip: install fzf for a fuzzy branch picker ('brew install fzf'). Optional."
+  else
+    echo "Tip: install fzf for a fuzzy branch picker (e.g. 'apt install fzf' or"
+    echo "     'dnf install fzf'). Optional."
+  fi
 fi
 
 # --- optional shell alias ---------------------------------------------------

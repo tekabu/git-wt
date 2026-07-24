@@ -247,7 +247,7 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Merge(args) => {
-            let (rest, branch) = split_rest_branch(args.rest, &cli.branch)?;
+            let (rest, branch, embedded_target) = split_rest_flags(args.rest, &cli.branch)?;
             let (target_token, merge_rest) = if let Some(first) = rest.first() {
                 if first.starts_with('-') {
                     (None, rest)
@@ -262,6 +262,7 @@ fn run() -> Result<(), String> {
             } else {
                 (None, rest)
             };
+            let target_token = effective_target(target_token, embedded_target.as_ref())?;
 
             // `-b/--branch` on merge means the source to merge, not an
             // "other target" the way it does elsewhere: `git-wt merge -b 2`
@@ -502,21 +503,6 @@ fn split_rest_flags(
         branch.push(b);
     }
     Ok((rest, branch, embedded_target))
-}
-
-/// `merge`'s own `rest` twin: extracts `-b/--branch` the same way, but never
-/// `-t/--target` -- `merge` already spells `-t` for `theirs` in its own hand
-/// parser, so that letter stays reserved and merge's target is positional-only.
-fn split_rest_branch(
-    rest: Vec<String>,
-    cli_branch: &[String],
-) -> Result<(Vec<String>, Vec<String>), String> {
-    let (rest, embedded_branch) = extract_branch_flag(&rest)?;
-    let mut branch = cli_branch.to_vec();
-    if let Some(b) = embedded_branch {
-        branch.push(b);
-    }
-    Ok((rest, branch))
 }
 
 /// Resolve a positional target list plus any `-b` values to 0-based worktree

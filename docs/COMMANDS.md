@@ -253,6 +253,7 @@ Options:
     git-wt merge 1 -b feat/x
     git-wt merge 1 -b 2
     git-wt merge -b 2
+    git-wt merge -t 1 -b feat/x
     git-wt merge 1,2 --dry-run
     git-wt merge 1,2 --theirs
     git-wt merge 1,2 --ours
@@ -278,7 +279,8 @@ Sample (`git-wt merge 1 -b feature/review --dry-run`):
 Options (target list, then merge options/words — raw catch-all):
 
     -b, --branch TARGET_LIST     one source branch (merge's own '-b'; a plain worktree/branch elsewhere)
-    -t, --theirs                  take theirs on conflict
+    -t, --target TARGET_LIST     destination worktree (same as the leading positional)
+    --theirs                      take theirs on conflict
     -o, --ours                    take ours on conflict
     -d, --dry-run                 preview without merging
     --review                      hand off to review flow

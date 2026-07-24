@@ -47,11 +47,12 @@ gitwt_write_alias() {
   # invocation isn't mistaken for a bare switch target below.
   # `add`/`a` creates a worktree and cd's into the printed path unless --stay.
   # `remove`/`rm` removes the named (or current) worktree and cd's back to the
-  # main worktree if git-wt prints one. `switch`/`cd`/`s` (and a bare alias call
-  # with no args) switches worktrees and cd's; with no target git-wt opens the
-  # interactive picker. A single bare token that looks like a target (number,
-  # branch name, or comma list) is rewritten as `git-wt switch <tok>` so `wt <N>`
-  # still works for convenience, but the preferred form is `wt switch <N>`.
+  # main worktree if git-wt prints one. `switch`/`cd`/`s` switches worktrees
+  # and cd's. A bare alias call with no args passes straight through to
+  # git-wt, which defaults to the worktree list. A single bare token that
+  # looks like a target (number, branch name, or comma list) is rewritten as
+  # `git-wt switch <tok>` so `wt <N>` still works for convenience, but the
+  # preferred form is `wt switch <N>`.
   cat >> "$tmp" <<EOF
 
 # >>> git-wt alias >>>
@@ -67,7 +68,9 @@ $alias_name() {
   done
 
   case "\${1:-}" in
-    help|list|ls|version|path|show|fetch|pull|p|push|diff|meld|commits|c|log|l|merge|merged|m|doctor)
+    ""|help|list|ls|version|path|show|fetch|pull|p|push|diff|meld|commits|c|log|l|merge|merged|m|doctor)
+      # No args at all defaults to the worktree list (git-wt's own default);
+      # never treated as a switch, so it never tries to cd.
       git-wt "\$@"; return \$? ;;
     add|a)
       # Create, then cd into the new worktree — unless --stay was passed.
@@ -82,10 +85,8 @@ $alias_name() {
       local d; d="\$(git-wt "\$@")" || return \$?
       [ -n "\$d" ] && cd "\$d"
       return 0 ;;
-    ""|switch|cd|s)
-      # No args or a switch verb: switch to the worktree and cd. With no
-      # target, git-wt runs the interactive picker; prompts live on stderr
-      # so they still show through the \$(...) capture below.
+    switch|cd|s)
+      # Switch verb: switch to the worktree and cd.
       local d; d="\$(git-wt "\$@")" || return \$?
       [ -n "\$d" ] && cd "\$d"
       return 0 ;;

@@ -263,6 +263,16 @@ mod tests {
     }
 
     #[test]
+    fn all_is_found_however_late_it_sits_in_the_tail() {
+        // Only when nothing precedes it does `--all` reach clap's own field;
+        // behind another flag it lands here instead, and the caller merges the
+        // two before deciding targets. Both spellings mean every worktree.
+        let a = sync_args(SyncOp::Fetch, &["--prune", "--all"]).unwrap();
+        assert!(a.all);
+        assert_eq!(a.flags, ["--prune"]);
+    }
+
+    #[test]
     fn sync_shorts_canonicalize() {
         assert_eq!(sync_args(SyncOp::Push, &["-u"]).unwrap().flags, ["--set-upstream"]);
         assert_eq!(sync_args(SyncOp::Push, &["-n"]).unwrap().flags, ["--dry-run"]);

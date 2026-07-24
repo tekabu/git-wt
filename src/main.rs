@@ -174,15 +174,23 @@ fn run() -> Result<(), String> {
                 Commands::Push(_) => SyncOp::Push,
                 _ => unreachable!(),
             };
+            // Parsed first, and `--all` merged before anything reads it: the
+            // flag reaches clap's own field only while nothing has started
+            // filling the `flags` catch-all, so `fetch 1 --prune --all` hands
+            // it to `parse_sync_args` instead. Deciding the targets off
+            // `args.all` alone made that spelling sweep one worktree while
+            // `fetch 1 --all` errored -- same request, two answers.
+            let mut parsed = parse_sync_args(op, &args.flags)?;
+            parsed.all = parsed.all || args.all;
             let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
-            if args.all && (target.is_some() || !cli.branch.is_empty()) {
+            if parsed.all && (target.is_some() || !cli.branch.is_empty()) {
                 return Err(format!(
                     "'--all' is every worktree, so a target list has nothing to add\n\
                      hint: 'git-wt {} --all', or drop it to sweep just the ones you named",
                     op.word()
                 ));
             }
-            let idxs = if args.all {
+            let idxs = if parsed.all {
                 (0..trees.len()).collect()
             } else {
                 let mut idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
@@ -193,8 +201,6 @@ fn run() -> Result<(), String> {
                 }
                 idxs
             };
-            let mut parsed = parse_sync_args(op, &args.flags)?;
-            parsed.all = parsed.all || args.all;
             cmd_sync(&trees, &idxs, &parsed)
         }
 

@@ -10,6 +10,29 @@ use crate::git::{git_cmd, git_stdout};
 use crate::ui::{color_enabled, paint, DIM, GREEN, RED, RESET, YELLOW};
 use crate::worktree::{is_dirty, label, ref_of, Worktree};
 
+/// The words the argument loop in `cmd_diff` matches itself, in the order the
+/// unknown-argument error lists them. Spelled out here rather than derived
+/// because the loop is their only definition; they stay in this file, next to
+/// the match that reads them.
+const DIFF_WORDS: [&str; 6] =
+    ["..", "...", "--name-only", "--name-status", "--stat", "-- PATH..."];
+
+/// Everything `diff` accepts, for the unknown-argument error: the boolean
+/// flags read straight off `DiffArgs` -- they are declared in another file, so
+/// a hand-written list is what let `--meld` go unmentioned -- followed by the
+/// words above.
+fn accepted_args() -> String {
+    use clap::Args as _;
+    let cmd = DiffArgs::augment_args(clap::Command::new("diff"));
+    let mut parts: Vec<String> = cmd
+        .get_arguments()
+        .filter(|a| !a.get_action().takes_values())
+        .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+        .collect();
+    parts.extend(DIFF_WORDS.iter().map(|w| (*w).to_string()));
+    parts.join(", ")
+}
+
 pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &DiffArgs) -> Result<(), String> {
     let (idx, other) = match idxs {
         [a, b] => (*a, *b),
@@ -59,9 +82,9 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
                 };
                 return Err(format!(
                     "unexpected argument '{unknown}' for diff\n\
-                     diff takes --live, --hunks, .., ..., --name-only, --name-status, \
-                     --stat, -- PATH...\n\
-                     {hint}"
+                     diff takes {}\n\
+                     {hint}",
+                    accepted_args()
                 ));
             }
         }
@@ -601,6 +624,26 @@ pub(crate) fn summary(files: &[FileDiff]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unknown_argument_error_lists_every_flag_diff_declares() {
+        // The guard the hand-written list didn't have: `--meld` was a real
+        // flag the error never mentioned. Anything added to `DiffArgs` shows
+        // up here without a second edit.
+        use clap::Args as _;
+        let listed = accepted_args();
+        let cmd = DiffArgs::augment_args(clap::Command::new("diff"));
+        for arg in cmd.get_arguments() {
+            if arg.get_action().takes_values() {
+                continue;
+            }
+            if let Some(long) = arg.get_long() {
+                assert!(listed.contains(&format!("--{long}")), "'--{long}' missing from '{listed}'");
+            }
+        }
+        assert!(listed.contains("--meld"));
+        assert!(listed.contains("-- PATH..."));
+    }
 
     fn hunk(line: &str) -> (usize, &'static str, usize) {
         let h = parse_hunk_header(line).expect("header should parse");

@@ -216,34 +216,7 @@ pub(crate) fn gather_targets(
 pub(crate) fn extract_branch_flag(
     args: &[String],
 ) -> Result<(Vec<String>, Option<String>), String> {
-    let mut out = Vec::with_capacity(args.len());
-    let mut val: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        if a == "-b" || a == "--branch" {
-            if val.is_some() {
-                return Err(format!("'{a}' given twice"));
-            }
-            let v = args
-                .get(i + 1)
-                .ok_or_else(|| format!("'{a}' needs a value, e.g. '{a} 1,2'"))?;
-            val = Some(v.clone());
-            i += 2;
-            continue;
-        }
-        if let Some(v) = a.strip_prefix("--branch=") {
-            if val.is_some() {
-                return Err("'--branch' given twice".into());
-            }
-            val = Some(v.to_string());
-            i += 1;
-            continue;
-        }
-        out.push(a.clone());
-        i += 1;
-    }
-    Ok((out, val))
+    extract_flag(args, "-b", "--branch", "1,2")
 }
 
 /// The `-t`/`--target` twin of `extract_branch_flag`: pulls `-t`/`--target`/
@@ -251,25 +224,40 @@ pub(crate) fn extract_branch_flag(
 pub(crate) fn extract_target_flag(
     args: &[String],
 ) -> Result<(Vec<String>, Option<String>), String> {
+    extract_flag(args, "-t", "--target", "1")
+}
+
+/// Shared body of the two extractors above: remove `short VALUE`,
+/// `long VALUE`, or `long=VALUE` from `args` wherever it sits and return the
+/// remainder alongside the value. `hint` is the example value shown when the
+/// flag is given without one. A new value-taking global needs only one more
+/// call, not another copy of this loop.
+fn extract_flag(
+    args: &[String],
+    short: &str,
+    long: &str,
+    hint: &str,
+) -> Result<(Vec<String>, Option<String>), String> {
+    let eq = format!("{long}=");
     let mut out = Vec::with_capacity(args.len());
     let mut val: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        if a == "-t" || a == "--target" {
+        if a == short || a == long {
             if val.is_some() {
                 return Err(format!("'{a}' given twice"));
             }
             let v = args
                 .get(i + 1)
-                .ok_or_else(|| format!("'{a}' needs a value, e.g. '{a} 1'"))?;
+                .ok_or_else(|| format!("'{a}' needs a value, e.g. '{a} {hint}'"))?;
             val = Some(v.clone());
             i += 2;
             continue;
         }
-        if let Some(v) = a.strip_prefix("--target=") {
+        if let Some(v) = a.strip_prefix(&eq) {
             if val.is_some() {
-                return Err("'--target' given twice".into());
+                return Err(format!("'{long}' given twice"));
             }
             val = Some(v.to_string());
             i += 1;
@@ -330,24 +318,55 @@ pub(crate) fn warn_if_alias_shadows_branch(trees: &[Worktree], tok: &str, full_w
 /// from "typed `s`". `warn_if_alias_shadows_branch` needs exactly that
 /// distinction: the warning only makes sense when the alias itself was typed.
 ///
-/// Skips the two global flags that can precede the verb (`-h`/`-f`, no
-/// value; `-b`/`--branch`, one value) so `git-wt -b 2 pull` still finds
-/// `pull`. Anything else unrecognized before the verb is skipped rather than
-/// mistaken for it, since it is the parser's job (already run) to reject it.
+/// Skips any top-level flag that can precede the verb, consuming the value of
+/// the ones that take one (`-b 2`) so `git-wt -b 2 pull` still finds `pull`.
+/// Which flags those are is read off `Cli`'s own clap definition rather than
+/// listed here, so adding a value-taking global can't leave this scan behind
+/// reading that flag's value as the verb. Anything else unrecognized before
+/// the verb is skipped rather than mistaken for it, since it is the parser's
+/// job (already run) to reject it.
 pub(crate) fn typed_verb() -> Option<String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    typed_verb_from(std::env::args().skip(1))
+}
+
+fn typed_verb_from(argv: impl IntoIterator<Item = String>) -> Option<String> {
+    let args: Vec<String> = argv.into_iter().collect();
+    let valued = valued_top_level_flags();
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        match a.as_str() {
-            "-h" | "--help" | "-f" | "--full" => i += 1,
-            "-b" | "--branch" => i += 2,
-            s if s.starts_with("--branch=") => i += 1,
-            s if !s.starts_with('-') => return Some(s.to_string()),
-            _ => i += 1,
+        if !a.starts_with('-') {
+            return Some(a.clone());
         }
+        // `--flag=VALUE` carries its value in the same token; a bare
+        // value-taking flag eats the next one.
+        let split = a.split_once('=').is_some();
+        i += if !split && valued.iter().any(|f| f == a) { 2 } else { 1 };
     }
     None
+}
+
+/// The spellings (`-b`, `--branch`, ...) of every top-level `Cli` flag that
+/// takes a value, straight from the derive.
+fn valued_top_level_flags() -> Vec<String> {
+    use clap::CommandFactory;
+    let mut out = Vec::new();
+    for arg in Cli::command().get_arguments() {
+        if !arg.get_action().takes_values() {
+            continue;
+        }
+        if let Some(s) = arg.get_short() {
+            out.push(format!("-{s}"));
+        }
+        if let Some(l) = arg.get_long() {
+            out.push(format!("--{l}"));
+        }
+        out.extend(arg.get_all_aliases().into_iter().flatten().map(|l| format!("--{l}")));
+        out.extend(
+            arg.get_all_short_aliases().into_iter().flatten().map(|s| format!("-{s}")),
+        );
+    }
+    out
 }
 
 /// Map a 1-based index to a 0-based one, or an error.
@@ -476,6 +495,69 @@ mod tests {
         let trees = trees_on(&["main", "2"]);
         assert_eq!(resolve_target(&trees, "2"), None);
         assert_eq!(resolve_target(&trees, "heads/2"), Some(2));
+    }
+
+    fn argv(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn the_typed_verb_is_the_first_token_that_is_not_a_flag_or_its_value() {
+        assert_eq!(typed_verb_from(argv("s 1")), Some("s".into()));
+        assert_eq!(typed_verb_from(argv("-b 2 pull")), Some("pull".into()));
+        assert_eq!(typed_verb_from(argv("--branch 2 pull")), Some("pull".into()));
+        assert_eq!(typed_verb_from(argv("--branch=2 pull")), Some("pull".into()));
+        assert_eq!(typed_verb_from(argv("-hf")), None);
+        assert_eq!(typed_verb_from(argv("")), None);
+    }
+
+    #[test]
+    fn a_flag_value_that_looks_like_a_verb_is_not_read_as_one() {
+        // The reason the skip table is derived rather than hand-written: a
+        // `-b` value spelled like a verb must not become the verb.
+        assert_eq!(typed_verb_from(argv("-b merge switch")), Some("switch".into()));
+    }
+
+    #[test]
+    fn every_value_taking_global_is_in_the_skip_table() {
+        let flags = valued_top_level_flags();
+        assert!(flags.contains(&"-b".to_string()));
+        assert!(flags.contains(&"--branch".to_string()));
+        // -h/-f are SetTrue, so they must not eat the next token.
+        assert!(!flags.contains(&"-h".to_string()));
+        assert!(!flags.contains(&"-f".to_string()));
+    }
+
+    #[test]
+    fn a_flag_is_pulled_out_of_a_catch_all_tail_wherever_it_sits() {
+        let a = argv("1 --oneline -b main HEAD");
+        assert_eq!(
+            extract_branch_flag(&a),
+            Ok((argv("1 --oneline HEAD"), Some("main".into())))
+        );
+        let a = argv("1 --target=2 --stat");
+        assert_eq!(extract_target_flag(&a), Ok((argv("1 --stat"), Some("2".into()))));
+        assert_eq!(extract_branch_flag(&argv("1 --stat")), Ok((argv("1 --stat"), None)));
+    }
+
+    #[test]
+    fn a_repeated_or_valueless_flag_in_the_tail_is_an_error() {
+        assert_eq!(
+            extract_branch_flag(&argv("-b 1 -b 2")),
+            Err("'-b' given twice".into())
+        );
+        assert_eq!(
+            extract_target_flag(&argv("--target=1 --target=2")),
+            Err("'--target' given twice".into())
+        );
+        assert_eq!(
+            extract_branch_flag(&argv("1 -b")),
+            Err("'-b' needs a value, e.g. '-b 1,2'".into())
+        );
+        assert_eq!(
+            extract_target_flag(&argv("1 --target")),
+            Err("'--target' needs a value, e.g. '--target 1'".into())
+        );
     }
 
     #[test]

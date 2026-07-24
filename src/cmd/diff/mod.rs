@@ -14,20 +14,26 @@ use crate::worktree::{is_dirty, label, ref_of, Worktree};
 /// unknown-argument error lists them. Spelled out here rather than derived
 /// because the loop is their only definition; they stay in this file, next to
 /// the match that reads them.
-const DIFF_WORDS: [&str; 6] =
-    ["..", "...", "--name-only", "--name-status", "--stat", "-- PATH..."];
+const DIFF_WORDS: [&str; 5] =
+    ["..", "...", "--name-only", "--name-status", "--stat"];
 
-/// Everything `diff` accepts, for the unknown-argument error: the boolean
-/// flags read straight off `DiffArgs` -- they are declared in another file, so
-/// a hand-written list is what let `--meld` go unmentioned -- followed by the
-/// words above.
+/// Everything `diff` accepts, for the unknown-argument error: the flags read
+/// straight off `DiffArgs` -- they are declared in another file, so a
+/// hand-written list is what let `--meld` go unmentioned -- followed by the
+/// words above. Value-taking flags carry their value name, so `--path` reads
+/// as something to fill in rather than a switch.
 fn accepted_args() -> String {
     use clap::Args as _;
     let cmd = DiffArgs::augment_args(clap::Command::new("diff"));
     let mut parts: Vec<String> = cmd
         .get_arguments()
-        .filter(|a| !a.get_action().takes_values())
-        .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+        .filter_map(|a| {
+            let long = a.get_long()?;
+            Some(match (a.get_action().takes_values(), a.get_value_names()) {
+                (true, Some([v, ..])) => format!("--{long} {v}"),
+                _ => format!("--{long}"),
+            })
+        })
         .collect();
     parts.extend(DIFF_WORDS.iter().map(|w| (*w).to_string()));
     parts.join(", ")
@@ -38,7 +44,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         [a, b] => (*a, *b),
         _ => {
             return Err(format!(
-                "diff takes exactly two worktrees, got {}\nhint: 'git-wt 1,2,3 meld' compares three",
+                "diff takes exactly two worktrees, got {}",
                 idxs.len()
             ));
         }
@@ -56,37 +62,54 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
     let mut dots: Option<&str> = None;
     let hunks = args.hunks;
     let mut listing: Option<String> = None;
-    let mut paths: Vec<String> = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             ".." => dots = Some(".."),
             "..." => dots = Some("..."),
+            // Retired: paths are '-p/--path' now. The word rarely survives
+            // this far -- the argument parser eats the first '--' whenever a
+            // flag of its own came earlier -- so the bare-word arm below
+            // answers for the tokens that follow it.
             "--" => {
-                paths.extend(it.cloned());
-                break;
+                return Err("'--' is retired for diff: paths go in '-p/--path'".into());
             }
             "--name-only" | "--name-status" | "--stat" => listing = Some(arg.clone()),
+            // A bare word naming a real file is a path someone spelled the git
+            // way; the '--' before it was eaten before we ever saw it. Naming
+            // that beats the flag-list error below, which would talk past it.
+            word if !word.starts_with('-')
+                && path_matches(root, (&trees[idx].path, &trees[other].path), &a, &b, live, word) =>
+            {
+                return Err(format!(
+                    "unexpected argument '{word}' for diff: paths go in '-p/--path'"
+                ));
+            }
             unknown => {
-                let hint = if live {
-                    "hint: --live has no git equivalent to defer to; \
-                     'git diff --no-index <dir A>/<file> <dir B>/<file>' is the \
-                     closest, one file at a time"
-                        .to_string()
-                } else {
-                    let d = dots.unwrap_or("...");
-                    format!(
-                        "hint: for any other git flag, run git itself: \
-                         git diff {a}{d}{b} {unknown}"
-                    )
-                };
                 return Err(format!(
                     "unexpected argument '{unknown}' for diff\n\
-                     diff takes {}\n\
-                     {hint}",
+                     diff takes {}",
                     accepted_args()
                 ));
             }
+        }
+    }
+
+    let paths = match &args.path {
+        Some(list) => split_paths(list)?,
+        None => Vec::new(),
+    };
+
+    // A pathspec that matches nothing is always a mistake -- a typo, or a
+    // directory that only exists in the branch the user forgot to name -- and
+    // silently reports "no differences", which reads like an answer.
+    for p in &paths {
+        if !path_matches(root, (&trees[idx].path, &trees[other].path), &a, &b, live, p) {
+            return Err(format!(
+                "no file matches '{p}' in {} or {}",
+                label(&trees[idx]),
+                label(&trees[other])
+            ));
         }
     }
 
@@ -94,8 +117,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         if let Some(d) = dots {
             return Err(format!(
                 "'--live' and '{d}' cannot combine: a range compares commits, \
-                 --live compares the files on disk\n\
-                 hint: drop '{d}' for live contents, or drop '--live' for the range"
+                 --live compares the files on disk"
             ));
         }
     }
@@ -117,6 +139,23 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
             "'--meld' and '{l}' cannot combine: {l} prints a listing, --meld opens a diff viewer"
         ));
     }
+
+    // Which single status survives, if either side-only flag was given. 'D' is
+    // a file the range deletes going A -> B, i.e. one only A has; 'A' is the
+    // mirror. Both flags at once asks for two disjoint sets.
+    let only = match (args.a_only, args.b_only) {
+        (true, true) => {
+            return Err(
+                "'-A/--a-only' and '-B/--b-only' cannot combine: no file is missing from \
+                 both sides"
+                    .into(),
+            );
+        }
+        (true, false) => Some('D'),
+        (false, true) => Some('A'),
+        (false, false) => None,
+    };
+    let only_side = only.map(|s| if s == 'D' { a.clone() } else { b.clone() });
 
     let on_err = color_enabled(std::io::stderr().is_terminal());
     if !live {
@@ -143,27 +182,58 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
             &trees[other].path,
             &paths,
             !matches!(listing.as_deref(), Some("--name-only") | Some("--name-status")),
+            only,
         )?;
+        if let Some(side) = &only_side {
+            if files.is_empty() {
+                eprintln!("no files only in {side}");
+                return Ok(());
+            }
+        }
         if args.meld {
             return open_meld_live(&trees[idx].path, &trees[other].path, &files);
         }
-        let head = format!("diff {a} ↔ {b}   live — literal contents, .gitignore honored");
+        let head = format!(
+            "diff {a} ↔ {b}   live — literal contents, .gitignore honored{}",
+            only_note(&only_side)
+        );
         return render(&files, &head, listing.as_deref(), hunks);
     }
     if args.meld {
-        let files = ref_diff(root, &format!("{a}{dots}{b}"), &paths)?;
+        let files = keep_only(ref_diff(root, &format!("{a}{dots}{b}"), &paths)?, only);
+        if let Some(side) = &only_side {
+            if files.is_empty() {
+                eprintln!("no files only in {side}");
+                return Ok(());
+            }
+        }
         let left = if dots == "..." { merge_base(root, &a, &b)? } else { a.clone() };
         return open_meld_ref(root, &left, &b, &format!("{a}{dots}{b}"), &files);
     }
     if hunks {
-        let files = ref_diff(root, &format!("{a}{dots}{b}"), &paths)?;
-        let head = format!("diff {a} ↔ {b}   {a}{dots}{b} — committed state");
+        let files = keep_only(ref_diff(root, &format!("{a}{dots}{b}"), &paths)?, only);
+        if let Some(side) = &only_side {
+            if files.is_empty() {
+                eprintln!("no files only in {side}");
+                return Ok(());
+            }
+        }
+        let head = format!(
+            "diff {a} ↔ {b}   {a}{dots}{b} — committed state{}",
+            only_note(&only_side)
+        );
         return render(&files, &head, None, true);
     }
 
     let mut argv: Vec<String> = Vec::new();
     if let Some(l) = &listing {
         argv.push(l.clone());
+    }
+    if let Some(s) = only {
+        // A rename reads as one 'R' rather than an add plus a delete, which
+        // would hide exactly the files the flag asks for.
+        argv.push("--no-renames".into());
+        argv.push(format!("--diff-filter={s}"));
     }
     if !paths.is_empty() {
         argv.push("--".into());
@@ -223,12 +293,73 @@ pub(crate) fn same_bytes(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Split a `-p/--path` value on commas. An empty element is a typo, and an
+/// empty pathspec matches everything, so it would quietly undo the limit.
+fn split_paths(list: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for part in list.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            return Err(format!(
+                "bad path list '{list}'; want paths, e.g. 'src/,docs/'"
+            ));
+        }
+        out.push(p.to_string());
+    }
+    Ok(out)
+}
+
+/// Whether a pathspec matches anything either side of the diff. Both working
+/// trees are asked first (so an untracked file counts, and globs are git's own
+/// matching, not ours); a committed diff also asks the two trees, since a path
+/// deleted from disk in both worktrees is still a fair thing to diff.
+fn path_matches(
+    root: &Path,
+    dirs: (&Path, &Path),
+    a: &str,
+    b: &str,
+    live: bool,
+    p: &str,
+) -> bool {
+    let one = [p.to_string()];
+    if [dirs.0, dirs.1]
+        .iter()
+        .any(|d| live_files(d, &one).is_ok_and(|v| !v.is_empty()))
+    {
+        return true;
+    }
+    if live {
+        return false;
+    }
+    [a, b].iter().any(|r| {
+        git_stdout(root, &["ls-tree", "-r", "--name-only", r, "--", p])
+            .is_ok_and(|s| !s.trim().is_empty())
+    })
+}
+
+/// Drop every file whose status is not the one asked for; `None` keeps all.
+pub(crate) fn keep_only(files: Vec<FileDiff>, only: Option<char>) -> Vec<FileDiff> {
+    match only {
+        Some(s) => files.into_iter().filter(|f| f.status == s).collect(),
+        None => files,
+    }
+}
+
+/// Header tail naming the side a `-A`/`-B` run kept, empty without one.
+fn only_note(side: &Option<String>) -> String {
+    match side {
+        Some(s) => format!("   only in {s}"),
+        None => String::new(),
+    }
+}
+
 pub(crate) fn live_diff(
     root: &Path,
     a_dir: &Path,
     b_dir: &Path,
     paths: &[String],
     content: bool,
+    only: Option<char>,
 ) -> Result<Vec<FileDiff>, String> {
     let mut union: Vec<String> = live_files(a_dir, paths)?;
     union.extend(live_files(b_dir, paths)?);
@@ -251,6 +382,10 @@ pub(crate) fn live_diff(
                 'M'
             }
         };
+        // Filter before the content diff: a dropped file never needs one.
+        if only.is_some_and(|s| s != status) {
+            continue;
+        }
         let mut fd = FileDiff {
             path: p,
             status,
@@ -642,7 +777,10 @@ mod tests {
             }
         }
         assert!(listed.contains("--meld"));
-        assert!(listed.contains("-- PATH..."));
+        // Value-taking flags earn their value name, so '--path' reads as
+        // something to fill in; git's retired '-- PATH...' is not offered.
+        assert!(listed.contains("--path PATH_LIST"));
+        assert!(!listed.contains("-- PATH..."));
     }
 
     fn hunk(line: &str) -> (usize, &'static str, usize) {

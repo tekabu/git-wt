@@ -229,14 +229,14 @@ pub(crate) fn extract_target_flag(
 
 /// Shared body of the two extractors above: remove `short VALUE`,
 /// `long VALUE`, or `long=VALUE` from `args` wherever it sits and return the
-/// remainder alongside the value. `hint` is the example value shown when the
+/// remainder alongside the value. `example` is the value shown when the
 /// flag is given without one. A new value-taking global needs only one more
 /// call, not another copy of this loop.
 fn extract_flag(
     args: &[String],
     short: &str,
     long: &str,
-    hint: &str,
+    example: &str,
 ) -> Result<(Vec<String>, Option<String>), String> {
     let eq = format!("{long}=");
     let mut out = Vec::with_capacity(args.len());
@@ -250,7 +250,7 @@ fn extract_flag(
             }
             let v = args
                 .get(i + 1)
-                .ok_or_else(|| format!("'{a}' needs a value, e.g. '{a} {hint}'"))?;
+                .ok_or_else(|| format!("'{a}' needs a value, e.g. '{a} {example}'"))?;
             val = Some(v.clone());
             i += 2;
             continue;
@@ -306,7 +306,7 @@ pub(crate) fn warn_if_alias_shadows_branch(trees: &[Worktree], tok: &str, full_w
     if worktree_on_branch(trees, tok).is_some() {
         eprintln!(
             "warning: branch '{tok}' is checked out here; '{tok}' is read as the '{full_word}' \
-             alias, not the branch\nhint: 'heads/{tok}' reaches the branch's worktree"
+             alias, not the branch"
         );
     }
 }

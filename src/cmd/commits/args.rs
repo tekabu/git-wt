@@ -226,7 +226,7 @@ pub(crate) struct CommitsArgs {
     /// default cap (`PATH_MAX`); `Full` never cuts.
     pub(crate) pathw: Option<PathWidth>,
     /// `log` only: don't follow a rename, even with one path given. The
-    /// escape hatch for the empty-result hint ("it may live under another
+    /// escape hatch for the empty-result note ("it may live under another
     /// name") -- an explicit opt-out for the one case `log` would otherwise
     /// always take, a single path's history across whatever it used to be
     /// called.
@@ -248,35 +248,19 @@ pub(crate) struct CommitsArgs {
 /// is no collision left to report.
 fn merge_word_msg(word: &str) -> String {
     let after = |what: &str| {
-        format!(
-            "'{word}' {what}\n\
-             hint: '--review' merges nothing -- drop it to run the merge, or drop \
-             '{word}' to keep the report"
-        )
+        format!("'{word}' {what}, and '--review' merges nothing")
     };
     match word {
         // The one the plan settled outright: it is not a conflict of meaning
         // but a redundancy, and the fix is to delete a word rather than choose.
-        "dry-run" | "--dry-run" => format!(
-            "'{word}' and '--review' answer the same question\n\
-             hint: '--review' already reports the verdict '{word}' prints, plus the \
-             commits behind it"
-        ),
-        "--review" | "review" => {
-            "'--review' is already in effect\nhint: everything after the first one is a \
-             'commits' flag"
-                .to_string()
+        "--dry-run" => format!("'{word}' and '--review' answer the same question"),
+        "--review" => "'--review' is already in effect".to_string(),
+        "--continue" | "--abort" => {
+            format!("'{word}' acts on a merge already in progress, and '--review' starts none")
         }
-        "--continue" | "continue" | "--abort" | "abort" => format!(
-            "'{word}' acts on a merge already in progress, and '--review' starts none\n\
-             hint: 'git-wt <N> merge {}'",
-            word.trim_start_matches('-')
-        ),
-        "--ours" | "ours" | "--theirs" | "theirs" => format!(
+        "--ours" | "--theirs" => format!(
             "'{word}' settles conflicting hunks while a merge is computed, and \
-             '--review' computes none\n\
-             hint: 'git-wt <N>,<M> merge dry-run {}' reports whether it would still conflict",
-            word.trim_start_matches('-')
+             '--review' computes none"
         ),
         "--no-ff" | "--ff-only" => after("shapes a merge commit"),
         "--force" => after("gates whether a merge may run"),
@@ -331,10 +315,8 @@ pub(crate) fn expand_short_bundles(args: &[String]) -> Result<Vec<String>, Strin
         }
         for (i, c) in letters.iter().enumerate() {
             if VALUE_SHORTS.contains(*c) && i + 1 != letters.len() {
-                let rest: String = letters.iter().filter(|o| *o != c).collect();
                 return Err(format!(
-                    "'-{c}' takes a value, so it has to come last in '{a}'\n\
-                     hint: '-{rest}{c} <value>'"
+                    "'-{c}' takes a value, so it has to come last in '{a}'"
                 ));
             }
             out.push(format!("-{c}"));
@@ -611,8 +593,7 @@ pub(crate) fn parse_commits_args_with(
             if flag {
                 return Err(format!(
                     "no '{what}' under '--review': the rows are the range 'dest..src', \
-                     which is the one source a review has\n\
-                     hint: 'git-wt <N>,<M> commits {what}' is that view"
+                     which is the one source a review has"
                 ));
             }
         }
@@ -698,8 +679,7 @@ pub(crate) fn parse_subjectw(v: &str) -> Result<SubjectWidth, String> {
         // only "there was a subject" is not a subject column.
         Ok(n) if n >= MIN_TEXTW => Ok(SubjectWidth::Cols(n)),
         Ok(n) if n > 0 => Err(format!(
-            "--subject-width needs {MIN_TEXTW} columns or more: below that, a cut subject says nothing\n\
-             hint: 'commits | grep' and '--md' never cut, however narrow the terminal\n  got: '{n}'"
+            "--subject-width needs {MIN_TEXTW} columns or more: below that, a cut subject says nothing\n  got: '{n}'"
         )),
         _ => Err(format!("{SUBJW_BAD}\n  got: '{v}'")),
     }
@@ -716,8 +696,7 @@ pub(crate) fn parse_branchw(v: &str) -> Result<BranchWidth, String> {
         // apart, which is the one job a header has.
         Ok(n) if n >= BRANCH_MIN => Ok(BranchWidth::Cols(n)),
         Ok(n) if n > 0 => Err(format!(
-            "--branch-width needs {BRANCH_MIN} columns or more: below that, a cut name says nothing\n\
-             hint: '--branchw full' never cuts, however long the name\n  got: '{n}'"
+            "--branch-width needs {BRANCH_MIN} columns or more: below that, a cut name says nothing\n  got: '{n}'"
         )),
         _ => Err(format!("{BRANCHW_BAD}\n  got: '{v}'")),
     }
@@ -731,8 +710,7 @@ pub(crate) fn parse_pathw(v: &str) -> Result<PathWidth, String> {
     match v.parse::<usize>() {
         Ok(n) if n >= PATH_MIN => Ok(PathWidth::Cols(n)),
         Ok(n) if n > 0 => Err(format!(
-            "--path-width needs {PATH_MIN} columns or more: below that, a cut path says nothing\n\
-             hint: '--pathw full' never cuts, however long the path\n  got: '{n}'"
+            "--path-width needs {PATH_MIN} columns or more: below that, a cut path says nothing\n  got: '{n}'"
         )),
         _ => Err(format!("{PATHW_BAD}\n  got: '{v}'")),
     }
@@ -750,30 +728,20 @@ pub(crate) fn parse_wrap(v: &str) -> Result<Wrap, String> {
     }
 }
 
-pub(crate) const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'full', e.g. '--wrap 2'\n\
-     hint: a bare '--wrap' is 'full'";
+pub(crate) const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'full', e.g. '--wrap 2'";
 pub(crate) const SUBJW_MISSING: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
-pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'\n\
-     hint: 'full' never cuts the subject, however wide it is";
+pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
 pub(crate) const BRANCHW_MISSING: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'";
-pub(crate) const BRANCHW_BAD: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'\n\
-     hint: 'full' never cuts a branch name, however long it is";
+pub(crate) const BRANCHW_BAD: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'";
 pub(crate) const PATHW_MISSING: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'";
-pub(crate) const PATHW_BAD: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'\n\
-     hint: 'full' never cuts a path name, however long it is";
-pub(crate) const MESSAGE_MISSING: &str =
-    "--message needs a term, e.g. '--message ISSUE-42'\n\
-     hint: it searches the subject and the body";
-pub(crate) const SEARCH_MISSING: &str =
-    "--search needs a term, e.g. '--search ISSUE-42'\n\
-     hint: it only highlights -- use --message to filter rows down to a match";
+pub(crate) const PATHW_BAD: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'";
+pub(crate) const MESSAGE_MISSING: &str = "--message needs a term, e.g. '--message ISSUE-42'";
+pub(crate) const SEARCH_MISSING: &str = "--search needs a term, e.g. '--search ISSUE-42'";
 pub(crate) const FILENAME_MISSING: &str =
     "--filename needs a term, e.g. '--filename render.rs'";
 pub(crate) const ALL_FILES_MSG: &str =
     "--all-files needs a '--filename TERM' to widen: on its own the file block is already whole";
-pub(crate) const DATE_MISSING: &str =
-    "--date needs a day, e.g. '--date 2026-01-01'\n\
-     hint: for a range use --date-since / --date-until";
+pub(crate) const DATE_MISSING: &str = "--date needs a day, e.g. '--date 2026-01-01'";
 pub(crate) const FROM_DATE_MISSING: &str = "--date-since needs a date, e.g. '--date-since 2026-01-01'";
 pub(crate) const TO_DATE_MISSING: &str = "--date-until needs a date, e.g. '--date-until 2026-06-30'";
 pub(crate) const COMMIT_SINCE_MISSING: &str =
@@ -800,12 +768,8 @@ pub(crate) fn parse_date_filter(s: &str) -> Result<DateFilter, String> {
 /// A comparison in `--date`'s value names a bound that has its own flag.
 pub(crate) fn operator_msg(op: char, given: &str) -> String {
     let bare = given.trim_start_matches(['>', '<', '=']).trim();
-    let flag = if op == '<' { "--date-until" } else { "--date-since" };
     let shown = if bare.is_empty() { "2026-01-01" } else { bare };
-    format!(
-        "no '{op}' in --date; it takes one day, e.g. '--date {shown}'\n\
-         hint: for a bound use '{flag} {shown}'"
-    )
+    format!("no '{op}' in --date; it takes one day, e.g. '--date {shown}'")
 }
 
 /// Validate a `YYYY-MM-DD` date, which is the only shape the compare is sound
@@ -816,9 +780,7 @@ pub(crate) fn iso_date(s: &str) -> Result<String, String> {
         // An empty value usually means the shell ate an unquoted '>' -- which
         // no longer belongs here at all, so say where the bounds live.
         if s.is_empty() {
-            "a date is missing; want YYYY-MM-DD\n\
-             hint: --date takes one day, --date-since / --date-until take bounds"
-                .to_string()
+            "a date is missing; want YYYY-MM-DD".to_string()
         } else {
             format!("bad date '{s}'; want YYYY-MM-DD, e.g. '2026-01-01'")
         }
@@ -1099,11 +1061,9 @@ mod tests {
         let got = parse(&["-fn", "5"]).unwrap();
         assert!(got.files);
         assert_eq!(got.limit, Some(5));
-        // Anywhere else, '5' would have to belong to two flags at once. Say so,
-        // and say which spelling works.
+        // Anywhere else, '5' would have to belong to two flags at once.
         let err = parse(&["-nf", "5"]).unwrap_err();
         assert!(err.contains("has to come last"), "{err}");
-        assert!(err.contains("-fn <value>"), "{err}");
     }
 
     #[test]
@@ -1129,10 +1089,10 @@ mod tests {
             ("<=2026-01-01", "--date-until"),
             ("<2026-01-01", "--date-until"),
         ] {
+            let _ = flag;
             let err = parse_date_filter(given).unwrap_err();
             assert!(err.contains("in --date"), "{given}: {err}");
-            assert!(err.contains(flag), "{given}: {err}");
-            // The day survives into the hint, so the fix is copy-pasteable.
+            // The day survives into the error, so the fix is copy-pasteable.
             assert!(err.contains("2026-01-01"), "{given}: {err}");
         }
 
@@ -1143,7 +1103,7 @@ mod tests {
         assert!(parse_date_filter("2026-13-01").unwrap_err().contains("no such date"));
         assert!(parse_date_filter("2026-01-32").unwrap_err().contains("no such date"));
         // An unquoted '>' is eaten by the shell, so the value arrives empty.
-        assert!(parse_date_filter("").unwrap_err().contains("--date-since"));
+        assert!(parse_date_filter("").unwrap_err().contains("a date is missing"));
     }
 
     #[test]
@@ -1385,7 +1345,7 @@ mod tests {
     fn the_text_filters_never_widen_the_source() {
         // They match many commits and name none, so the branch comparison stays
         // the question -- the same rule --author follows. --all is there to be
-        // typed, and the empty-result hint says so.
+        // typed, and the empty-result note says so.
         assert!(!parse(&["--message", "wrap"]).unwrap().all);
         assert!(!parse(&["--filename", "ui.rs"]).unwrap().all);
         assert!(parse(&["--message", "wrap", "--all"]).unwrap().all);

@@ -50,8 +50,6 @@ pub(crate) struct SyncParsedArgs {
     pub(crate) flags: Vec<String>,
 }
 
-pub(crate) const ALL_HINT: &str = "hint: 'git-wt <N> fetch' for one worktree, 'git-wt fetch --all' for every one";
-
 pub(crate) fn parse_sync_args(op: SyncOp, args: &[String]) -> Result<SyncParsedArgs, String> {
     let mut all = false;
     let mut flags: Vec<String> = Vec::new();
@@ -73,8 +71,7 @@ pub(crate) fn parse_sync_args(op: SyncOp, args: &[String]) -> Result<SyncParsedA
             "--fl" if op == SyncOp::Push => "--force-with-lease",
             "-f" | "--force" if op == SyncOp::Push => {
                 return Err("no '--force' for push: it overwrites a remote branch without \
-                     checking what is on it\nhint: '--force-with-lease' refuses when the remote \
-                     moved since you last saw it"
+                     checking what is on it"
                     .into());
             }
             s => s,
@@ -82,8 +79,7 @@ pub(crate) fn parse_sync_args(op: SyncOp, args: &[String]) -> Result<SyncParsedA
         if !op.flags().contains(&canon) {
             return Err(format!(
                 "unknown option '{a}' for {word}\n\
-                 hint: {word} takes {}\n\
-                 any other git flag is yours to run: 'git -C <dir> {word} {a}'",
+                 {word} takes {}",
                 op.flags().join(", ")
             ));
         }
@@ -127,8 +123,7 @@ pub(crate) fn default_remote(dir: &Path) -> Result<String, String> {
         1 => Ok(remotes.into_iter().next().expect("len 1")),
         _ if remotes.iter().any(|r| r == "origin") => Ok("origin".into()),
         _ => Err(format!(
-            "which remote? this repo has {}, and none is called 'origin'\n\
-             hint: 'git -C <dir> push -u <remote> <branch>' names it",
+            "which remote? this repo has {}, and none is called 'origin'",
             remotes.join(", ")
         )),
     }
@@ -154,17 +149,7 @@ pub(crate) fn sync_argv(w: &Worktree, args: &SyncParsedArgs) -> Result<Vec<Strin
     Ok(argv)
 }
 
-fn no_upstream_hint(op: SyncOp, e: &str, idx: usize) -> String {
-    let is_no_upstream = match op {
-        SyncOp::Push => e.contains("has no upstream branch"),
-        SyncOp::Pull => e.contains("no tracking information"),
-        SyncOp::Fetch => false,
-    };
-    if !is_no_upstream {
-        return e.to_string();
-    }
-    format!("{e}\nhint: 'git-wt {} push -u' sets the upstream from here", idx + 1)
-}
+
 
 pub(crate) fn cmd_sync(
     trees: &[Worktree],
@@ -201,7 +186,6 @@ pub(crate) fn cmd_sync(
         match res {
             Ok(()) => ok += 1,
             Err(e) => {
-                let e = no_upstream_hint(args.op, &e, i);
                 if sweep {
                     eprintln!("{} {e}", paint("error:", RED, on));
                 }
@@ -318,7 +302,7 @@ mod tests {
     fn sync_unknown_flag_is_not_a_passthrough() {
         let e = sync_args(SyncOp::Pull, &["--depth=1"]).unwrap_err();
         assert!(e.contains("unknown option '--depth=1' for pull"));
-        assert!(e.contains("git -C <dir> pull --depth=1"));
+        assert!(e.contains("pull takes"));
     }
 
     #[test]
@@ -326,7 +310,6 @@ mod tests {
         for f in ["--force", "-f"] {
             let e = sync_args(SyncOp::Push, &[f]).unwrap_err();
             assert!(e.contains("no '--force' for push"));
-            assert!(e.contains("--force-with-lease"));
         }
         assert!(sync_args(SyncOp::Push, &["--force-with-lease"]).is_ok());
         assert!(sync_args(SyncOp::Fetch, &["--force"]).is_ok());

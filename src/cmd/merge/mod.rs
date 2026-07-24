@@ -160,9 +160,7 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
         }
         if !bad.is_empty() {
             return Err(format!(
-                "review takes no merge options (got {})\n\
-                 hint: '--review' ends merge's own flags -- anything meant for the \
-                 commit table goes after it, e.g. 'merge --review -f'",
+                "review takes no merge options (got {})",
                 bad.join(", ")
             ));
         }
@@ -182,10 +180,8 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
         }
         if let Some(sd) = side {
             return Err(format!(
-                "{word} takes no merge options\n\
-                 hint: '{w}' is applied when a merge starts, so it cannot join one already stopped\n\
-                 hint: 'git-wt <N> merge --abort', then re-run the merge with '{w}'",
-                w = sd.flag()
+                "{word} takes no merge options (got {})",
+                sd.flag()
             ));
         }
         let mut bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
@@ -261,7 +257,7 @@ pub(crate) fn cmd_merge(
             }
             let stuck = conflicted_files(dir);
             if !stuck.is_empty() {
-                return Err(conflict_msg(dir, &stuck, idx));
+                return Err(conflict_msg(dir, &stuck));
             }
             git_run_no_editor(dir, &["merge", "--continue"])?;
             eprintln!("{} merge in {}", paint("Completed", GREEN, color), leaf_of(dir));
@@ -288,10 +284,8 @@ pub(crate) fn cmd_merge(
     if in_progress {
         let Some(sd) = args.side else {
             return Err(format!(
-                "a merge is already in progress in {}\n\
-                 hint: 'git-wt {n} merge --continue' or 'git-wt {n} merge --abort'",
-                dir.display(),
-                n = idx + 1
+                "a merge is already in progress in {}",
+                dir.display()
             ));
         };
         eprintln!(
@@ -323,7 +317,7 @@ pub(crate) fn cmd_merge(
         let porcelain = git_stdout(dir, &["status", "--porcelain"])?;
         if has_tracked_changes(&porcelain) {
             return Err(format!(
-                "worktree {} has uncommitted changes\nhint: commit or stash them, or re-run with -f",
+                "worktree {} has uncommitted changes",
                 idx + 1
             ));
         }
@@ -358,7 +352,7 @@ pub(crate) fn cmd_merge(
         if stuck.is_empty() {
             return Err(e);
         }
-        return Err(conflict_msg(dir, &stuck, idx));
+        return Err(conflict_msg(dir, &stuck));
     }
 
     let into = label(dest);
@@ -369,7 +363,7 @@ pub(crate) fn cmd_merge(
     };
     eprintln!("{} {src_branch} into {into}  ({how})", paint(what, GREEN, color));
     if args.squash {
-        eprintln!("hint: the merge is staged but not committed");
+        eprintln!("the merge is staged but not committed");
     }
     Ok(())
 }
@@ -451,8 +445,7 @@ fn review_conflict_msg(files: &[String]) -> String {
     for f in files {
         m.push_str(&format!("  {f}\n"));
     }
-    m.push_str("hint: nothing was changed — this was a review\n");
-    m.push_str("hint: '--ours' or '--theirs' would settle these automatically");
+    m.push_str("nothing was changed — this was a review");
     m
 }
 
@@ -543,8 +536,7 @@ pub(crate) fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> R
             for f in &files {
                 m.push_str(&format!("  {f}\n"));
             }
-            m.push_str("hint: nothing was changed — this was a dry run\n");
-            m.push_str("hint: '--ours' or '--theirs' would settle these automatically");
+            m.push_str("nothing was changed — this was a dry run");
             Err(m)
         }
     }
@@ -613,18 +605,11 @@ pub(crate) fn conflicted_files(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(crate) fn conflict_msg(dir: &Path, files: &[String], idx: usize) -> String {
+pub(crate) fn conflict_msg(dir: &Path, files: &[String]) -> String {
     let mut m = format!("merge conflict in {}\n", dir.display());
     for f in files {
         m.push_str(&format!("  {f}\n"));
     }
-    let n = idx + 1;
-    m.push_str(&format!(
-        "hint: resolve them there, 'git add' each, then 'git-wt {n} merge --continue'\n\
-         hint: or undo the merge with 'git-wt {n} merge --abort'\n\
-         hint: or redo it letting one side win: 'git-wt {n} merge --abort', then \
-         'git-wt {n},<M> merge --theirs'"
-    ));
     m
 }
 
@@ -737,10 +722,10 @@ mod tests {
     }
 
     #[test]
-    fn merge_resume_rejects_a_side_with_a_pointed_hint() {
+    fn merge_resume_rejects_a_side() {
         let e = merge_args(&["--theirs", "--continue"]).unwrap_err();
-        assert!(e.contains("applied when a merge starts"), "{e}");
-        assert!(e.contains("merge --abort"), "{e}");
+        assert!(e.contains("continue takes no merge options"), "{e}");
+        assert!(e.contains("--theirs"), "{e}");
     }
 
     #[test]
@@ -788,7 +773,6 @@ mod tests {
             let e = merge_args(&args).unwrap_err();
             assert!(e.starts_with("review takes no merge options"), "{args:?}: {e}");
             assert!(e.contains(want), "{args:?}: {e}");
-            assert!(e.contains("ends merge's own flags"), "{args:?}: {e}");
         }
     }
 

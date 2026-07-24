@@ -355,7 +355,6 @@ fi
 # --- switch / path ----------------------------------------------------------
 check "switch N prints path"           exit=0 out="myapp" -- switch 1
 check "path N prints path"             exit=0 out="$APP" -- path 1
-check "show alias works"               exit=0 out="$APP" -- show 1
 check "switch N too many args"         exit=2 err="unexpected argument 'path' found" -- switch 1 path
 check "index 0 errors"                 exit=1 err="no worktree #0" -- switch 0
 check "index over range errors"        exit=1 err="there are" -- switch 99
@@ -364,7 +363,9 @@ check "flag on bare switch"            exit=2 err="unexpected argument '-n' foun
 check "long flag on bare switch"       exit=2 err="unexpected argument '--stat' found" -- switch 1 --stat
 
 # --- legacy / unknown -------------------------------------------------------
-check "legacy show order now works"    exit=0 out="$APP" -- show 1
+# 'show' is retired; 'path' is the verb. The word now reads as a target list,
+# so the *number* after it is the surprise clap reports.
+check "retired show verb rejected"     exit=2 err="unexpected argument '1' found" -- show 1
 check "legacy remove order rejected"   exit=1 err="unexpected argument for the verb" -- 1 remove
 check "bare branch name rejected"      exit=1 err="no worktree named 'feat/x'" -- feat/x
 check "typo verb rejected"             exit=1 err="no worktree named 'lsit'" -- lsit
@@ -400,14 +401,37 @@ check "diff --stat"                  exit=0 out="1 +" -- diff "1,$didx" --stat
 check "diff --name-status"           exit=0 out="A" -- diff "1,$didx" --name-status
 # Exact output, not a substring: the unfiltered diff also *contains*
 # 'onlylogin.txt', so a substring assertion here would pass even if the
-# pathspec were dropped on the floor. "Limits" means the other files are gone.
-pspec="$("$BIN" diff "1,$didx" --name-only -- onlylogin.txt 2>/dev/null)"
-pcmd="$(fmt_cmd diff "1,$didx" --name-only -- onlylogin.txt)"
+# path were dropped on the floor. "Limits" means the other files are gone.
+pspec="$("$BIN" diff "1,$didx" -p onlylogin.txt --name-only 2>/dev/null)"
+pcmd="$(fmt_cmd diff "1,$didx" -p onlylogin.txt --name-only)"
 if [ "$pspec" = "onlylogin.txt" ]; then
-  report PASS HAPPY "diff -- pathspec limits" "$pcmd"
+  report PASS HAPPY "diff -p limits to the path" "$pcmd"
 else
-  report FAIL HAPPY "diff -- pathspec limits" "$pcmd" "wanted exactly 'onlylogin.txt', got '$pspec'"
+  report FAIL HAPPY "diff -p limits to the path" "$pcmd" "wanted exactly 'onlylogin.txt', got '$pspec'"
 fi
+# git's trailing spelling is gone; it errors, with no hint offered.
+check "diff -- is retired"           exit=1 err="'--' is retired for diff" -- diff "1,$didx" --name-only -- onlylogin.txt
+check "bare path points at -p"       exit=1 err="paths go in '-p/--path'" -- diff "1,$didx" onlylogin.txt
+# -A/-B keep the files one side has and the other lacks. Under the default
+# '...' range main's side does not exist at all, so 'onlymain.txt' needs '..'
+# to appear -- and there it is a delete, which is what -A keeps.
+aonly="$("$BIN" diff "1,$didx" -A .. --name-only 2>/dev/null)"
+acmd="$(fmt_cmd diff "1,$didx" -A .. --name-only)"
+if [ "$aonly" = "onlymain.txt" ]; then
+  report PASS HAPPY "diff -A keeps main-only file" "$acmd"
+else
+  report FAIL HAPPY "diff -A keeps main-only file" "$acmd" "wanted exactly 'onlymain.txt', got '$aonly'"
+fi
+bonly="$("$BIN" diff "1,$didx" -B .. --name-only 2>/dev/null)"
+bcmd="$(fmt_cmd diff "1,$didx" -B .. --name-only)"
+if [ "$bonly" = "onlylogin.txt" ]; then
+  report PASS HAPPY "diff -B keeps login-only file" "$bcmd"
+else
+  report FAIL HAPPY "diff -B keeps login-only file" "$bcmd" "wanted exactly 'onlylogin.txt', got '$bonly'"
+fi
+check "diff -A names the side"       exit=0 out="only in main" -- diff "1,$didx" -A --hunks ..
+check "diff -A -B cannot combine"    exit=1 err="cannot combine" -- diff "1,$didx" -A -B
+check "diff --a-only long form"      exit=0 out="onlymain.txt" -- diff "1,$didx" --a-only .. --name-only
 check "diff needs two worktrees"     exit=1 err="diff takes exactly two worktrees" -- diff 1
 # The old 'N diff M' grammar: the trailing target is now junk in the action slot.
 check "diff old form errors"         exit=2 err="unexpected argument 'diff' found" -- switch 1 diff "$didx"
@@ -419,12 +443,12 @@ check "diff rejects three targets"   exit=1 err="worktree #1 listed twice" -- di
 check "diff rejects other git flags" exit=1 err="unexpected argument '-w' for diff" -- diff "1,$didx" -w
 # The hint must name the real branches, not echo the offending flag back as a
 # ref: 'git diff -w..feat -w' is what a shadowed loop variable looks like.
-check "diff flag error hints git"    exit=1 err="run git itself: git diff main...feature/login -w" -- diff "1,$didx" -w
+check "diff flag error lists flags"  exit=1 err="diff takes --target TARGET_LIST" -- diff "1,$didx" -w
 
 # Uncommitted work is invisible to a ref diff, so it must be called out.
 echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"
 check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- diff "1,$didx" --name-only
-check "dirty warning points at live" exit=0 err="git-wt 1,$didx diff live" -- diff "1,$didx" --name-only
+check "dirty warning points at live" exit=0 err="git-wt 1,$didx diff --live" -- diff "1,$didx" --name-only
 rm -f "$CODE/myapp-feature-login/uncommitted.txt"
 
 # --- commits ----------------------------------------------------------------
@@ -485,7 +509,7 @@ check "commits -fa order-free"       exit=0 out="A  onlymain.txt" -- commits "1,
 check "commits -fn takes a value"    exit=0 out="init" -- commits "1,$didx" -afn 20
 # A value-taking flag mid-bundle would hand one value to two flags.
 check "commits -nf refused"          exit=1 err="has to come last" -- commits "1,$didx" -nf 20
-check "commits -nf names the fix"    exit=1 err="-fn <value>" -- commits "1,$didx" -nf 20
+check "commits -nf rejects bundle"   exit=1 err="has to come last in '-nf'" -- commits "1,$didx" -nf 20
 # A bundle of letters that name nothing is reported as typed, not split up.
 check "commits -xz reported whole"   exit=1 err="'-xz'" -- commits "1,$didx" -xz
 # The default really drops the shared root -- not merely 'not asserted'.
@@ -574,15 +598,13 @@ check "commits --date-until yesterday"   exit=0 err="no commits match those filt
 # No operators in --date at all: each one names a bound that has its own flag,
 # and the error says which -- with the day carried into the hint.
 check "commits --date rejects >="     exit=1 err="no '>' in --date" -- commits "1,$didx" --date ">=$today"
-check "commits --date >= points on"   exit=1 err="--date-since $today" -- commits "1,$didx" --date ">=$today"
 check "commits --date rejects <="     exit=1 err="no '<' in --date" -- commits "1,$didx" --date "<=$today"
-check "commits --date <= points on"   exit=1 err="--date-until $today" -- commits "1,$didx" --date "<=$today"
 check "commits --date rejects ="      exit=1 err="no '=' in --date" -- commits "1,$didx" --date "=$today"
 check "commits --date bad shape"      exit=1 err="want YYYY-MM-DD" -- commits "1,$didx" --date "2026-1-1"
 check "commits --date impossible"     exit=1 err="no such date" -- commits "1,$didx" --date "2026-13-01"
 check "commits --date needs a value"  exit=1 err="--date needs a day" -- commits "1,$didx" --date
 # An unquoted '>' is eaten by the shell, so the value arrives bare: say why.
-check "commits --date eaten by shell" exit=1 err="--date-since" -- commits "1,$didx" --date ">="
+check "commits --date eaten by shell" exit=1 err="no '>' in --date" -- commits "1,$didx" --date ">="
 
 # A commit or a date filter widens the source to the full log by itself: it
 # names something in the history, not something in the default slice. 'init' is
@@ -604,12 +626,10 @@ check "--date-until --all widens"     exit=0 out="init" -- commits "1,$didx" --d
 # ...and a range still widens, because its lower bound does.
 check "a date range implies --all"    exit=0 out="init" -- commits "1,$didx" --date-since "$yesterday" --date-until "$tomorrow"
 # A filter that kept nothing over the slice says the slice is what it read.
-check "empty filter hints --all"      exit=0 err="try --all" -- commits "1,$didx" --date-until "$yesterday"
-check "empty filter hints --union"    exit=0 err="--union" -- commits "1,$didx" --date-until "$yesterday"
-check "empty filter hints --date-since" exit=0 err="--date-since to start further back" -- commits "1,$didx" --date-until "$yesterday"
-# --commit-until is the same kind of post-filter, and its hint speaks its own
-# vocabulary. It needs history spread over more than one day, so it gets a
-# self-contained repo: 'old' is below the slice's floor, 'new' is the slice.
+check "empty filter names the slice"  exit=0 err="only the rows ahead of the other branches" -- commits "1,$didx" --date-until "$yesterday"
+# --commit-until is the same kind of post-filter. It needs history spread over
+# more than one day, so it gets a self-contained repo: 'old' is below the
+# slice's floor, 'new' is the slice.
 CUR="$ROOT/cu/app"; mkdir -p "$CUR"
 ( cd "$CUR"
   git init -q; git checkout -q -b main
@@ -627,8 +647,8 @@ oldsha="$(cd "$CUR" && git rev-list --max-parents=0 --abbrev-commit HEAD)"
 uc="$( cd "$CUR" && "$BIN" commits 1,2 --commit-until "$oldsha" 2>&1 )"
 uccmd="$(fmt_cmd commits 1,2 --commit-until "$oldsha")"
 case "$uc" in
-  *"--commit-since to start further back"*) report PASS HAPPY "--commit-until hints --commit-since" "$uccmd" ;;
-  *) report FAIL HAPPY "--commit-until hints --commit-since" "$uccmd" "got '$uc'" ;;
+  *"none kept"*) report PASS HAPPY "--commit-until keeps nothing" "$uccmd" ;;
+  *) report FAIL HAPPY "--commit-until keeps nothing" "$uccmd" "got '$uc'" ;;
 esac
 # ...and with --all it reaches the older commit it named.
 ucall="$( cd "$CUR" && "$BIN" commits 1,2 --commit-until "$oldsha" --all 2>&1 )"
@@ -938,60 +958,82 @@ else
   report FAIL HAPPY "ref diff blind on same commit" "$rcmd" "wanted empty, got '$refout'"
 fi
 
-check "live sees uncommitted edit"   exit=0 out="shared.txt" -- diff "1,$lidx" live --name-only
-check "live sees untracked as add"   exit=0 out="A	untracked.txt" -- diff "1,$lidx" live --name-status
-check "live counts hunks"            exit=0 out="+2" -- diff "1,$lidx" live
-check "live summary counts lines"    exit=0 out="2 files changed, 3 insertions(+), 1 deletion(-)" -- diff "1,$lidx" live
-check "live hunks show line numbers" exit=0 out="modified 1" -- diff "1,$lidx" live hunks
-check "live --stat still works"      exit=0 out="3 ++-" -- diff "1,$lidx" live --stat
-check "live suppresses dirty warn"   exit=0 err="" -- diff "1,$lidx" live --name-only
+check "live sees uncommitted edit"   exit=0 out="shared.txt" -- diff "1,$lidx" --live --name-only
+check "live sees untracked as add"   exit=0 out="A	untracked.txt" -- diff "1,$lidx" --live --name-status
+check "live counts hunks"            exit=0 out="+2" -- diff "1,$lidx" --live
+check "live summary counts lines"    exit=0 out="2 files changed, 3 insertions(+), 1 deletion(-)" -- diff "1,$lidx" --live
+check "live hunks show line numbers" exit=0 out="modified 1" -- diff "1,$lidx" --live --hunks
+check "live --stat still works"      exit=0 out="3 ++-" -- diff "1,$lidx" --live --stat
+check "live suppresses dirty warn"   exit=0 err="" -- diff "1,$lidx" --live --name-only
+
+# The pairing this whole flag exists for: literal on-disk files, one side only.
+# 'untracked.txt' has no commit anywhere, so no ref diff can report it.
+lbonly="$("$BIN" diff "1,$lidx" --live -B --name-only 2>/dev/null)"
+lbcmd="$(fmt_cmd diff "1,$lidx" --live -B --name-only)"
+if [ "$lbonly" = "untracked.txt" ]; then
+  report PASS HAPPY "live -B keeps side-only add" "$lbcmd"
+else
+  report FAIL HAPPY "live -B keeps side-only add" "$lbcmd" "wanted exactly 'untracked.txt', got '$lbonly'"
+fi
+# Nothing is missing from the live side, and that answer belongs on stderr so
+# a pipe sees an empty list rather than prose.
+check "live -A empty says so"        exit=0 out="" err="no files only in" -- diff "1,$lidx" --live -A --name-only
 
 # .gitignore is the reason live can't just be 'diff -rq': without it, build
 # output drowns the signal.
-ligr="$("$BIN" diff "1,$lidx" live --name-only 2>/dev/null)"
-gcmd="$(fmt_cmd diff "1,$lidx" live --name-only)"
+ligr="$("$BIN" diff "1,$lidx" --live --name-only 2>/dev/null)"
+gcmd="$(fmt_cmd diff "1,$lidx" --live --name-only)"
 case "$ligr" in
   *ignoreme*) report FAIL HAPPY "live honors .gitignore" "$gcmd" "ignored file listed: '$ligr'" ;;
   *)          report PASS HAPPY "live honors .gitignore" "$gcmd" ;;
 esac
 
-lspec="$("$BIN" diff "1,$lidx" live --name-only -- shared.txt 2>/dev/null)"
-lpcmd="$(fmt_cmd diff "1,$lidx" live --name-only -- shared.txt)"
+lspec="$("$BIN" diff "1,$lidx" --live -p shared.txt --name-only 2>/dev/null)"
+lpcmd="$(fmt_cmd diff "1,$lidx" --live -p shared.txt --name-only)"
 if [ "$lspec" = "shared.txt" ]; then
-  report PASS HAPPY "live -- pathspec limits" "$lpcmd"
+  report PASS HAPPY "live -p limits to the path" "$lpcmd"
 else
-  report FAIL HAPPY "live -- pathspec limits" "$lpcmd" "wanted exactly 'shared.txt', got '$lspec'"
+  report FAIL HAPPY "live -p limits to the path" "$lpcmd" "wanted exactly 'shared.txt', got '$lspec'"
 fi
 
 # A deleted-on-disk file is a delete, and its hunk must not read as '+0'.
 rm "$LIVE/shared.txt"
-check "live reports on-disk delete"  exit=0 out="D	shared.txt" -- diff "1,$lidx" live --name-status
-check "live delete is not an add"    exit=0 out="deleted 3" -- diff "1,$lidx" live hunks
+check "live reports on-disk delete"  exit=0 out="D	shared.txt" -- diff "1,$lidx" --live --name-status
+check "live delete is not an add"    exit=0 out="deleted 3" -- diff "1,$lidx" --live --hunks
 printf 'one\nTWO\nthree\nfour\n' > "$LIVE/shared.txt"
 
 # Identical contents: stdout stays empty so a pipe sees nothing, and the note
 # that this is a real answer (not the empty-ref-diff bug) goes to stderr.
-check "live identical is empty out"  exit=0 out="" err="no differences" -- diff "1,$lidx" live -- .gitignore
+check "live identical is empty out"  exit=0 out="" err="no differences" -- diff "1,$lidx" --live -p .gitignore
 
-check "live identical says so once"  exit=0 err="no differences" -- diff "1,$lidx" live --name-only -- .gitignore
-# The ref-diff hint would contradict the mode the user is already in, and it
-# must not reappear just because 'live' came after the offending flag.
-check "live bad flag hints no-index"  exit=1 err="git diff --no-index" -- diff "1,$lidx" live -w
-check "live hint survives word order" exit=1 err="git diff --no-index" -- diff "1,$lidx" -w live
-livehint="$("$BIN" diff "1,$lidx" live -w 2>&1)"
-lhcmd="$(fmt_cmd diff "1,$lidx" live -w)"
-case "$livehint" in
-  *"run git itself"*) report FAIL UNHAPPY "live bad flag drops ref hint" "$lhcmd" "ref-diff hint leaked: '$livehint'" ;;
-  *)                  report PASS UNHAPPY "live bad flag drops ref hint" "$lhcmd" ;;
-esac
-# A pathspec named 'live' is a path, not the mode word.
-check "pathspec 'live' not the mode"  exit=0 err="" -- diff "1,$lidx" --name-only -- live
+check "live identical says so once"  exit=0 err="no differences" -- diff "1,$lidx" --live -p .gitignore --name-only
+check "live bad flag rejected"       exit=1 err="unexpected argument '-w' for diff" -- diff "1,$lidx" --live -w
+# 'live' is a plain word again now that the bare mode word is gone, and it
+# names no file, so it is not read as a path either.
+check "bare 'live' word rejected"    exit=1 err="unexpected argument 'live' for diff" -- diff "1,$lidx" live --name-only
+check "bare 'hunks' word rejected"   exit=1 err="unexpected argument 'hunks' for diff" -- diff "1,$didx" hunks
 
-check "live rejects .. range"        exit=1 err="'live' and '..' cannot combine" -- diff "1,$lidx" live ..
-check "live rejects ... range"       exit=1 err="'live' and '...' cannot combine" -- diff "1,$lidx" live ...
-check "hunks rejects --stat"         exit=1 err="cannot combine" -- diff "1,$lidx" hunks --stat
-check "--live dashed form works"     exit=0 out="shared.txt" -- diff "1,$lidx" --live --name-only
-check "hunks works without live"     exit=0 out="committed state" -- diff "1,$didx" hunks
+# Both shapes of git's retired trailing form are errors. Which one the parser
+# sees depends on whether a flag of diff's own came first: it eats the '--' in
+# that case, so only the bare path survives.
+check "live -- is retired"           exit=1 err="paths go in '-p/--path'" -- diff "1,$lidx" --live --name-only -- shared.txt
+check "bare path after --live"       exit=1 err="paths go in '-p/--path'" -- diff "1,$lidx" --live --name-only shared.txt
+# '-p/--path' is that limit in plain words: a flag, so it can sit anywhere a
+# flag can, and a comma list instead of a trailing run of words.
+check "-p limits the diff"           exit=0 out="shared.txt" -- diff "1,$lidx" --live -p shared.txt --name-only
+check "--path long form"             exit=0 out="shared.txt" -- diff "1,$lidx" --live --path shared.txt --name-only
+check "-p takes a comma list"        exit=0 out="untracked.txt" -- diff "1,$lidx" --live -p shared.txt,untracked.txt --name-only
+check "-p checks the path too"       exit=1 err="no file matches 'nope/'" -- diff "1,$lidx" --live -p nope/ --name-only
+check "-p empty element errors"      exit=1 err="bad path list" -- diff "1,$lidx" --live -p "shared.txt," --name-only
+check "-p with a retired -- too"     exit=1 err="'--' is retired for diff" -- diff "1,$lidx" --live -p shared.txt --name-only -- shared.txt
+# A glob is git's own matching, and one that hits nothing is still a mistake.
+check "glob path matches"            exit=0 out="shared.txt" -- diff "1,$lidx" --live -p "*.txt" --name-only
+check "glob with no hit errors"      exit=1 err="no file matches '*.zzz'" -- diff "1,$lidx" --live -p "*.zzz" --name-only
+
+check "live rejects .. range"        exit=1 err="'--live' and '..' cannot combine" -- diff "1,$lidx" --live ..
+check "live rejects ... range"       exit=1 err="'--live' and '...' cannot combine" -- diff "1,$lidx" --live ...
+check "hunks rejects --stat"         exit=1 err="cannot combine" -- diff "1,$lidx" --hunks --stat
+check "hunks works without live"     exit=0 out="committed state" -- diff "1,$didx" --hunks
 
 # --- list --files -----------------------------------------------------------
 # The live worktree is already dirty in all three interesting ways: a tracked
@@ -1147,24 +1189,24 @@ FF2="$(midx stuckbr)"; M3="$(midx cb3)"; LM="$(midx lmbr)"
 check "merge needs a source"         exit=1 err="merge needs a source" -- merge 1
 check "merge one target needs source" exit=1 err="merge needs a source" -- merge 2
 check "merge old target-first order rejected" exit=2 err="unexpected argument 'merge' found" -- switch 1 merge 2
-check "merge unknown source"         exit=1 err="no worktree or branch 'zzz'" -- merge 1 zzz
-check "merge self refused"           exit=1 err="already checked out in worktree 1" -- merge "1,1"
+check "merge unknown source"         exit=1 err="no worktree or branch 'zzz'" -- merge 1 -b zzz
+check "merge self refused"           exit=1 err="worktree #1 listed twice" -- merge "1,1"
 check "merge too many args"          exit=1 err="too many arguments" -- merge "1,$A" "$C1"
 check "merge unknown option"         exit=1 err="unknown option '--rebase'" -- merge "1,$A" --rebase
-check "merge ours+theirs conflict"   exit=1 err="ours and theirs conflict" -- merge "1,$A" ours theirs
-check "merge dry-run + --no-ff"      exit=1 err="dry-run takes no merge options (got --no-ff)" -- merge "1,$A" dry-run --no-ff
+check "merge ours+theirs conflict"   exit=1 err="ours and theirs conflict" -- merge "1,$A" --ours --theirs
+check "merge dry-run + --no-ff"      exit=1 err="dry-run takes no merge options (got --no-ff)" -- merge "1,$A" --dry-run --no-ff
 # The resume words keep the single-target form, so their parse errors are
 # reachable only there.
 check "merge continue takes no arg"  exit=1 err="continue takes no argument" -- merge 1 --continue 2
-check "merge continue with a side"   exit=1 err="applied when a merge starts" -- merge 1 theirs continue
-check "merge continue+abort"         exit=1 err="continue and abort conflict" -- merge 1 continue abort
-check "rejection names the flag"     exit=1 err="(got -m, --squash)" -- merge 1 abort -m x --squash
+check "merge continue with a side"   exit=1 err="continue takes no merge options" -- merge 1 --theirs --continue
+check "merge continue+abort"         exit=1 err="continue and abort conflict" -- merge 1 --continue --abort
+check "rejection names the flag"     exit=1 err="(got -m, --squash)" -- merge 1 --abort -m x --squash
 check "merge continue w/o merge"     exit=1 err="no merge in progress" -- merge 1 --continue
-check "merge abort w/o merge"        exit=1 err="no merge in progress" -- merge 1 abort
+check "merge abort w/o merge"        exit=1 err="no merge in progress" -- merge 1 --abort
 
 # Dirty destination takes -f; untracked files alone do not count as dirty.
 touch "$ROOT/mrg/w-dirty/untracked.txt"
-check "merge with untracked only ok"  exit=0 err="Merged feat-a into dirtybr" -- merge "$D,$A"
+check "merge with untracked only ok"  exit=0 err="Merged feat-a into dirtybr" in=y -- merge "$D,$A"
 git -C "$ROOT/mrg/w-dirty" merge -q --abort 2>/dev/null; git -C "$ROOT/mrg/w-dirty" reset -q --hard HEAD~1
 # Tracked edits must still be refused even when untracked files are also
 # present; the porcelain reports both, and the untracked lines must not mask
@@ -1174,34 +1216,33 @@ echo edit >> "$ROOT/mrg/w-dirty/base.txt"
 check "merge into dirty+untracked refused" exit=1 err="uncommitted changes" -- merge "$D,$A"
 rm -f "$ROOT/mrg/w-dirty/untracked.txt"
 check "merge into dirty refused"     exit=1 err="uncommitted changes" -- merge "$D,$A"
-check "merge into dirty with -f"     exit=0 err="Merged feat-a into dirtybr" -- merge "$D,$A" -f
+check "merge into dirty with -f"     exit=0 err="Merged feat-a into dirtybr" in=y -- merge "$D,$A" -f
 
 # Clean merge by worktree number: worktree A's branch moves into worktree 1.
-check "merge by number"              exit=0 err="Merged feat-a into" -- merge "1,$A"
+check "merge by number"              exit=0 err="Merged feat-a into" in=y -- merge "1,$A"
 if [ -f "$MRG/a.txt" ]; then
   report PASS HAPPY "merge by number moved the files" "test -f a.txt  # in worktree 1"
 else
   report FAIL HAPPY "merge by number moved the files" "test -f a.txt  # in worktree 1" \
     "a.txt absent from $MRG after merge"
 fi
-check "merge prints no stdout"       exit=0 out="" -- merge "$C1,$A"
+check "merge prints no stdout"       exit=0 out="" in=y -- merge "$C1,$A"
 
 # A branch name works where a number does, and --ff-only refuses a real merge.
-check "merge by branch name"         exit=0 err="Merged feat-a into cb2" -- merge "$C2" feat-a
-check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" -- merge "$C2,$C1" --ff-only
+check "merge by branch name"         exit=0 err="Merged feat-a into cb2" in=y -- merge "$C2" -b feat-a
+check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" in=y -- merge "$C2,$C1" --ff-only
 
 # Conflict -> continue.  cb1 and cb2 both rewrote shared.txt.
-check "merge conflict reports files" exit=1 err="shared.txt" -- merge "$C1,$C2"
-check "merge conflict hints continue" exit=1 err="merge continue" -- merge "$C1" --continue
-check "second merge while stuck"     exit=1 err="already in progress" -- merge "$C1" feat-a
+check "merge conflict reports files" exit=1 err="shared.txt" in=y -- merge "$C1,$C2"
+check "second merge while stuck"     exit=1 err="already in progress" in=y -- merge "$C1" -b feat-a
 check "continue with unresolved"     exit=1 err="merge conflict in" -- merge "$C1" --continue
 echo resolved > "$ROOT/mrg/w-cb1/shared.txt"
 git -C "$ROOT/mrg/w-cb1" add shared.txt
-check "continue after resolve"       exit=0 err="Completed merge" -- merge "$C1" continue
+check "continue after resolve"       exit=0 err="Completed merge" -- merge "$C1" --continue
 
 # Conflict -> abort restores the pre-merge state. cb1 has swallowed cb2 by now,
 # so cb3 is the branch that still genuinely conflicts with cb2.
-"$BIN" merge "$C2,$M3">/dev/null 2>&1
+printf "y\\n" | "$BIN" merge "$C2,$M3" >/dev/null 2>&1
 check "abort a conflicted merge"     exit=0 err="Aborted merge" -- merge "$C2" --abort
 if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report FAIL HAPPY "abort clears MERGE_HEAD" "git rev-parse MERGE_HEAD  # in w-cb2" \
@@ -1211,13 +1252,16 @@ else
 fi
 
 # dry-run: answers the question, writes nothing. cb3 still collides with cb2.
-check "dry-run clean merge"          exit=0 err="merges into" -- merge "$C2,$A" dry-run
-check "dry-run reports a conflict"   exit=1 err="does NOT merge" -- merge "$C2,$M3" dry-run
-check "dry-run names the file"       exit=1 err="shared.txt" -- merge "$C2,$M3" dry-run
-check "dry-run says it touched none" exit=1 err="nothing was changed" -- merge "$C2,$M3" dry-run
+check "dry-run clean merge"          exit=0 err="merges into" -- merge "$C2,$A" --dry-run
+check "dry-run reports a conflict"   exit=1 err="does NOT merge" -- merge "$C2,$M3" --dry-run
+check "dry-run names the file"       exit=1 err="shared.txt" -- merge "$C2,$M3" --dry-run
+check "dry-run says it touched none" exit=1 err="nothing was changed" -- merge "$C2,$M3" --dry-run
 # The short form drives the same path end to end, not just the parser.
 check "dry-run -d short form"        exit=1 err="does NOT merge" -- merge "$C2,$M3" -d
-check "theirs -t short form"         exit=0 err="merges into" -- merge "$C2,$A" -t -d
+# '-t' is the target flag now, so 'theirs' is long-form only; '-o' still
+# shortens 'ours'. Neither counts as a start-only option under a dry run.
+check "theirs long form + -d"        exit=0 err="merges into" -- merge "$C2,$A" --theirs -d
+check "ours -o short form"           exit=0 err="merges into" -- merge "$C2,$A" -o -d
 # Proof it wrote nothing: a dry run that predicted a conflict left no merge
 # behind, so a real merge can still start cleanly afterwards.
 if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
@@ -1267,7 +1311,9 @@ check "merge flag before --review"   exit=1 err="review takes no merge options" 
 # A merge option after --review reached the commits parser, which would have
 # blamed a command the user never typed. It names the collision instead.
 check "review + dry-run is an error" exit=1 err="answer the same question" -- merge "$LM,$A" --review --dry-run
-check "review + squash is an error"  exit=1 err="shapes a merge commit" -- merge "$LM,$A" --review --squash
+# '--squash' is a commits flag now (the consolidated file block), so it is a
+# legal thing to put after '--review' rather than a collision to report.
+check "review + squash consolidates" exit=0 err="merges cleanly" -- merge "$LM,$A" --review --squash
 check "review twice is an error"     exit=1 err="already in effect" -- merge "$LM,$A" --review --review
 check "review keeps typo errors"     exit=1 err="unexpected argument '--bogus'" -- merge "$LM,$A" --review --bogus
 # --all/--union are commits flags, and still refused: both name a row source,
@@ -1289,11 +1335,11 @@ fi
 # stuckbr was branched from cb2, so it is cleanly contained in cb2.
 # Assumes the harness is standing on 'main' (worktree 1), so a self-check reads
 # "Merged main is already in main".
-check "merged current in itself"     exit=0 err="Merged main is already in main" -- merged 1
+check "merged current in itself"     exit=0 out="Merged main is already in main" -- merged 1
 check "merged branch not in main"    exit=1 err="Ahead cb3 is NOT in main (ahead 1)" -- merged 1 cb3
-check "merged branch is in cb2"      exit=0 err="Merged stuckbr is already in cb2" -- merged "$C2" stuckbr
+check "merged branch is in cb2"       exit=0 out="Merged stuckbr is already in cb2" -- merged "$C2" stuckbr
 check "merged list form dest-first"  exit=1 err="Ahead cb3 is NOT in main (ahead 1)" -- merged "1,$M3"
-check "merged list form reversed"    exit=0 err="Merged stuckbr is already in cb2" -- merged "$C2,$FF2"
+check "merged list form reversed"    exit=0 out="Merged stuckbr is already in cb2" -- merged "$C2,$FF2"
 check "merged too many args"         exit=2 err="unexpected argument 'extra'" -- merged 1 cb3 extra
 check "merged unknown source"        exit=1 err="no worktree or branch 'zzz'" -- merged 1 zzz
 check "merged self single form"      exit=1 err="already checked out in worktree 1" -- merged 1 1
@@ -1303,7 +1349,7 @@ check "merged single target with number source" exit=1 err="Ahead cb3 is NOT in 
 check "merged list too many"         exit=1 err="merged takes one or two worktrees, got 3" -- merged "1,$M3,$C2"
 check "merged list form extra arg"   exit=1 err="merged takes no arguments" -- merged "1,$M3" extra
 check "merged list form dup"         exit=1 err="worktree #1 listed twice" -- merged "1,1"
-check "merged 2 self-check"          exit=0 out="Merged main is already in feat-a" -- merged 2
+check "merged N self-check"           exit=0 out="Merged main is already in cb1" -- merged "$C1"
 
 # A detached worktree has no branch to name, so the list form is the only way to
 # ask about one: 'merged' only tests containment, so it answers by sha.
@@ -1311,7 +1357,7 @@ check "merged 2 self-check"          exit=0 out="Merged main is already in feat-
 # in would renumber the worktrees the hardcoded indices below depend on.
 git worktree add --detach "$ROOT/mrg/w-det" main >/dev/null 2>&1
 DET="$(midx '(detached)')"
-check "merged detached list form"    exit=0 err="is already in main" -- merged "1,$DET"
+check "merged detached list form"    exit=0 out="is already in main" -- merged "1,$DET"
 check "merged detached number source needs branch" exit=1 err="no worktree or branch" -- merged 1 "$DET"
 git worktree remove --force "$ROOT/mrg/w-det" >/dev/null 2>&1
 
@@ -1320,7 +1366,7 @@ check "list --col 6"                 exit=0 out="ahead 1" -- list --col 1,2,6
 
 # ours/theirs settle the collision that stopped the plain merge above.
 # cb3 (shared.txt=C) vs w-cb2 (shared.txt=B): theirs takes C, ours keeps B.
-check "merge theirs resolves"        exit=0 err="theirs won conflicts" -- merge "$C2,$M3" theirs
+check "merge theirs resolves"        exit=0 err="theirs won conflicts" in=y -- merge "$C2,$M3" --theirs
 if [ "$(cat "$ROOT/mrg/w-cb2/shared.txt")" = "C" ]; then
   report PASS HAPPY "theirs took the source's side" "cat shared.txt  # in w-cb2"
 else
@@ -1330,7 +1376,7 @@ fi
 
 # cb4 (shared.txt=D) collides with whatever w-cb1 settled on earlier.
 before="$(cat "$ROOT/mrg/w-cb1/shared.txt")"
-check "merge ours keeps our side"    exit=0 err="ours won conflicts" -- merge "$C1" cb4 ours
+check "merge ours keeps our side"    exit=0 err="ours won conflicts" in=y -- merge "$C1" -b cb4 --ours
 if [ "$(cat "$ROOT/mrg/w-cb1/shared.txt")" = "$before" ]; then
   report PASS HAPPY "ours kept worktree N's side" "cat shared.txt  # in w-cb1"
 else
@@ -1340,8 +1386,8 @@ fi
 
 # 'theirs' on a merge that already stopped: it can't join one, so git-wt offers
 # to abort and redo. Declining must leave the stopped merge exactly as it was.
-"$BIN" merge "$FF2,$M3">/dev/null 2>&1   # conflict in w-ff2
-check "stuck+theirs declined"        exit=0 err="Aborted." in=n -- merge "$FF2,$M3" theirs
+printf "y\\n" | "$BIN" merge "$FF2,$M3" >/dev/null 2>&1   # conflict in w-ff2
+check "stuck+theirs declined"        exit=0 err="Aborted." in=n -- merge "$FF2,$M3" --theirs
 if git -C "$ROOT/mrg/w-ff2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report PASS UNHAPPY "declining keeps the stopped merge" "git rev-parse MERGE_HEAD  # in w-ff2"
 else
@@ -1349,7 +1395,7 @@ else
     "MERGE_HEAD gone — the merge was aborted despite answering n"
 fi
 # Accepting redoes it from clean, and the source wins.
-check "stuck+theirs accepted"        exit=0 err="theirs won conflicts" in=y -- merge "$FF2,$M3" theirs
+check "stuck+theirs accepted"       exit=0 err="theirs won conflicts" in=$'y\ny' -- merge "$FF2,$M3" --theirs
 if [ "$(cat "$ROOT/mrg/w-ff2/shared.txt")" = "C" ]; then
   report PASS HAPPY "redo let theirs win" "cat shared.txt  # in w-ff2"
 else
@@ -1358,8 +1404,8 @@ else
 fi
 
 # List form sanity checks for the new grammar.
-check "list form dry-run clean"      exit=0 err="merges into" -- merge "1,$A" dry-run
-check "list form takes options"      exit=1 err="does NOT merge" -- merge "$C1,$M3" dry-run
+check "list form dry-run clean"      exit=0 err="merges into" -- merge "1,$A" --dry-run
+check "list form takes options"      exit=1 err="does NOT merge" -- merge "$C1,$M3" --dry-run
 check "list form rejects 3"          exit=1 err="exactly two worktrees" -- merge "1,$A,$C1"
 check "bare list without verb rejected" exit=1 err="switch takes a single worktree, not '1,$A'" -- "1,$A"
 check "malformed list with verb rejected" exit=1 err="unexpected argument for the verb" -- "1," merge
@@ -1367,7 +1413,7 @@ check "list form + verb order rejected" exit=1 err="unexpected argument for the 
 check "list form + short flag order rejected" exit=1 err="unexpected argument for the verb" -- "1,$A" merge -a
 check "bad list + verb order rejected" exit=1 err="unexpected argument for the verb" -- "1,x" merge
 # The real thing: worktree M's branch lands in worktree N, list-style.
-check "list form merges M into N"    exit=0 err="Merged feat-a into" -- merge "$LM,$A"
+check "list form merges M into N"    exit=0 err="Merged feat-a into" in=y -- merge "$LM,$A"
 if [ -f "$ROOT/mrg/w-lm/a.txt" ]; then
   report PASS HAPPY "list form moved the files" "test -f a.txt  # in w-lm"
 else
@@ -1377,7 +1423,7 @@ fi
 
 # --squash stages the merge without committing it.
 FF="$(cd "$MRG" && "$BIN" add ffbr --dirname w-ff >/dev/null 2>&1; midx ffbr)"
-check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" -- merge "$FF,$A" --squash
+check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" in=y -- merge "$FF,$A" --squash
 if [ -n "$(git -C "$ROOT/mrg/w-ff" diff --cached --name-only)" ]; then
   report PASS HAPPY "--squash leaves changes staged" "git diff --cached  # in w-ff"
 else
@@ -1434,12 +1480,12 @@ check "sync target + --all"          exit=1 err="'--all' is every worktree, so a
 check "sync list + --all"            exit=1 err="'--all' is every worktree, so a target list has nothing to add" -- push "1,$SF" --all
 check "sync list dup"                exit=1 err="worktree #1 listed twice" -- fetch "1,1"
 check "sync unknown flag"            exit=1 err="unknown option '--depth=1' for pull" -- pull 1 --depth=1
-check "sync flag names git for you"  exit=1 err="git -C <dir> pull --depth=1" -- pull 1 --depth=1
+check "sync flag error lists flags"  exit=1 err="pull takes --rebase" -- pull 1 --depth=1
 check "sync flags are per verb"      exit=1 err="unknown option '--rebase' for fetch" -- fetch 1 --rebase
 check "sync push has no --rebase"    exit=1 err="unknown option '--rebase' for push" -- push 1 --rebase
 check "sync pull has no -u"          exit=1 err="unknown option '-u' for pull" -- pull 1 -u
 check "sync push --force refused"    exit=1 err="no '--force' for push" -- push 1 --force
-check "sync push -f refused"         exit=1 err="--force-with-lease" -- push 1 -f
+check "sync push -f refused"         exit=1 err="no '--force' for push" -- push 1 -f
 check "sync contradiction"           exit=1 err="'--rebase' and '--no-rebase' contradict" -- pull 1 --rebase --no-rebase
 check "sync rebase vs ff-only"       exit=1 err="'--rebase' and '--ff-only' contradict" -- pull 1 --rebase --ff-only
 

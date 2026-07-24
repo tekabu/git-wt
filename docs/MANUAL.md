@@ -18,7 +18,7 @@ action, then the worktrees or branches it acts on.
 
     git-wt                       List worktrees (same as 'git-wt list')
     git-wt switch <N>            cd into worktree N (alias: cd)
-    git-wt path <N>              Print worktree N's path only (alias: show)
+    git-wt path <N>              Print worktree N's path only
     git-wt remove <N> [-y] [-f] [-D]
                                  Remove worktree N (-D: delete branch too)
     git-wt merge <N>,<M>         Merge M into N
@@ -56,7 +56,6 @@ action, then the worktrees or branches it acts on.
                                  Alternative spelling of the leading TARGET_LIST,
                                  for scripts that would rather always use a flag:
                                  'git-wt commits -t 1' == 'git-wt commits 1'
-                                 (not on 'merge' -- '-t' there is 'theirs')
     git-wt fetch|pull|push <N>   Run it in worktree N
     git-wt pull <N>,<M>          Run it in each worktree listed
     git-wt fetch|pull|push --all Run it in every worktree
@@ -80,7 +79,7 @@ action, then the worktrees or branches it acts on.
     git-wt -hf                   Same as -f; -h is redundant once -f is given
     git-wt <VERB> --help         Options for a single command
 
-    Aliases: ls = list, rm = remove, cd = switch, show = path,
+    Aliases: ls = list, rm = remove, cd = switch,
     a = add, c = commits, l = log, m = merged, p = pull, s = switch.
 
     Anywhere a TARGET_LIST appears above, a worktree may be named by the branch
@@ -109,14 +108,12 @@ action, then the worktrees or branches it acts on.
     positional -- the two are interchangeable and giving both is an error:
         git-wt commits -t 1         == git-wt commits 1
         git-wt commits 1 -t 2       -> error: target given twice
-    (merge does not take '-t' -- see the note under MERGE OPTIONS.)
 
     -b/--branch LIST is not a target itself; it appends its list to the
     target list the command already has:
         git-wt commits 1 -b 2,3     == git-wt commits 1,2,3
     merge reads it differently: there '-b' names the one source branch to
-    merge, and the target list (positional only, since '-t' means 'theirs'
-    on merge) is the destination:
+    merge, and the target list (positional only on merge) is the destination:
         git-wt merge 1 -b 2         == git-wt merge 1,2   (2 into 1)
         git-wt merge -b 2           == git-wt merge 2     (2 into current)
 
@@ -163,6 +160,10 @@ action, then the worktrees or branches it acts on.
 
     --live                Compare the files on disk, not the commits
     --hunks               Print each file's changed line numbers
+    -A, --a-only          Only files the first worktree has and the second
+                          does not
+    -B, --b-only          Only files the second worktree has and the first
+                          does not
     -m, --meld            Copy changed files to a tmp dir and open meld,
                           waiting for it to exit, instead of printing text
     ...                   Range: only what M added since it forked from N (default)
@@ -170,7 +171,7 @@ action, then the worktrees or branches it acts on.
         --name-only       File names only
         --name-status     File names with A/M/D
         --stat            File names with a churn summary
-    -- PATH...            Limit to these paths
+    -p, --path PATH_LIST  Limit to these paths (comma-separated)
 
 # DIFF
 
@@ -181,7 +182,7 @@ side is dirty and points at '--live'.
     git-wt diff 1,2              -> git diff <branch 1>...<branch 2>
     git-wt diff 1,2 ..           -> git diff <branch 1>..<branch 2>
     git-wt diff 1,2 --stat
-    git-wt diff 1,2 -- src/
+    git-wt diff 1,2 -p src/
 
 The default range is '...', so 'diff 1,2' shows exactly what 'merge 1,2'
 would bring in: M's own commits since the fork, and nothing of N's. '..'
@@ -190,6 +191,30 @@ as if M had removed them.
 
 Any other git flag is an error, not a passthrough: run git yourself,
 'git diff <A>...<B> <flag>'. The error prints that command for you.
+
+'-p/--path' limits the diff to the paths listed, comma-separated. Being a
+flag, it can sit anywhere the other flags can, and it reads as words rather
+than punctuation:
+
+    git-wt diff 1,2 -p src/
+    git-wt diff 1,2 -p src/,docs/
+    git-wt diff 1,2 --live -p src/ --name-only
+
+Paths are git pathspecs, relative to the repo root: a directory means
+everything under it, an exact path means that one file, and a glob is
+git's own matching, which crosses '/' ('-p "*.rs"' finds src/cli.rs).
+A bare 'cli.rs' matches nothing when the file is at 'src/cli.rs'.
+
+They are checked before the diff runs: a path matching nothing on either
+side is an error naming it, not an empty "no differences" that reads like
+an answer.
+
+git's trailing '-- PATH...' is retired here, and so is a bare path with no
+'--' at all -- the argument parser eats that first '--' whenever a flag of
+diff's own came earlier, leaving the path bare. Both are errors:
+
+    git-wt diff 1,2 -- src/         -> error: '--' is retired for diff
+    git-wt diff 1,2 --live src/     -> error: paths go in '-p/--path'
 
 '-m/--meld' skips the text output: each changed file's two sides are
 extracted (via 'git show') into a temp dir apiece, then meld opens on
@@ -212,8 +237,31 @@ considered, so .gitignore is honored and build output stays out.
     git-wt diff 1,2 --live --hunks   # + changed line numbers
 
 '--live' takes no range: '..'/'...' compare commits, which is the opposite
-question. --name-only/--name-status/--stat/-- PATH... all still apply.
+question. --name-only/--name-status/--stat and -p/--path all still apply.
 '--hunks' works without '--live' too; its line numbers are the '+' side (M).
+
+# DIFF SIDE-ONLY
+
+'-A/--a-only' and '-B/--b-only' answer "which files does one side have that
+the other does not". A is the first worktree of the pair, B is the second,
+so 'diff 1,2 -B' lists what 2 has and 1 lacks. Files both sides have are
+dropped, however different their contents. The two flags cannot combine:
+no file is missing from both sides.
+
+    git-wt diff 1,2 --live -A        # on disk, in 1 only
+    git-wt diff 1,2 --live -B --name-only
+    git-wt diff 1,2 -A ..            # committed, in 1 only
+
+'--live' is usually the honest form of the question: it compares the literal
+files, so an untracked file -- one with no commit on either side for a ref
+diff to find -- still counts as a file the side has. Without '--live' the
+answer is about the range, and the default '...' only ever reports B's
+side, so '-A' there wants '..' to have anything to keep.
+
+Committed runs pass '--no-renames' to git alongside the filter: a rename
+otherwise reads as one 'R' instead of an add plus a delete, hiding exactly
+the files the flag was asked for. When nothing is left, the count goes to
+stderr as 'no files only in <branch>' so a pipe still sees an empty list.
 
 # COMMITS OPTIONS
 
@@ -509,15 +557,14 @@ each shown commit touched, since the row already carries the path's own
 '--no-follow' is new: with exactly one PATH, 'log' follows a rename
 automatically; '--no-follow' stops at it instead. A path deleted on this
 branch and alive on another is not an error -- that is exactly what
-'log' is for -- and the empty result names the rename escape hatch:
+'log' is for -- and the empty result says a rename may be why:
 
     no commits touched 'src/old.rs' on main
-    hint: it may live under another name; --no-follow shows the literal path only
+    it may live under another name
 
-A path outside every worktree is an error naming both readings:
+A path outside every worktree is an error:
 
     error: '/etc/hosts' is outside the repository
-    hint: paths are resolved against the worktree they sit in
 
 The table adds one column, '±': the added/removed line count scoped to
 the path alone, not the commit-wide count '-f' prints. A 'path' column
@@ -664,10 +711,16 @@ Requires meld on PATH.
         --ff-only, --fo   Refuse anything but a fast-forward
         --squash          Stage the merge without committing
     -f, --force           Merge even when worktree N has uncommitted changes
+    -o, --ours            Let worktree N's side win every conflicting hunk
+        --theirs          Let the source's side win every conflicting hunk
+    -d, --dry-run         Report whether it would merge; change nothing
+    -c, --continue        Finish a merge you have resolved by hand
+    -a, --abort           Undo a merge that stopped on conflicts
+        --review          Show what the merge would bring, as a commit table
 
-'-t/--target' is not a merge flag: '-t' is already 'theirs' above, so
-merge's target (worktree N) is positional-only, never '-t <N>'. '-b' means
-something different here too -- see MERGE below.
+None of these has a bare-word form: 'merge 1 theirs' is an error, not a
+side. '--review' is the exception -- 'merge 1,2 review' still works.
+'-b' means something different here too -- see MERGE below.
 
 # MERGE
 

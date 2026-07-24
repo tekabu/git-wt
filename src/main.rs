@@ -27,7 +27,7 @@ use crate::cmd::merge::{cmd_merge, parse_merge_args};
 use crate::cmd::merged::{cmd_merged, cmd_merged_others};
 use crate::cmd::remove::cmd_remove;
 use crate::cmd::switch::{cmd_path, cmd_switch};
-use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp, ALL_HINT};
+use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp};
 use crate::worktree::{current_worktree_index, ref_of, repo_root, worktrees};
 use crate::git::git_stdout;
 
@@ -128,9 +128,8 @@ fn run() -> Result<(), String> {
             let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, false, false)?;
             if idxs.len() > 1 {
                 return Err(format!(
-                    "switch takes one worktree, got {}\nhint: use 'git-wt commits {}' to compare",
-                    idxs.len(),
-                    idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(",")
+                    "switch takes one worktree, got {}",
+                    idxs.len()
                 ));
             }
             if typed_alias("s") {
@@ -185,9 +184,7 @@ fn run() -> Result<(), String> {
             let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
             if parsed.all && (target.is_some() || !cli.branch.is_empty()) {
                 return Err(format!(
-                    "'--all' is every worktree, so a target list has nothing to add\n\
-                     hint: 'git-wt {} --all', or drop it to sweep just the ones you named",
-                    op.word()
+                    "'--all' is every worktree, so a target list has nothing to add"
                 ));
             }
             let idxs = if parsed.all {
@@ -196,7 +193,7 @@ fn run() -> Result<(), String> {
                 let mut idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
                 if idxs.is_empty() {
                     let cur = current_worktree_index(&trees)
-                        .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {}'\n{ALL_HINT}", op.word()))?;
+                        .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {}'", op.word()))?;
                     idxs.push(cur);
                 }
                 idxs
@@ -209,8 +206,7 @@ fn run() -> Result<(), String> {
             let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
             if idxs.len() != 2 {
                 return Err(format!(
-                    "diff takes exactly two worktrees, got {}\n\
-                     hint: 'git-wt diff 1,2' or 'git-wt diff 1 -b 2'",
+                    "diff takes exactly two worktrees, got {}",
                     idxs.len()
                 ));
             }
@@ -222,15 +218,13 @@ fn run() -> Result<(), String> {
             let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, true)?;
             if idxs.len() < 2 {
                 return Err(format!(
-                    "meld needs 2 or 3 worktrees, got {}\n\
-                     hint: 'git-wt meld 1,2' or 'git-wt meld 1,2,3'",
+                    "meld needs 2 or 3 worktrees, got {}",
                     idxs.len()
                 ));
             }
             if idxs.len() > 3 {
                 return Err(format!(
-                    "meld takes at most 3 worktrees, got {}\n\
-                     hint: 'git-wt meld 1,2' or 'git-wt meld 1,2,3'",
+                    "meld takes at most 3 worktrees, got {}",
                     idxs.len()
                 ));
             }
@@ -307,8 +301,7 @@ fn run() -> Result<(), String> {
             }
             if idxs.len() > 2 {
                 return Err(format!(
-                    "merge takes exactly two worktrees, got {}\n\
-                     hint: 'git-wt merge 1,2' or 'git-wt merge 1 -b 2'",
+                    "merge takes exactly two worktrees, got {}",
                     idxs.len()
                 ));
             }
@@ -405,8 +398,7 @@ fn run() -> Result<(), String> {
                     .ok_or("not inside a worktree; use 'git-wt merged <N>'")?
             } else {
                 return Err(format!(
-                    "merged takes one or two worktrees, got {}\n\
-                     hint: 'git-wt merged 1,2' or 'git-wt merged 1 <BRANCH>'",
+                    "merged takes one or two worktrees, got {}",
                     idxs.len()
                 ));
             };

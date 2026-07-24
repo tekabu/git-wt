@@ -2,7 +2,7 @@
 
 Quick reference. Happy path only.
 
-Aliases: `ls`=list, `rm`=remove, `cd`=switch, `show`=path, `a`=add, `c`=commits,
+Aliases: `ls`=list, `rm`=remove, `cd`=switch, `a`=add, `c`=commits,
 `l`=log, `m`=merged, `p`=pull, `s`=switch.
 
 `git-wt` (binary) always prints a path; `wt` (the `--alias` shell function)
@@ -44,7 +44,7 @@ Options:
 
     -t, --target TARGET_LIST     alternative spelling of the positional target
 
-## path / show
+## path
 
     git-wt path                  current worktree's path
     git-wt path 2                worktree 2's path
@@ -178,9 +178,11 @@ token is consumed as target only if it resolves as a worktree list):
     git-wt diff 1 -b 2
     git-wt diff 1,2 --stat
     git-wt diff 1,2 --live
-    git-wt diff 1,2 -- src/
+    git-wt diff 1,2 -p src/       limit to paths (comma list: -p src/,docs/)
     git-wt diff main,2             mix branch names and numbers
     git-wt diff 1,2 -m             open changed files in meld, wait for exit
+    git-wt diff 1,2 --live -A      files worktree 1 has and 2 does not
+    git-wt diff 1,2 --live -B      files worktree 2 has and 1 does not
 
 Sample (`git-wt diff 1,2 --stat`):
 
@@ -195,9 +197,11 @@ Options:
     ...                           fork-point range word
     --live                        diff against working tree
     --hunks                       hunk-level diff
+    -A, --a-only                  only files the first worktree has and the second lacks
+    -B, --b-only                  only files the second worktree has and the first lacks
     -m, --meld                    copy changed files to a tmp dir and open meld, waiting for exit
     --name-only / --name-status / --stat   git diff pass-through flags
-    -- PATHSPEC                   restrict to paths
+    -p, --path PATH_LIST          restrict to paths, comma-separated (globs ok; errors if one matches nothing)
 
 ## meld
 

@@ -18,6 +18,19 @@ pub(crate) struct DiffArgs {
     #[arg(long)]
     pub hunks: bool,
 
+    /// Only files that exist in the first worktree and not the second.
+    #[arg(short = 'A', long = "a-only", action = ArgAction::SetTrue)]
+    pub a_only: bool,
+
+    /// Only files that exist in the second worktree and not the first.
+    #[arg(short = 'B', long = "b-only", action = ArgAction::SetTrue)]
+    pub b_only: bool,
+
+    /// Comma-separated paths to limit the diff to; the plain-words spelling of
+    /// git's trailing `-- PATH...`, which still works.
+    #[arg(short = 'p', long = "path", value_name = "PATH_LIST")]
+    pub path: Option<String>,
+
     /// Copy each side's changed files to a tmp dir and open meld on them,
     /// waiting for it to exit, instead of printing a text diff.
     #[arg(short = 'm', long = "meld", action = ArgAction::SetTrue)]

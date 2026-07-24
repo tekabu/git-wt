@@ -134,7 +134,7 @@ pub(crate) fn cmd_doctor(root: &Path, trees: &[Worktree], args: DoctorArgs) -> R
     if !args.repair {
         println!();
         println!("{total} issue(s) found (see above)");
-        println!("hint: 'git-wt doctor --repair' attempts to fix them");
+        println!("'git-wt doctor --repair' attempts to fix them");
         return Ok(());
     }
 
@@ -150,7 +150,7 @@ pub(crate) fn cmd_doctor(root: &Path, trees: &[Worktree], args: DoctorArgs) -> R
     } else {
         println!("{remaining} issue(s) remain -- not everything can be auto-repaired");
         println!(
-            "hint: a deleted (not moved) worktree needs 'git-wt <N> remove -f' \
+            "a deleted (not moved) worktree needs 'git-wt <N> remove -f' \
              or 'git worktree prune'"
         );
     }

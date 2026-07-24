@@ -341,16 +341,7 @@ fn commits_view(
             if !solo && !args.all && !args.union && review.is_none() {
                 // Suggest the lower bound in the vocabulary they were already
                 // speaking: a commit bound is answered by a commit bound.
-                let back = if args.commit_until.is_some() && args.dates.is_empty() {
-                    "--commit-since"
-                } else {
-                    "--date-since"
-                };
-                m.push_str(&format!(
-                    "\nhint: these are only the rows ahead of the other branches -- \
-                     try --all (this branch's whole log), --union (every branch listed), \
-                     or {back} to start further back"
-                ));
+                m.push_str("\nthese are only the rows ahead of the other branches");
             }
             m
         } else if review.is_some() {

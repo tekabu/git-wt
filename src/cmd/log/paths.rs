@@ -90,10 +90,7 @@ pub(crate) fn resolve_pathspec(
         }
     }
 
-    Err(format!(
-        "'{input}' is outside the repository\n\
-         hint: paths are resolved against the worktree they sit in"
-    ))
+    Err(format!("'{input}' is outside the repository"))
 }
 
 #[cfg(test)]
@@ -153,7 +150,6 @@ mod tests {
         let cwd = Path::new("/repo/main");
         let err = resolve_pathspec(root, &trees, cwd, "/etc/hosts").unwrap_err();
         assert!(err.contains("'/etc/hosts' is outside the repository"), "{err}");
-        assert!(err.contains("hint: paths are resolved"), "{err}");
     }
 
     #[test]

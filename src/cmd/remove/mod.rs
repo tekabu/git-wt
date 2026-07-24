@@ -51,11 +51,7 @@ pub(crate) fn cmd_remove(
     argv.push(&path_s);
 
     git_run(root, &argv).map_err(|e| {
-        if !args.force && e.contains("contains modified or untracked files") {
-            format!("{e}\nhint: re-run with -f to discard them")
-        } else {
-            e
-        }
+        e
     })?;
 
     git_run(root, &["worktree", "prune"])?;

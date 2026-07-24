@@ -168,16 +168,14 @@ pub(crate) fn cmd_log(
             format!("no commits match those filters: {unfiltered} commits, none kept")
         } else {
             // Not an error: a file deleted on one branch and alive on another
-            // is exactly the case this table is for. The rename hint applies
+            // is exactly the case this table is for. The rename note applies
             // regardless of how many branches were listed; --follow already
             // ran (paths.len() == 1) unless --no-follow said not to, so that
-            // is the one case the hint has nothing left to offer.
+            // is the one case it has nothing left to offer.
             let on: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
             let mut m = format!("no commits touched '{path_label}' on {}", on.join(", "));
             if !args.no_follow {
-                m.push_str(
-                    "\nhint: it may live under another name; --no-follow shows the literal path only",
-                );
+                m.push_str("\nit may live under another name");
             }
             m
         };

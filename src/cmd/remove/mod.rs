@@ -1,45 +1,37 @@
+pub(crate) mod args;
+
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::ui::confirm;
+use crate::cmd::remove::args::RemoveArgs;
 use crate::git::git_run;
-use crate::ui::{color_enabled, paint, GREEN};
+use crate::ui::{color_enabled, confirm, paint, GREEN};
 use crate::worktree::{canon, label, leaf_of, Worktree};
 
 pub(crate) fn cmd_remove(
     root: &Path,
     trees: &[Worktree],
     idx: usize,
-    yes: bool,
-    force: bool,
-    delete_branch: bool,
+    args: RemoveArgs,
 ) -> Result<(), String> {
     let wanted = &trees[idx];
 
-    // The main worktree is the first entry git reports; a bare one is never
-    // a checkout to remove.
     if idx == 0 || wanted.bare {
         return Err("refusing to remove the main worktree".into());
     }
 
-    // `-D` names a branch to delete; a detached worktree has none, so the
-    // flag has nothing to act on. Fail before touching anything rather than
-    // quietly doing half of what was asked.
-    if delete_branch && wanted.branch.is_none() {
+    if args.delete_branch && wanted.branch.is_none() {
         return Err("worktree has no branch to delete".into());
     }
 
-    // Was the shell standing inside the tree we're about to remove? Capture it
-    // before removal (canonicalize needs the dir to still exist). Only then does
-    // a wrapper need to cd back to main; otherwise it should stay put.
     let inside = match std::env::current_dir() {
         Ok(cwd) => canon(&cwd).starts_with(canon(&wanted.path)),
         Err(_) => false,
     };
 
     let path_s = wanted.path.to_string_lossy().to_string();
-    if !yes {
-        let prompt = match (&wanted.branch, delete_branch) {
+    if !args.yes {
+        let prompt = match (&wanted.branch, args.delete_branch) {
             (Some(b), true) => format!(
                 "Remove worktree '{}' at {path_s} and delete branch '{b}'? [y/N] ",
                 label(wanted)
@@ -53,13 +45,13 @@ pub(crate) fn cmd_remove(
     }
 
     let mut argv = vec!["worktree", "remove"];
-    if force {
+    if args.force {
         argv.push("--force");
     }
     argv.push(&path_s);
 
     git_run(root, &argv).map_err(|e| {
-        if !force && e.contains("contains modified or untracked files") {
+        if !args.force && e.contains("contains modified or untracked files") {
             format!("{e}\nhint: re-run with -f to discard them")
         } else {
             e
@@ -68,13 +60,10 @@ pub(crate) fn cmd_remove(
 
     git_run(root, &["worktree", "prune"])?;
 
-    // `remove` alone only detaches the worktree, leaving the branch; `-D`
-    // deletes it too, `-f` alongside `-D` forcing that delete (`-D` vs. `-d`)
-    // the same way it forces the worktree removal above.
     let leaf = leaf_of(&wanted.path);
     let branch_note = match &wanted.branch {
-        Some(b) if delete_branch => {
-            let flag = if force { "-D" } else { "-d" };
+        Some(b) if args.delete_branch => {
+            let flag = if args.force { "-D" } else { "-d" };
             git_run(root, &["branch", flag, b])?;
             format!("branch {b} deleted")
         }
@@ -84,9 +73,6 @@ pub(crate) fn cmd_remove(
     let on = color_enabled(std::io::stderr().is_terminal());
     eprintln!("{} {leaf}  ({branch_note})", paint("Removed", GREEN, on));
 
-    // Only when the shell was inside the removed tree does its cwd now dangle,
-    // so print the main path for a wrapper to cd back. Removing some other tree
-    // leaves you where you are — print nothing, so the wrapper stays put.
     if inside {
         if let Some(main) = trees.first() {
             println!("{}", main.path.display());

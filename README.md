@@ -42,14 +42,14 @@ Replace branch switching with separate folders next door.
 | You want to… | Just type | What happens |
 |---|---|---|
 | Start a new task on its own branch | `wt add feature/login` | A new folder appears next door, already on that branch |
-| Jump back to another task | `wt 1` | Your terminal moves to that task’s folder |
+| Jump back to another task | `wt switch 1` | Your terminal moves to that task’s folder |
 | Peek at a branch without disturbing your current work | `git-wt add bugfix/123 --stay` | The folder is created; you stay where you are |
-| Fold one task's work into another | `wt 1,2 merge` | Task 2's branch is merged into task 1's, without leaving your shell |
-| Check what a merge would bring first | `wt 1,2 merge --review` | The commits about to land, and whether they'd conflict — nothing is changed |
-| See which tasks have which commits | `wt 1,2,3 commits` | A table: one row per commit, a check under every task that has it |
-| See what happened to one file, across branches | `wt 1,2 log src/ui.rs` | The same table, narrowed to that file's history |
+| Fold one task's work into another | `wt merge 1,2` | Task 2's branch is merged into task 1's, without leaving your shell |
+| Check what a merge would bring first | `wt merge 1,2 --review` | The commits about to land, and whether they'd conflict — nothing is changed |
+| See which tasks have which commits | `wt commits 1,2,3` | A table: one row per commit, a check under every task that has it |
+| See what happened to one file, across branches | `wt log 1,2 src/ui.rs` | The same table, narrowed to that file's history |
 | Catch every task up with the server | `wt pull --all` | Each folder pulls its own branch; the last line counts what worked |
-| Clean up a finished task | `wt 1 remove` | The extra folder disappears; the branch stays in Git |
+| Clean up a finished task | `wt remove 1` | The extra folder disappears; the branch stays in Git |
 
 No more stashing, no more “wait, which branch was I on?”, no more half-finished
 work blocking a quick fix.
@@ -142,16 +142,16 @@ shell function *cd's* using that path.
 
 |  | `git-wt` (binary) | `wt` (shell function) |
 |---|---|---|
-| `switch` / bare `N` | prints the path | **cd's** into it |
+| `switch` / `cd` | prints the path | **cd's** into it |
 | `add` | prints the new path | **cd's** into it (unless `--stay`) |
 | `remove` | prints main path | cd's back to main after removal |
 | everything else | identical | identical (pass-through) |
 | Use for | **scripting** / `$(...)` | **interactive** daily use |
 
-- **Interactive:** run `./install.sh --alias wt`, then use `wt`. `wt 1` drops
-  you in the worktree; `wt add feat/x` creates it and drops you in; `wt 1
-  remove` returns you to main.
-- **Scripts:** call `git-wt` directly. `dir=$(git-wt 1 path)`,
+- **Interactive:** run `./install.sh --alias wt`, then use `wt`. `wt switch 1` drops
+  you in the worktree; `wt add feat/x` creates it and drops you in; `wt remove
+  1` returns you to main.
+- **Scripts:** call `git-wt` directly. `dir=$(git-wt path 1)`,
   `dir=$(git-wt add feat/x)`.
 
 `--alias <name>` installs a shell function of that name into your rc
@@ -161,32 +161,30 @@ reinstall.
 ## Usage
 
 ```
-git-wt                       Interactive picker (fzf, or numbered fallback)
+git-wt                       List worktrees (same as 'git-wt list')
 git-wt list [SEARCH]         List, with matches highlighted (indices stay put)
-git-wt <N>                   == git-wt <N> switch
-git-wt <N> switch            cd into worktree N (alias: cd)
-git-wt switch                Interactive picker; cd's into the pick (alias: cd)
-git-wt <N> path              Print worktree N's path only (alias: show)
-git-wt <N> remove [-y] [-f] [-D]  Remove worktree N (-D also deletes its branch)
-git-wt <N>,<M> merge         Merge M into N
-git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
+git-wt switch <N>            cd into worktree N (alias: cd)
+git-wt path <N>              Print worktree N's path only (alias: show)
+git-wt remove <N> [-y] [-f] [-D]  Remove worktree N (-D also deletes its branch)
+git-wt merge <N>,<M>         Merge M into N
+git-wt merge <N> <BRANCH>    Merge BRANCH into worktree N
 git-wt merge -b <M>          Merge M into the worktree you are in
-git-wt <N>,<M> merge review  What would that merge bring over?
-git-wt <N> merge continue|abort
-git-wt <N>,<M> merged        Is M's branch already in N's branch?
-git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
-git-wt <N> merged            Is N's branch already in the current branch?
-git-wt <N> merged --others   List all worktrees; show which are merged into N
-git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
-git-wt <N>[,<M>...] commits  Table: which commit is on which branch
-git-wt <N> commits           One worktree's own log, nothing compared
-git-wt <N>[,<M>...] log [PATH...] [flags]
+git-wt merge <N>,<M> review  What would that merge bring over?
+git-wt merge <N> continue|abort
+git-wt merged <N>,<M>        Is M's branch already in N's branch?
+git-wt merged <N> <BRANCH>   Is BRANCH already in worktree N's branch?
+git-wt merged <N>            Is N's branch already in the current branch?
+git-wt merged <N> --others   List all worktrees; show which are merged into N
+git-wt diff <N>,<M> [flags]  Diff worktree N against worktree M
+git-wt commits <N>[,<M>...]  Table: which commit is on which branch
+git-wt commits <N>           One worktree's own log, nothing compared
+git-wt log <N>[,<M>...] [PATH...] [flags]
                              Same table, narrowed to one file's history
-git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
-git-wt -b/--branch LIST <action>
-                             LIST with the current worktree prepended
-git-wt <N> fetch|pull|push   Run it in worktree N
-git-wt <N>,<M> pull          Run it in each worktree listed
+git-wt meld <N>,<N>[,<N>]    Diff 2-3 worktrees side by side in meld
+git-wt <VERB> -b/--branch LIST
+                             Append LIST to the target list
+git-wt fetch|pull|push <N>   Run it in worktree N
+git-wt pull <N>,<M>          Run it in each worktree listed
 git-wt fetch|pull|push --all Run it in every worktree
 git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
 git-wt doctor [--repair]     Report worktree issues (moved/deleted dirs,
@@ -206,16 +204,16 @@ Anywhere `<N>` or a `<N>,<M>` list appears above, a worktree may be named by
 the branch it holds instead of its number, and the two spellings mix freely:
 
 ```
-git-wt main commits
-git-wt main,2 diff
-git-wt main,feat/login merge
-git-wt main,feat/login,feat/api commits
+git-wt commits main
+git-wt diff main,2
+git-wt merge main,feat/login
+git-wt commits main,feat/login,feat/api
 ```
 
 The branch has to be checked out in a worktree — a list action diffs, melds or
 sweeps real directories, so a branch nobody has checked out has no path to
 give. To merge such a branch, name it in the single-target form instead:
-`git-wt 1 merge some-branch`.
+`git-wt merge 1 some-branch`.
 
 A bare number is always read as a worktree number, even when a branch shares
 that name; write `heads/2` for a branch that is itself called `2`. This is the
@@ -225,16 +223,17 @@ A command word likewise wins over a branch of the same name: `git-wt list` is
 the listing, never a worktree on a branch called `list`. Reach that one as
 `git-wt heads/list`.
 
-### `-b`/`--branch` — prepend the worktree you're standing in
+### `-b`/`--branch` — append extra targets
 
-`-b`/`--branch LIST` is not a target by itself; it prepends the current
-worktree to whatever list the command already has, so a comparison against
-"here" never needs its own number looked up first:
+`-b`/`--branch LIST` is not a target by itself; it appends extra targets to
+whatever list the positional already named (or to the default current worktree
+when the positional is omitted), so a comparison against "here" never needs
+its own number looked up first:
 
 ```sh
-git-wt -b 1,2 commits       # == git-wt <current>,1,2 commits
-git-wt --branch=main diff   # == git-wt <current>,main diff
-git-wt merge -b 2           # worktree 2's branch -> the worktree you're in
+git-wt commits -b 1,2       # == git-wt commits <current>,1,2
+git-wt diff -b main         # == git-wt diff <current>,main
+git-wt merge -b 2         # == git-wt merge <current>,2 (2 into current)
 ```
 
 ### Options (create)
@@ -258,17 +257,18 @@ Enter to proceed; anything else — including bare Enter — aborts.
 
 ## List
 
-`git-wt` with no arguments opens the interactive picker (`switch`, see
-[below](#switch--path)); `git-wt list` (`ls`) is the plain listing, numbered
-from 1. `git-wt list SEARCH` (or `git-wt list --search SEARCH`) highlights
-every literal-substring match in the branch and path columns; it never drops
-a row, so the **numbers stay the original indices** and `git-wt <N> remove`
-always means the same tree regardless of any search.
+`git-wt` with no arguments is the same as `git-wt list` (`ls`): the plain
+listing, numbered from 1. `git-wt list SEARCH` (or `git-wt list --search
+SEARCH`) highlights every literal-substring match in the branch and path
+columns; it never drops a row, so the **numbers stay the original indices**
+and `git-wt remove <N>` always means the same tree regardless of any search.
 
 On a terminal, the default listing includes a `merged` column (relative to the
 branch you are standing in) alongside status, last-commit, and push/pull — the
-piped `id`/`branch`/`dir` contract is unchanged. `git-wt <N> merged --others`
+piped `id`/`branch`/`dir` contract is unchanged. `git-wt merged <N> --others`
 still answers the same question against a chosen worktree's branch instead.
+The listing prints straight to the screen; `--less` pages it through
+`less`/`$PAGER` instead.
 
 `--col` picks and orders columns — `1`=id, `2`=branch, `3`=dir (full path),
 `4`=status, `5`=last-commit, `6`=merged, `7`=merged-ref, `8`=merged-at,
@@ -285,7 +285,7 @@ git-wt list --col 1,2 feat   # combine with a filter
 ```
 
 `--long` shows id/branch/dir/status/last/push/pull in one go; `--short` shows
-just id + branch + a one-word status summary. `--show-path` (`-p`) adds the
+just id + branch + a one-word status summary. `--path` (`-p`) adds the
 dir column that a terminal otherwise leaves out (a piped listing already has
 it). All three combine with `--col`, `--files`, and a search term like the
 flags above.
@@ -293,7 +293,7 @@ flags above.
 ### `--files`
 
 `--files` (`-f`) prints a file block under each worktree row, in the same shape
-`git-wt <N>,<M> commits --files` prints under a commit: status, path, added
+`git-wt commits <N>,<M> --files` prints under a commit: status, path, added
 lines, removed lines. **Every worktree that is not clean gets one** -- staged and
 unstaged changes counted together, untracked files listed with `?` (ignored ones
 never are). A clean worktree keeps its row and adds no block, so the flag reads
@@ -324,22 +324,18 @@ git-wt list --col 2 --files   # and with --col
 ## Switch / path
 
 ```sh
-wt 1                     # cd into worktree 1
-wt                       # no number: interactive picker, then cd into the pick
-wt switch                # same, spelled out (alias: cd)
-git-wt 1 path            # just print its path
-cd "$(git-wt 1 path)"    # equivalent by hand
-cd "$(git-wt switch)"    # equivalent by hand for the picker
+wt switch 1                     # cd into worktree 1
+wt                       # no number: lists worktrees (git-wt list)
+git-wt path 1            # just print its path
+cd "$(git-wt path 1)"    # equivalent by hand
+cd "$(git-wt switch 1)"  # equivalent by hand
 ```
 
 `path` prints the path plus a single trailing newline, nothing else. All status
 text goes to stderr.
 
-With no target, `switch` (and bare `git-wt`/`wt`) opens the same interactive
-picker `add` uses when `BRANCH` is omitted — fzf when installed, otherwise a
-numbered prompt read from stdin — over every worktree instead of every local
-branch, and cd's (or, through the binary, prints) the one you pick. The picker
-prompt goes to stderr too, so only the final path ever reaches stdout.
+`switch` needs a target — a worktree number or branch name from `git-wt list`.
+Bare `git-wt`/`wt` (no target) prints the list instead of picking one.
 
 ## Create
 
@@ -387,11 +383,11 @@ suffix.
 ## Remove
 
 ```sh
-git-wt 2 remove             # prompt, then remove worktree 2
-git-wt 2 remove -y          # no prompt
-git-wt 2 remove -f          # also discard uncommitted changes
-git-wt 2 remove -D          # also delete branch (safe: git branch -d)
-git-wt 2 remove -D -f       # force both: discard dirty tree, force-delete branch
+git-wt remove 2             # prompt, then remove worktree 2
+git-wt remove 2 -y          # no prompt
+git-wt remove 2 -f          # also discard uncommitted changes
+git-wt remove 2 -D          # also delete branch (safe: git branch -d)
+git-wt remove 2 -D -f       # force both: discard dirty tree, force-delete branch
 ```
 
 Removes the worktree directory and prunes git's admin data; the branch is left
@@ -446,10 +442,10 @@ wrong, not what was true before the repair.
 Diff two worktrees in the terminal, through git's own pager:
 
 ```sh
-git-wt 1,2 diff             # git diff <branch 1>...<branch 2>
-git-wt 1,2 diff ..          # git diff <branch 1>..<branch 2>
-git-wt 1,2 diff --name-only
-git-wt 1,2 diff --stat -- src/
+git-wt diff 1,2             # git diff <branch 1>...<branch 2>
+git-wt diff 1,2 ..          # git diff <branch 1>..<branch 2>
+git-wt diff 1,2 --name-only
+git-wt diff 1,2 --stat -- src/
 ```
 
 It compares the two worktrees' **branches**, not their directories — a directory
@@ -457,7 +453,7 @@ diff would drag in `target/`, `node_modules` and everything else `.gitignore`
 exists to hide. Detached worktrees diff by HEAD sha.
 
 `...` (the default) is only what worktree M added since it forked from worktree N
-— the review view, and exactly what `git-wt N,M merge` would bring in. `..`
+— the review view, and exactly what `git-wt merge <N>,<M>` would bring in. `..`
 compares the two tips instead: it also reports N's own newer commits, inverted,
 as if M had deleted them, which on diverged branches reads as a huge diff that no
 merge would ever apply.
@@ -478,13 +474,13 @@ command to run instead.
 Because the comparison is committed state, uncommitted work is invisible to it.
 When either side is dirty, git-wt says so on stderr and points you at `live`.
 
-## Diff live — `git-wt <N>,<M> diff live`
+## Diff live — `git-wt diff <N>,<M> live`
 
 `live` compares the **literal bytes on disk** instead of the commits:
 
 ```sh
-git-wt 1,2 diff live        # what actually differs between the directories
-git-wt 1,2 diff live hunks  # + the changed line numbers
+git-wt diff 1,2 live        # what actually differs between the directories
+git-wt diff 1,2 live hunks  # + the changed line numbers
 ```
 
 This is the answer to the case no ref diff can reach: two worktrees on the same
@@ -530,8 +526,8 @@ takes two paths, and there is no three-path form). For three, use `meld`.
 The first worktree's log, counter-checked against any number of others:
 
 ```sh
-git-wt 1,2,3 commits    # worktree 1's log; 2 and 3 are check columns
-git-wt 2 commits        # worktree 2's own log, nothing compared
+git-wt commits 1,2,3    # worktree 1's log; 2 and 3 are check columns
+git-wt commits 2        # worktree 2's own log, nothing compared
 ```
 
 A single target is that worktree alone: its whole log, no check columns, and
@@ -583,8 +579,8 @@ listed contributes rows, so the table becomes the union of their logs and a
 commit the first one lacks gets a row with a `·` under it:
 
 ```sh
-git-wt 1,2 commits -n 20      # newest 20 rows
-git-wt 1,2,3 commits --union  # every branch's commits as rows
+git-wt commits 1,2 -n 20      # newest 20 rows
+git-wt commits 1,2,3 --union  # every branch's commits as rows
 ```
 
 The tradeoff is that rows grow with each worktree you name — the same filter on
@@ -605,10 +601,10 @@ date you read off the table pastes straight back into `--date-since`. It also
 sorts, greps, and is one width on every row.
 
 ```sh
-git-wt 1,2 commits                          # 2026-01-31
-git-wt 1,2 commits --time              # 2026-01-31 14:30:05
-git-wt 1,2 commits --date-human             # Jan. 31, 2026
-git-wt 1,2 commits --date-human --time # Jan. 31, 2026 14:30:05
+git-wt commits 1,2                          # 2026-01-31
+git-wt commits 1,2 --time              # 2026-01-31 14:30:05
+git-wt commits 1,2 --date-human             # Jan. 31, 2026
+git-wt commits 1,2 --date-human --time # Jan. 31, 2026 14:30:05
 ```
 
 `--date-human` is easier to read a date *out* of; the cost is the round-trip,
@@ -618,9 +614,9 @@ shape, whatever the column is spelled as — the two are independent.
 ### Writing a report
 
 ```sh
-git-wt 1,2 commits --md              # -> commits_2026-07-17_14-30-05.md
-git-wt 1,2 commits --md report.md    # -> that path
-git-wt 1,2,3 commits --merges --md      # filters apply as usual
+git-wt commits 1,2 --md              # -> commits_2026-07-17_14-30-05.md
+git-wt commits 1,2 --md report.md    # -> that path
+git-wt commits 1,2,3 --merges --md      # filters apply as usual
 ```
 
 `--md` writes the table as markdown instead of printing it. The file records
@@ -630,7 +626,7 @@ reproduce itself:
 ```markdown
 # git-wt commits
 
-- Command: `git-wt 1,4 commits -n 3 --md`
+- Command: `git-wt commits 1,4 -n 3 --md`
 - Worktrees: `main`, `live-diff`
 - Commits: 3
 
@@ -656,7 +652,7 @@ and shift every column after it.
 ### Newest last
 
 ```sh
-git-wt 1,2 commits --reverse        # alias: --oldest-first
+git-wt commits 1,2 --reverse        # alias: --oldest-first
 ```
 
 Applied after the `-n` cap, so `-n 10 --reverse` is the same ten commits as
@@ -665,7 +661,7 @@ Applied after the `-n` cap, so `-n 10 --reverse` is the same ten commits as
 ### Merge commits
 
 ```sh
-git-wt 1,2 commits --merges
+git-wt commits 1,2 --merges
 ```
 
 Merge commits carry no work of their own, and on a branch that merges often
@@ -685,17 +681,17 @@ being unconditional, so the message never claims a drop that isn't happening.
 ### Filtering the rows
 
 Filters narrow which commits are listed; the columns stay whatever your
-worktree list named. They AND together, and `-n` counts what survives them.
+target list named. They AND together, and `-n` counts what survives them.
 
 ```sh
-git-wt 1,2 commits --author alex                    # fuzzy, like list's SEARCH
-git-wt 1,2 commits --date-since 2026-01-01          # that day and after
-git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30
-git-wt 1,2 commits --date 2026-01-31                # exactly that day
-git-wt 1,2 commits --commit-since 5568a21           # 5568a21's day, and after
-git-wt 1,2 commits --commits af48509,f9e2427        # just these rows
-git-wt 1,2 commits --message oauth                  # subject or body
-git-wt 1,2 commits --filename api.php               # commits touching that path
+git-wt commits 1,2 --author alex                    # fuzzy, like list's SEARCH
+git-wt commits 1,2 --date-since 2026-01-01          # that day and after
+git-wt commits 1,2 --date-since 2026-01-01 --date-until 2026-06-30
+git-wt commits 1,2 --date 2026-01-31                # exactly that day
+git-wt commits 1,2 --commit-since 5568a21           # 5568a21's day, and after
+git-wt commits 1,2 --commits af48509,f9e2427        # just these rows
+git-wt commits 1,2 --message oauth                  # subject or body
+git-wt commits 1,2 --filename api.php               # commits touching that path
 ```
 
 Two vocabularies, one shape. The `--commit-` bounds take a **commit** — a sha, a
@@ -743,7 +739,7 @@ costing a character the shell wants for itself.
 ### Searching the message — `--message`
 
 ```sh
-git-wt 1,2 commits --message oauth   # alias: -m
+git-wt commits 1,2 --message oauth   # alias: -m
 ```
 
 A plain substring, case-folded, matched against the subject **and** the body —
@@ -768,8 +764,8 @@ a1b2c3d  Alex    2026-09-15   ✓     ·    fix token expiry
 ### Searching the files — `--filename`
 
 ```sh
-git-wt 1,2 commits --filename api.php               # rows that touched it
-git-wt 1,2 commits --filename api.php --all-files   # + every other file they touched
+git-wt commits 1,2 --filename api.php               # rows that touched it
+git-wt commits 1,2 --filename api.php --all-files   # + every other file they touched
 ```
 
 Keeps only commits touching a path that contains the term, case-folded. It
@@ -783,13 +779,13 @@ widens it back to everything each commit touched — which is also the only way
 the `+`/`-` counts sum to the commit again.
 
 ```
-$ git-wt 1 commits --filename Cargo.toml -n 1
+$ git-wt commits 1 --filename Cargo.toml -n 1
 commit   author        date  subject
 c43f151  Alex    2026-07-19  fix: only a lower bound widens the rows
 
 	M  Cargo.toml  +1  -1
 
-$ git-wt 1 commits --filename Cargo.toml -n 1 --all-files
+$ git-wt commits 1 --filename Cargo.toml -n 1 --all-files
 commit   author        date  subject
 c43f151  Alex    2026-07-19  fix: only a lower bound widens the rows
 
@@ -810,7 +806,7 @@ first parent.
 ### One block for the whole range — `--squash`
 
 ```sh
-git-wt 1 commits --squash --all      # commits up top, one file block below
+git-wt commits 1 --squash --all      # commits up top, one file block below
 ```
 
 `--squash` keeps the commit rows but drops the per-commit file blocks for a
@@ -818,7 +814,7 @@ single consolidated one beneath the whole table: every file the shown commits
 touched, once, with its `+`/`-` counts **summed across them**.
 
 ```
-$ git-wt 1 commits --squash -n 3
+$ git-wt commits 1 --squash -n 3
 commit   author        date  subject
 32f386d  Alex    2026-07-20  feat: support branch names as worktree targets
 c87c402  Alex    2026-07-20  fix(alias): quote 'esac' in reserved word list
@@ -897,7 +893,7 @@ answers "what happened when". `--topo` answers the other question — "what did
 each branch do" — by keeping each branch's line of history in one block:
 
 ```sh
-git-wt 1,2,3 commits --topo
+git-wt commits 1,2,3 --topo
 ```
 
 ```
@@ -917,7 +913,7 @@ A subject too long for your terminal is cut with an `…`, never wrapped — the
 marks are the point of the table, and a wrapped row strands them on a line of
 their own. Long author names cap at 16 characters for the same reason. Piped
 output has no terminal to fit, so it keeps whole subjects and names, and
-`git-wt 1,2 commits | grep oauth` still works.
+`git-wt commits 1,2 | grep oauth` still works.
 
 One honest limitation: the author column *is* padded, so a name written in a
 double-width script (CJK) can still shift the columns to its right by a
@@ -975,7 +971,7 @@ A **cherry-picked or rebased commit is a different commit** to git — same
 patch, new sha — so identity alone would call it missing. It isn't: those rows
 are marked `≈` rather than `·`, which is what [the marks](#what-the-marks-mean)
 are about. When the question is the content of the whole branch rather than
-per-commit, `1,2 diff` and `1,2 merged` still answer it directly.
+per-commit, `diff 1,2` and `merged 1,2` still answer it directly.
 
 ## Log
 
@@ -986,7 +982,7 @@ columns, same filters, same renderer — with a pathspec selecting the rows
 instead of a branch range:
 
 ```
-git-wt 1,2 log src/cmd/commits/render.rs
+git-wt log 1,2 src/cmd/commits/render.rs
 git-wt log src/ui.rs --author alex --date-since 2026-01-01 -w
 ```
 
@@ -1035,10 +1031,10 @@ with four exceptions:
   anyway). `--no-follow` opts out and shows the literal path only.
 
 ```
-git-wt 1,2,3 log src/ui.rs --union     # every branch's touches, unioned
-git-wt 2 log src/ui.rs -f              # + the other files each commit touched
-git-wt 1 log src/ui.rs --squash        # the file's lifetime totals
-git-wt 1 log src/ui.rs --no-follow     # stop at a rename instead of crossing it
+git-wt log 1,2,3 src/ui.rs --union     # every branch's touches, unioned
+git-wt log 2 src/ui.rs -f              # + the other files each commit touched
+git-wt log 1 src/ui.rs --squash        # the file's lifetime totals
+git-wt log 1 src/ui.rs --no-follow     # stop at a rename instead of crossing it
 ```
 
 The table adds one column of its own, `±`: the added/removed line count
@@ -1059,8 +1055,8 @@ commit   author  date        main  feat-x  feat-y      ±  subject
 Compare worktrees side by side in [meld](https://meldmerge.org/):
 
 ```sh
-git-wt 1,3 meld             # 2-way: meld <dir 1> <dir 3>
-git-wt 2,1,3 meld           # 3-way: meld <dir 2> <dir 1> <dir 3>
+git-wt meld 1,3             # 2-way: meld <dir 1> <dir 3>
+git-wt meld 2,1,3           # 3-way: meld <dir 2> <dir 1> <dir 3>
 ```
 
 The list order is the pane order, so `2,1,3` puts worktree 2 on the left. Takes
@@ -1080,10 +1076,10 @@ extracted into sparse temp directories, so meld's own file list *is* the
 answer instead of something to scroll past:
 
 ```sh
-git-wt 1,2 meld --diff             # only files that differ
-git-wt 1,2 meld --diff ...         # only what branch 2 added since the fork
-git-wt 1,2 meld --diff --3way      # + the merge-base in the middle pane
-git-wt 1,2 meld --diff --base main # + an explicit base in the middle pane
+git-wt meld 1,2 --diff             # only files that differ
+git-wt meld 1,2 --diff ...         # only what branch 2 added since the fork
+git-wt meld 1,2 --diff --3way      # + the merge-base in the middle pane
+git-wt meld 1,2 --diff --base main # + an explicit base in the middle pane
 ```
 
 `--3way`/`--base` add a third pane holding the merge-base (or a ref you name),
@@ -1092,19 +1088,19 @@ the same middle-pane-as-common-ancestor shape a merge conflict resolver uses.
 ## Merge
 
 ```sh
-git-wt 1,2 merge            # worktree 2's branch -> worktree 1's branch
-git-wt 1 merge feat/x       # a branch name works too
+git-wt merge 1,2            # worktree 2's branch -> worktree 1's branch
+git-wt merge 1 feat/x       # a branch name works too
 git-wt merge -b 2           # worktree 2's branch -> the worktree you're in
-git-wt 1,2 merge dry-run    # would it conflict? nothing is touched
-git-wt 1,2 merge theirs     # let 2 win every collision
+git-wt merge 1,2 dry-run    # would it conflict? nothing is touched
+git-wt merge 1,2 theirs     # let 2 win every collision
 ```
 
 The merge runs **inside worktree N**, so N's branch is the one that moves — the
-source is only read. `git-wt 1,2 merge` reads as "merge 2 into worktree 1",
+source is only read. `git-wt merge 1,2` reads as "merge 2 into worktree 1",
 and you never have to `cd` anywhere to do it. `git-wt merge -b <M>` is the same
 idea from the other direction: no destination number to look up because the
-destination is wherever you're standing — `-b`/`--branch` prepends the current
-worktree to the target list, so `merge -b 2` is `<current>,2 merge` spelled
+destination is wherever you're standing — `-b`/`--branch` appends to the default
+current worktree, so `merge -b 2` is `git-wt merge <current>,2` spelled
 for the common case.
 
 The source can be a worktree number (via the list) or any branch/ref. A number
@@ -1113,28 +1109,28 @@ actually named `2`, spell it `heads/2`.
 
 ### Two ways to name the targets
 
-`git-wt 1,2 merge` is the list form, the same shape `diff` and `meld` use — every
+`git-wt merge 1,2` is the list form, the same shape `diff` and `meld` use — every
 multi-worktree action names its targets one way. The single-target form is still
 used for branch sources and for `continue`/`abort`:
 
 ```sh
-git-wt 1,2 merge     # list-style (preferred for worktree sources)
-git-wt 1 merge feat/x # branch source; no list equivalent
+git-wt merge 1,2     # list-style (preferred for worktree sources)
+git-wt merge 1 feat/x # branch source; no list equivalent
 ```
 
-Options work the same either way — `git-wt 1,2 merge theirs dry-run`.
+Options work the same either way — `git-wt merge 1,2 theirs dry-run`.
 
 Two differences from `diff`/`meld`, both because a merge is directional rather
 than symmetric:
 
 - The list takes **exactly two** worktrees. `meld` diffs 2–3; a merge has one
-  destination and one source, so `git-wt 1,2,3 merge` is an error.
+  destination and one source, so `git-wt merge 1,2,3` is an error.
 - A worktree source must use the list form, like `diff`. A branch source still
-  uses the single-target form (`git-wt 1 merge feat/x`) because a list can only
+  uses the single-target form (`git-wt merge 1 feat/x`) because a list can only
   name worktrees.
 
 The list already names the source, so it can't be combined with
-`continue`/`abort` — those take a single target (`git-wt 1 merge continue`), and
+`continue`/`abort` — those take a single target (`git-wt merge 1 continue`), and
 asking otherwise says so.
 
 ### Words and options
@@ -1177,8 +1173,8 @@ They are deliberately not `-s ours`, which would drop the source's changes
 wholesale and still record a merge that claims to have taken them.
 
 ```sh
-git-wt 1,2 merge theirs   # collisions resolve to 2's side
-git-wt 1,2 merge ours     # collisions resolve to 1's side
+git-wt merge 1,2 theirs   # collisions resolve to 2's side
+git-wt merge 1,2 ours     # collisions resolve to 1's side
 ```
 
 A side is chosen while the merge is **computed**, so it cannot be bolted onto a
@@ -1186,7 +1182,7 @@ merge that has already stopped — git offers no way to do that. Ask for one
 anyway and `git-wt` explains, then offers the only route that honors it:
 
 ```
-$ git-wt 1,2 merge theirs
+$ git-wt merge 1,2 theirs
 A merge is already in progress in /Users/me/code/myapp, and 'theirs' only applies when a merge starts.
 Abort it and re-merge '2' with 'theirs'? Any conflict resolution already done there is discarded. [y/N]
 ```
@@ -1206,13 +1202,13 @@ nothing to clean up. It uses `git merge-tree --write-tree` (**git 2.38+**),
 which resolves the merge in memory.
 
 ```sh
-git-wt 1,2 merge dry-run
+git-wt merge 1,2 dry-run
 ```
 
 It exits 0 when clean and 1 when it would conflict, so it drives a script:
 
 ```sh
-if git-wt 1,2 merge dry-run; then git-wt 1,2 merge; fi
+if git-wt merge 1,2 dry-run; then git-wt merge 1,2; fi
 ```
 
 `dry-run` takes none of the flags that need a real merge to run — `-m`,
@@ -1229,13 +1225,13 @@ allowed, since it changes the answer.
 nothing either.
 
 ```sh
-git-wt 1,2 merge --review          # what would 2 bring into 1?
-git-wt 1,2 merge --review -f       # + the files under each commit
-git-wt 1,2 merge --review -n 5 --author alex
+git-wt merge 1,2 --review          # what would 2 bring into 1?
+git-wt merge 1,2 --review -f       # + the files under each commit
+git-wt merge 1,2 --review -n 5 --author alex
 ```
 
 ```
-$ git-wt 1,2 merge --review
+$ git-wt merge 1,2 --review
 feat/login -> main   3 commits, merges cleanly
 
 commit   author  date        main  subject
@@ -1245,14 +1241,14 @@ commit   author  date        main  subject
 ```
 
 This is the question `commits` could already answer, in a different command and
-a **reversed argument order** — `git-wt 2,1 commits` for a merge you'd spell
+a **reversed argument order** — `git-wt commits 2,1` for a merge you'd spell
 `1,2`. `merge` reads dest-first, `commits` reads column order. `--review` takes
 *merge's* order and does the translation, so you never do it in your head.
 
 Exit codes are `dry-run`'s: **0** clean, **1** conflict with the paths listed.
 
 ```sh
-if git-wt 1,2 merge --review; then git-wt 1,2 merge; fi
+if git-wt merge 1,2 --review; then git-wt merge 1,2; fi
 ```
 
 #### The one column is the destination's
@@ -1287,9 +1283,9 @@ passed through untouched — which is the only way both commands keep the letter
 they share:
 
 ```sh
-git-wt 1,2 merge --review -f     # --files (NOT --force: merge never sees it)
-git-wt 1,2 merge --review -fn 5  # bundles, like commits
-git-wt 1,2 merge --review --filename api.php
+git-wt merge 1,2 --review -f     # --files (NOT --force: merge never sees it)
+git-wt merge 1,2 --review -fn 5  # bundles, like commits
+git-wt merge 1,2 --review --filename api.php
 ```
 
 So put merge's own options *before* `--review` and they are an error, not a
@@ -1297,7 +1293,7 @@ silent claim — `merge -f --review` would otherwise have set force before
 `--review` was ever read. And a merge option typed *after* it says which:
 
 ```
-$ git-wt 1,2 merge --review --dry-run
+$ git-wt merge 1,2 --review --dry-run
 error: '--dry-run' and '--review' answer the same question
 hint: '--review' already reports the verdict '--dry-run' prints, plus the commits behind it
 ```
@@ -1329,19 +1325,19 @@ HEAD, exactly as `git merge` run there would. Only a bare worktree is refused.
 A conflict exits 1 and names the files:
 
 ```
-$ git-wt 1,2 merge
+$ git-wt merge 1,2
 error: merge conflict in /Users/me/code/myapp
   src/auth.rs
-hint: resolve them there, 'git add' each, then 'git-wt 1 merge continue'
-hint: or undo the merge with 'git-wt 1 merge abort'
-hint: or redo it letting one side win: 'git-wt 1 merge abort', then 'git-wt 1,2 merge theirs'
+hint: resolve them there, 'git add' each, then 'git-wt merge 1 continue'
+hint: or undo the merge with 'git-wt merge 1 abort'
+hint: or redo it letting one side win: 'git-wt merge 1 abort', then 'git-wt merge 1,2 theirs'
 ```
 
 Fix the files in worktree N, `git add` them, then:
 
 ```sh
-git-wt 1 merge continue   # conclude it ('--continue' and '-c' also work)
-git-wt 1 merge abort      # or undo the whole merge
+git-wt merge 1 continue   # conclude it ('--continue' and '-c' also work)
+git-wt merge 1 abort      # or undo the whole merge
 ```
 
 Both also accept the bare words `continue` / `abort`. They take no source and no
@@ -1357,9 +1353,9 @@ Ask whether one branch is already contained in another. This is different from
 "is it already in?".
 
 ```sh
-git-wt 1 merged              # is worktree 1's branch already in the current branch?
-git-wt 1,2 merged            # is worktree 2's branch already in worktree 1's branch?
-git-wt 1 merged feat/x       # is branch feat/x already in worktree 1's branch?
+git-wt merged 1              # is worktree 1's branch already in the current branch?
+git-wt merged 1,2            # is worktree 2's branch already in worktree 1's branch?
+git-wt merged 1 feat/x       # is branch feat/x already in worktree 1's branch?
 ```
 
 It uses `git merge-base --is-ancestor`, so it exits `0` when already merged and
@@ -1367,7 +1363,7 @@ It uses `git merge-base --is-ancestor`, so it exits `0` when already merged and
 safe cleanup:
 
 ```sh
-if git-wt 1 merged; then git-wt 1 remove -y; fi
+if git-wt merged 1; then git-wt remove 1 -y; fi
 ```
 
 Output mirrors the dry-run style:
@@ -1381,7 +1377,7 @@ The ahead count comes from `git rev-list --count main..feat/x`. Both
 single-target and list forms read dest-first, exactly like `merge`.
 
 Naming a pair of worktrees uses the list form, as `merge` and `diff` do, so
-`git-wt 1 merged 2` is rejected in favour of `git-wt 1,2 merged`. The
+`git-wt merged 1 2` is rejected in favour of `git-wt merged 1,2`. The
 single-target form stays for a branch source, which a list of numbers cannot
 name.
 
@@ -1389,14 +1385,14 @@ Detached worktrees are named by their short commit SHA in `merged` and `diff`
 output instead of a branch name; `merge` and `meld` still show `(detached)`.
 The answer is still correct, just less readable. A detached worktree has no
 branch to name, so the list form is the way to ask about one:
-`git-wt 1,2 merged` answers by SHA.
+`git-wt merged 1,2` answers by SHA.
 
 ### `--others` — every worktree at once
 
 ```sh
-git-wt 1 merged --others      # every worktree, checked against worktree 1's branch
-git-wt 1 merged --ot -p       # short alias; -p adds the path column
-git-wt 1 merged -o            # -o is the same short alias
+git-wt merged 1 --others      # every worktree, checked against worktree 1's branch
+git-wt merged 1 --ot -p       # short alias; -p adds the path column
+git-wt merged 1 -o            # -o is the same short alias
 ```
 
 Where the plain forms answer one yes/no question, `--others` prints a table:
@@ -1411,16 +1407,15 @@ worktree's branch against that branch's upstream. Nothing here does anything
 git does not — it is the `cd` you would type first.
 
 ```sh
-git-wt 1 pull                # git -C <dir 1> pull
-git-wt 1,3 fetch --prune     # both, one after the other
+git-wt pull 1                # git -C <dir 1> pull
+git-wt fetch 1,3 --prune     # both, one after the other
 git-wt pull --all            # every worktree
-git-wt 2 push -u             # push and set the upstream
+git-wt push 2 -u             # push and set the upstream
 ```
 
 `--all` is the point. A repo with six worktrees is six branches, and they go
 stale one at a time. It sweeps every worktree in `list` order, and it names no
-target — `git-wt pull --all` is the one verb-first form left in the grammar,
-because there is nothing to put in front of it.
+target — `git-wt pull --all` has no target because it sweeps every worktree.
 
 ### A sweep never stops on a failure
 
@@ -1504,158 +1499,157 @@ Every form the CLI accepts. Examples assume:
 | `git-wt list --files` | Add each worktree's uncommitted files under its row (`-f`) |
 | `git-wt --files` | Same, without the `list` word |
 
-### Target — `git-wt <N> [action]`
+### Target — `git-wt <VERB> [TARGET_LIST]`
 
 | Command | Effect |
 |---|---|
-| `git-wt 1` | == `git-wt 1 switch` |
-| `git-wt 1 switch` | Print worktree 1's path (wrapper cd's in); alias `cd` |
-| `git-wt 1 path` | Print worktree 1's path only, never cd; alias `show` |
-| `git-wt 1 remove` | Prompt, then remove |
-| `git-wt 1 remove -y` | Remove, no prompt |
-| `git-wt 1 remove -f` | Remove, discard dirty (still prompts) |
-| `git-wt 1 remove -y -f` | Remove, no prompt, discard dirty |
-| `git-wt 1 remove -D` | Prompt (names branch too), remove + delete branch (safe) |
-| `git-wt 1 remove -D -f -y` | No prompt, force both: discard dirty, force-delete branch |
-| `git-wt 1 rm` | Alias → remove |
-| `git-wt 1,2 merge` | Merge worktree 2's branch into worktree 1's |
-| `git-wt 1 merge feat/x` | Merge branch `feat/x` into worktree 1's branch |
-| `git-wt 1,2 merge --no-ff -m "sync"` | Merge commit with a message |
-| `git-wt 1,2 merge --squash` | Stage the merge, don't commit |
-| `git-wt 1,2 merge -f` | Merge even though worktree 1 is dirty |
-| `git-wt 1,2 merge theirs` | Merge, letting 2 win every collision (`-X theirs`) |
-| `git-wt 1,2 merge ours` | Merge, letting 1 win every collision (`-X ours`) |
-| `git-wt 1,2 merge dry-run` | Report whether it would merge; change nothing |
-| `git-wt 1,2 merge --review` | The verdict **plus** the commits it would bring; change nothing |
-| `git-wt 1,2 merge --review -f` | Same, with each commit's files (`-f` is `--files` past `--review`) |
-| `git-wt 1,2 merge --review --no-merges` | Drop the merge rows a review keeps by default |
-| `git-wt 1 merge feat/x --review` | Review a branch source; the positional still belongs to `merge` |
-| `git-wt 1 merge continue` | Conclude a conflicted merge (`--continue`, `-c`) |
-| `git-wt 1 merge abort` | Undo a conflicted merge (`--abort`, `-a`) |
-| `git-wt 1 merge 2` | `merge takes a worktree list: 'git-wt 1,2 merge' (or use 'heads/2' for a branch of the same name)` |
-| `git-wt 1 merged` | Is worktree 1's branch already in the current branch? |
-| `git-wt 1 merged feat/x` | Is branch `feat/x` already in worktree 1's branch? |
-| `git-wt 1,2 merged` | Is worktree 2's branch already in worktree 1's? |
+| `git-wt switch 1` | Switch (or `cd`) into worktree 1 |
+| `git-wt path 1` | Print worktree 1's path only, never cd; alias `show` |
+| `git-wt remove 1` | Prompt, then remove |
+| `git-wt remove 1 -y` | Remove, no prompt |
+| `git-wt remove 1 -f` | Remove, discard dirty (still prompts) |
+| `git-wt remove 1 -y -f` | Remove, no prompt, discard dirty |
+| `git-wt remove 1 -D` | Prompt (names branch too), remove + delete branch (safe) |
+| `git-wt remove 1 -D -f -y` | No prompt, force both: discard dirty, force-delete branch |
+| `git-wt rm 1` | Alias → remove |
+| `git-wt merge 1,2` | Merge worktree 2's branch into worktree 1's |
+| `git-wt merge 1 feat/x` | Merge branch `feat/x` into worktree 1's branch |
+| `git-wt merge 1,2 --no-ff -m "sync"` | Merge commit with a message |
+| `git-wt merge 1,2 --squash` | Stage the merge, don't commit |
+| `git-wt merge 1,2 -f` | Merge even though worktree 1 is dirty |
+| `git-wt merge 1,2 theirs` | Merge, letting 2 win every collision (`-X theirs`) |
+| `git-wt merge 1,2 ours` | Merge, letting 1 win every collision (`-X ours`) |
+| `git-wt merge 1,2 dry-run` | Report whether it would merge; change nothing |
+| `git-wt merge 1,2 --review` | The verdict **plus** the commits it would bring; change nothing |
+| `git-wt merge 1,2 --review -f` | Same, with each commit's files (`-f` is `--files` past `--review`) |
+| `git-wt merge 1,2 --review --no-merges` | Drop the merge rows a review keeps by default |
+| `git-wt merge 1 feat/x --review` | Review a branch source; the positional still belongs to `merge` |
+| `git-wt merge 1 continue` | Conclude a conflicted merge (`--continue`, `-c`) |
+| `git-wt merge 1 abort` | Undo a conflicted merge (`--abort`, `-a`) |
+| `git-wt merge 1 2` | `merge takes a target list: 'git-wt merge 1,2' (or use 'heads/2' for a branch of the same name)` |
+| `git-wt merged 1` | Is worktree 1's branch already in the current branch? |
+| `git-wt merged 1 feat/x` | Is branch `feat/x` already in worktree 1's branch? |
+| `git-wt merged 1,2` | Is worktree 2's branch already in worktree 1's? |
 
 ### Sync — `fetch` / `pull` / `push`
 
 | Command | Effect |
 |---|---|
-| `git-wt 1 fetch` | `git fetch` in worktree 1 |
-| `git-wt 1 pull` | `git pull` in worktree 1 |
-| `git-wt 1 push` | `git push` in worktree 1 |
-| `git-wt 1,3 pull` | Each worktree listed, in that order |
+| `git-wt fetch 1` | `git fetch` in worktree 1 |
+| `git-wt pull 1` | `git pull` in worktree 1 |
+| `git-wt push 1` | `git push` in worktree 1 |
+| `git-wt pull 1,3` | Each worktree listed, in that order |
 | `git-wt pull --all` | Every worktree (`-a` too) |
-| `git-wt 1 fetch --prune` | `-p` also |
-| `git-wt 1 pull --rebase` | Also `--no-rebase`, `--ff-only`, `--prune`, `--autostash` |
-| `git-wt 1 push -u` | Push and set the upstream; names `origin <branch>` when there is none |
-| `git-wt 1 push --force-with-lease` | Force, but refuse when the remote moved |
-| `git-wt 1 push --dry-run` | `-n` also |
+| `git-wt fetch 1 --prune` | `-p` also |
+| `git-wt pull 1 --rebase` | Also `--no-rebase`, `--ff-only`, `--prune`, `--autostash` |
+| `git-wt push 1 -u` | Push and set the upstream; names `origin <branch>` when there is none |
+| `git-wt push 1 --force-with-lease` | Force, but refuse when the remote moved |
+| `git-wt push 1 --dry-run` | `-n` also |
 | `git-wt pull --all` (one fails) | Sweep finishes, `pull: 2 ok, 1 failed, 1 skipped`, exit 1 |
-| `git-wt 1 pull` (fails) | git's own error, unsummarized, exit 1 |
-| `git-wt pull` | Error — `'pull' needs a worktree: 'git-wt <N> pull'` |
-| `git-wt 1 pull --all` | Error — `--all` is every worktree, so a target adds nothing |
-| `git-wt 1,1 fetch` | Error `worktree #1 listed twice` |
-| `git-wt 1 push --force` | Error — use `--force-with-lease` |
-| `git-wt 1 fetch --rebase` | Error — `--rebase` is `pull`'s flag |
-| `git-wt 1 pull --depth=1` | Error — not a passthrough; the error prints the `git` command |
-| `git-wt 1 pull --rebase --no-rebase` | Error — the two contradict each other |
+| `git-wt pull 1` (fails) | git's own error, unsummarized, exit 1 |
+| `git-wt pull` | Error — `'pull' needs a worktree: 'git-wt pull <N>'` |
+| `git-wt pull 1 --all` | Error — `--all` is every worktree, so a target adds nothing |
+| `git-wt fetch 1,1` | Error `worktree #1 listed twice` |
+| `git-wt push 1 --force` | Error — use `--force-with-lease` |
+| `git-wt fetch 1 --rebase` | Error — `--rebase` is `pull`'s flag |
+| `git-wt pull 1 --depth=1` | Error — not a passthrough; the error prints the `git` command |
+| `git-wt pull 1 --rebase --no-rebase` | Error — the two contradict each other |
 
-### Diff — `git-wt <N>,<M> diff [flags]`
-
-| Command | Effect |
-|---|---|
-| `git-wt 1,2 diff` | `git diff <branch 1>...<branch 2>` — only 2's own commits, i.e. what `1,2 merge` brings |
-| `git-wt 1,2 diff ...` | Same, spelled out |
-| `git-wt 1,2 diff ..` | `git diff <branch 1>..<branch 2>` — tip vs tip, includes 1's commits inverted |
-| `git-wt 1,2 diff --name-only` | File names only (also `--name-status`, `--stat`) |
-| `git-wt 1,2 diff -- src/` | Limit to `src/`; combines with the flags above |
-| `git-wt 1,2 diff live` | Compare the files on disk, `.gitignore` honored |
-| `git-wt 1,2 diff live hunks` | Same, plus each file's changed line numbers |
-| `git-wt 1,2 diff hunks` | Line numbers on the committed diff |
-| `git-wt 1,2 diff live ..` | Error — a range compares commits, `live` compares disk |
-| `git-wt 1,1 diff` | Error `worktree #1 against itself is always empty` |
-| `git-wt 1 diff` | Error — `diff` takes a worktree list |
-| `git-wt 1,2 diff -w` | Error — unknown flag, with the `git diff` command to run instead |
-| `git-wt 1,2,3 diff` | Error — `diff` takes exactly two worktrees; `meld` compares three |
-
-### Commits — `git-wt <N>,<M>[,...] commits`
+### Diff — `git-wt diff <N>,<M> [flags]`
 
 | Command | Effect |
 |---|---|
-| `git-wt 1,2 commits` | Worktree 1's commits down to its earliest one that 2 is missing, with a column saying whether 2 has each |
-| `git-wt 1,2,3 commits` | Same, cut at the earliest commit *any* other branch is missing; one more check column |
-| `git-wt 2 commits` | Worktree 2's own log — one branch, no check columns |
-| `git-wt 1,2 commits -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
-| `git-wt 1,2 commits --union` | Rows from both branches, whole logs, not just 1's range |
-| `git-wt 1,2 commits --all` (`-a`) | Worktree 1's whole log, no cut at the divergence; other branches stay check columns |
-| `git-wt 1,2,3 commits --topo` | Group each branch's commits instead of interleaving by date |
-| `git-wt 1,2 commits --merges` | Keep merge rows; they're dropped by default |
-| `git-wt 1,2 commits --time` | Add the time to the date column, 24-hour |
-| `git-wt 1,2 commits --date-human` | `Jan. 31, 2026` instead of the default `2026-01-31` |
-| `git-wt 1,2 commits --reverse` | Newest last (also `--oldest-first`) |
-| `git-wt 1,2 commits --md` | Write `commits_<date>_<time>.md` in the current directory |
-| `git-wt 1,2 commits --md report.md` | Write that path, overwriting it |
-| `git-wt 1,2 commits --author ach` | Only commits whose author fuzzy-matches `ach` |
-| `git-wt 1,2 commits -m oauth` | Only commits with `oauth` in the subject or body (also `--message`) |
-| `git-wt 1,2 commits --search oauth` | Every row stays; `oauth` is highlighted wherever it sits — sha, author, date, subject, files |
-| `git-wt 1,2 commits --search 'merge\|only'` | Two terms, each its own color — quote it, or the shell reads `\|` as a pipe |
-| `git-wt 1,2 commits --filename api.php` | Only commits touching a matching path; implies `--files`, block cut to the matches |
-| `git-wt 1,2 commits --filename api.php --all-files` | Same rows, but each block is the commit's whole file list |
-| `git-wt 1,2 commits --squash` | Rows stay; one consolidated file block below, counts summed across them |
-| `git-wt 1,2 commits --date 2026-01-31` | Commits on exactly that day (also `-d`) |
-| `git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30` | A date range, inclusive, no quoting |
-| `git-wt 1,2 commits --commit-since 5568a21` | The day that commit was authored, and after |
-| `git-wt 1,2 commits --commits af48509,f9e2427` | Only those commits (also `-c`); implies `--all` |
-| `git-wt 1,2 commits --date-until 2026-06-30` | Trims the top of the default rows; does **not** imply `--all` |
-| `git-wt 1,2 commits --author ach --all` | `--author` never implies `--all` — say it yourself |
-| `git-wt 1,2 commits -af` | Short flags bundle: `--all --files` |
-| `git-wt 1,2 commits --commit-since 5568a21` | Commit `5568a21` and everything after it |
-| `git-wt 1,2 commits --commit-until HEAD~3` | `HEAD~3` and everything it can reach |
-| `git-wt 1,2 commits --date '>=2026-01-01'` | Error — no operators in `--date`; use `--date-since` |
-| `git-wt 1,2 commits --from 5568a21` | Error — unknown argument; `--commit-since` takes a commit, `--date-since` a date |
-| `git-wt 1,2 commits --since 2026-01-01` | Error — unknown argument; `--date-since` is the flag here |
-| `git-wt 1,2 commits --commit-since zzz9` | Error `--commit-since: no commit 'zzz9'` |
-| `git-wt 1,2 commits` (empty branch) | `no commits on <worktree 1>`, exit 0 |
-| `git-wt 1,1 commits` | Error `worktree #1 listed twice` |
-| `git-wt 1,2 commits -n 0` | Error `-n 0 would show nothing` |
-| `git-wt 1,2 commits --stat` | Error — unknown argument; `commits` takes no git flags |
-| `git-wt 1,2 commits --no-merges` | Error — unknown argument here; merges are dropped already, and `--merges` keeps them |
-| `git-wt 1,2 commits --match-only` | Error — unknown argument; `--filename` already cuts the block, `--all-files` widens it |
-| `git-wt 1,2 commits --all-files` | Error — needs a `--filename` to widen |
-| `git-wt 1,2 commits --grep x` | Error — unknown argument; `--message` is the flag here |
+| `git-wt diff 1,2` | `git diff <branch 1>...<branch 2>` — only 2's own commits, i.e. what `merge 1,2` brings |
+| `git-wt diff 1,2 ...` | Same, spelled out |
+| `git-wt diff 1,2 ..` | `git diff <branch 1>..<branch 2>` — tip vs tip, includes 1's commits inverted |
+| `git-wt diff 1,2 --name-only` | File names only (also `--name-status`, `--stat`) |
+| `git-wt diff 1,2 -- src/` | Limit to `src/`; combines with the flags above |
+| `git-wt diff 1,2 live` | Compare the files on disk, `.gitignore` honored |
+| `git-wt diff 1,2 live hunks` | Same, plus each file's changed line numbers |
+| `git-wt diff 1,2 hunks` | Line numbers on the committed diff |
+| `git-wt diff 1,2 live ..` | Error — a range compares commits, `live` compares disk |
+| `git-wt diff 1,1` | Error `worktree #1 against itself is always empty` |
+| `git-wt diff 1` | Error — `diff` takes a target list |
+| `git-wt diff 1,2 -w` | Error — unknown flag, with the `git diff` command to run instead |
+| `git-wt diff 1,2,3` | Error — `diff` takes exactly two worktrees; `meld` compares three |
 
-### Log — `git-wt <N>[,<M>...] log [PATH...]`
+### Commits — `git-wt commits <N>,<M>[,...]`
 
 | Command | Effect |
 |---|---|
-| `git-wt 1,2 log src/ui.rs` | That path's commits on worktree 1, with a column saying whether 2 has each |
-| `git-wt 2 log src/ui.rs` | Worktree 2's own history of the path — no check columns |
-| `git-wt 1,2 log` | PATH omitted = the current directory, repo-relative |
-| `git-wt 1,2,3 log src/ui.rs --union` | Every listed branch's touches of the path, unioned |
-| `git-wt 2 log src/ui.rs -f` | + the *other* files each shown commit touched |
-| `git-wt 1 log src/ui.rs --squash` | The path's lifetime totals: commits, authors, `±`, first/last touch |
-| `git-wt 1 log src/ui2.rs` | Follows a rename automatically — one path, so `--follow` is implied |
-| `git-wt 1 log src/ui2.rs --no-follow` | Same, but stops at the rename instead of crossing it |
-| `git-wt 1 log src/old.rs` (deleted on this branch, alive on another) | `no commits touched 'src/old.rs' on <branch>`, exit 0, with a rename hint |
-| `git-wt 1,2 log src/ui.rs --all` | Error — unknown argument; a file's history is already the whole log |
-| `git-wt 1,2 log --filename ui.rs` | Error — unknown argument; the path is already the target |
-| `git-wt 1,2 log src/ui.rs --all-files` | Error — unknown argument; that request is `-f` here |
-| `git-wt 1 log /etc/hosts` | Error — `'/etc/hosts' is outside the repository` |
+| `git-wt commits 1,2` | Worktree 1's commits down to its earliest one that 2 is missing, with a column saying whether 2 has each |
+| `git-wt commits 1,2,3` | Same, cut at the earliest commit *any* other branch is missing; one more check column |
+| `git-wt commits 2` | Worktree 2's own log — one branch, no check columns |
+| `git-wt commits 1,2 -n 20` | Newest 20 rows only (also `--limit 20`, `--limit=20`) |
+| `git-wt commits 1,2 --union` | Rows from both branches, whole logs, not just 1's range |
+| `git-wt commits 1,2 --all` (`-a`) | Worktree 1's whole log, no cut at the divergence; other branches stay check columns |
+| `git-wt commits 1,2,3 --topo` | Group each branch's commits instead of interleaving by date |
+| `git-wt commits 1,2 --merges` | Keep merge rows; they're dropped by default |
+| `git-wt commits 1,2 --time` | Add the time to the date column, 24-hour |
+| `git-wt commits 1,2 --date-human` | `Jan. 31, 2026` instead of the default `2026-01-31` |
+| `git-wt commits 1,2 --reverse` | Newest last (also `--oldest-first`) |
+| `git-wt commits 1,2 --md` | Write `commits_<date>_<time>.md` in the current directory |
+| `git-wt commits 1,2 --md report.md` | Write that path, overwriting it |
+| `git-wt commits 1,2 --author ach` | Only commits whose author fuzzy-matches `ach` |
+| `git-wt commits 1,2 -m oauth` | Only commits with `oauth` in the subject or body (also `--message`) |
+| `git-wt commits 1,2 --search oauth` | Every row stays; `oauth` is highlighted wherever it sits — sha, author, date, subject, files |
+| `git-wt commits 1,2 --search 'merge\|only'` | Two terms, each its own color — quote it, or the shell reads `\|` as a pipe |
+| `git-wt commits 1,2 --filename api.php` | Only commits touching a matching path; implies `--files`, block cut to the matches |
+| `git-wt commits 1,2 --filename api.php --all-files` | Same rows, but each block is the commit's whole file list |
+| `git-wt commits 1,2 --squash` | Rows stay; one consolidated file block below, counts summed across them |
+| `git-wt commits 1,2 --date 2026-01-31` | Commits on exactly that day (also `-d`) |
+| `git-wt commits 1,2 --date-since 2026-01-01 --date-until 2026-06-30` | A date range, inclusive, no quoting |
+| `git-wt commits 1,2 --commit-since 5568a21` | The day that commit was authored, and after |
+| `git-wt commits 1,2 --commits af48509,f9e2427` | Only those commits (also `-c`); implies `--all` |
+| `git-wt commits 1,2 --date-until 2026-06-30` | Trims the top of the default rows; does **not** imply `--all` |
+| `git-wt commits 1,2 --author ach --all` | `--author` never implies `--all` — say it yourself |
+| `git-wt commits 1,2 -af` | Short flags bundle: `--all --files` |
+| `git-wt commits 1,2 --commit-since 5568a21` | Commit `5568a21` and everything after it |
+| `git-wt commits 1,2 --commit-until HEAD~3` | `HEAD~3` and everything it can reach |
+| `git-wt commits 1,2 --date '>=2026-01-01'` | Error — no operators in `--date`; use `--date-since` |
+| `git-wt commits 1,2 --from 5568a21` | Error — unknown argument; `--commit-since` takes a commit, `--date-since` a date |
+| `git-wt commits 1,2 --since 2026-01-01` | Error — unknown argument; `--date-since` is the flag here |
+| `git-wt commits 1,2 --commit-since zzz9` | Error `--commit-since: no commit 'zzz9'` |
+| `git-wt commits 1,2` (empty branch) | `no commits on <worktree 1>`, exit 0 |
+| `git-wt commits 1,1` | Error `worktree #1 listed twice` |
+| `git-wt commits 1,2 -n 0` | Error `-n 0 would show nothing` |
+| `git-wt commits 1,2 --stat` | Error — unknown argument; `commits` takes no git flags |
+| `git-wt commits 1,2 --no-merges` | Error — unknown argument here; merges are dropped already, and `--merges` keeps them |
+| `git-wt commits 1,2 --match-only` | Error — unknown argument; `--filename` already cuts the block, `--all-files` widens it |
+| `git-wt commits 1,2 --all-files` | Error — needs a `--filename` to widen |
+| `git-wt commits 1,2 --grep x` | Error — unknown argument; `--message` is the flag here |
 
-### Multi-target — `git-wt <N>,<N>[,<N>] meld`
+### Log — `git-wt log <N>[,<M>...] [PATH...]`
 
 | Command | Effect |
 |---|---|
-| `git-wt 1,2 meld` | 2-way diff of worktrees 1 and 2, in that pane order |
-| `git-wt 2,1,3 meld` | 3-way diff; worktree 2 on the left |
-| `git-wt 1 meld` | Error `meld needs 2 or 3 worktrees` |
-| `git-wt 1,2,3,4 meld` | Error `meld takes at most 3 worktrees, got 4` |
-| `git-wt 1,1 meld` | Error `worktree #1 listed twice` |
-| `git-wt 1,2 remove` | Error — only `diff`, `meld`, `merge` and `merged` take a list |
+| `git-wt log 1,2 src/ui.rs` | That path's commits on worktree 1, with a column saying whether 2 has each |
+| `git-wt log 2 src/ui.rs` | Worktree 2's own history of the path — no check columns |
+| `git-wt log 1,2` | PATH omitted = the current directory, repo-relative |
+| `git-wt log 1,2,3 src/ui.rs --union` | Every listed branch's touches of the path, unioned |
+| `git-wt log 2 src/ui.rs -f` | + the *other* files each shown commit touched |
+| `git-wt log 1 src/ui.rs --squash` | The path's lifetime totals: commits, authors, `±`, first/last touch |
+| `git-wt log 1 src/ui2.rs` | Follows a rename automatically — one path, so `--follow` is implied |
+| `git-wt log 1 src/ui2.rs --no-follow` | Same, but stops at the rename instead of crossing it |
+| `git-wt log 1 src/old.rs` (deleted on this branch, alive on another) | `no commits touched 'src/old.rs' on <branch>`, exit 0, with a rename hint |
+| `git-wt log 1,2 src/ui.rs --all` | Error — unknown argument; a file's history is already the whole log |
+| `git-wt log 1,2 --filename ui.rs` | Error — unknown argument; the path is already the target |
+| `git-wt log 1,2 src/ui.rs --all-files` | Error — unknown argument; that request is `-f` here |
+| `git-wt log 1 /etc/hosts` | Error — `'/etc/hosts' is outside the repository` |
 
-Through the wrapper: `wt 1` / `wt 1 switch` / `wt 1 cd` cd into it; `wt 1 remove`
-cd's back to main; `wt 1 path` / `wt 1 show` only print.
+### Multi-target — `git-wt meld <N>,<N>[,<N>]`
+
+| Command | Effect |
+|---|---|
+| `git-wt meld 1,2` | 2-way diff of worktrees 1 and 2, in that pane order |
+| `git-wt meld 2,1,3` | 3-way diff; worktree 2 on the left |
+| `git-wt meld 1` | Error `meld needs 2 or 3 worktrees` |
+| `git-wt meld 1,2,3,4` | Error `meld takes at most 3 worktrees, got 4` |
+| `git-wt meld 1,1` | Error `worktree #1 listed twice` |
+| `git-wt remove 1,2` | Error — only `diff`, `meld`, `merge` and `merged` take a list |
+
+Through the wrapper: `wt switch 1` (or `wt cd 1`) cd's into it; `wt remove 1`
+cd's back to main; `wt path 1` only prints.
 
 ### Create — explicit branch
 
@@ -1705,46 +1699,43 @@ Opens fzf (or a numbered prompt) over local branches; all flags still apply.
 | Command | Result |
 |---|---|
 | `git-wt` outside a repo | `not inside a git repository` |
-| `git-wt 0` | `no worktree #0` |
-| `git-wt 99` | `no worktree #99; there are N (see 'git-wt list')` |
-| `git-wt 1 bogus` | `unknown action 'bogus' (switch, path, remove, diff, commits, log, merge, meld, merged, fetch, pull, push; aliases: c=commits, l=log, m=merged, p=pull, s=switch)` |
-| `git-wt 1 switch path` | `too many arguments` |
-| `git-wt 1 -n x` | `'-n' is an option, not an action; options follow the action, e.g. 'git-wt 1 remove -f' or 'git-wt 1,2 diff --stat'` |
-| `git-wt 1 remove` on main/bare | `refusing to remove the main worktree` |
+| `git-wt switch 0` | `no worktree #0` |
+| `git-wt switch 99` | `no worktree #99; there are N (see 'git-wt list')` |
+| `git-wt bogus` | `unknown command 'bogus' (switch, path, remove, diff, commits, log, merge, meld, merged, fetch, pull, push; aliases: c=commits, l=log, m=merged, p=pull, s=switch)` |
+| `git-wt switch 1 path` | `too many arguments` |
+| `git-wt switch 1 -n x` | `'-n' is not a 'switch' option; options follow the verb, e.g. 'git-wt remove 1 -f' or 'git-wt diff 1,2 --stat'` |
+| `git-wt remove 1` on main/bare | `refusing to remove the main worktree` |
 | `git-wt foo` (branch-like: has `/` or `-`) | `unknown command 'foo'; did you mean 'add foo'?` |
 | `git-wt lsit` (not branch-like) | `unknown command 'lsit'` |
-| `git-wt show 1` (legacy) | `unknown command 'show'; use 'git-wt 1 path'` |
-| `git-wt remove 1` (legacy) | `unexpected argument '1' for remove` |
-| `git-wt merge 2` (target missing) | `'merge' needs another worktree: 'git-wt merge -b <N>' or 'git-wt <N>,<M> merge'` |
-| `git-wt 1,2,3 merge` | `merge takes exactly two worktrees, not 3` |
-| `git-wt 1,2 merge continue` | `'continue' takes no source, so a worktree list has nothing to name` |
-| `git-wt 1,x merge` | `bad worktree list '1,x'; want numbers, e.g. '1,2'` |
-| `git-wt 1,2` (no action) | `a worktree list needs an action, e.g. 'git-wt 1,2 meld'` |
-| `git-wt 1 merge` | `merge needs a source: 'git-wt <N>,<M> merge' (or 'git-wt <N> merge <BRANCH>', or continue/abort)` |
-| `git-wt 1 merge zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
-| `git-wt 1,1 merge` | `'main' is already checked out in worktree 1` |
-| `git-wt 1,2 merge` (worktree 1 dirty) | `worktree 1 has uncommitted changes` + `-f` hint |
-| `git-wt 1,2 merge` (merge in progress) | `a merge is already in progress` + continue/abort hint |
-| `git-wt 1,2 merge theirs` (merge in progress) | Explains, then prompts to abort and redo `[y/N]` |
-| `git-wt 1 merge continue` (none started) | `no merge in progress in <path>` |
-| `git-wt 1 merge continue 2` | `continue takes no argument (got '2')` |
-| `git-wt 1,2 merge ours theirs` | `ours and theirs conflict` |
-| `git-wt 1 merge theirs continue` | `continue takes no merge options` + why, and the abort/redo route |
-| `git-wt 1,2 merge dry-run --no-ff` | `dry-run takes no merge options` |
-| `git-wt 1,2 merge -f --review` | `review takes no merge options (got -f)` — it was claimed before `--review` was read |
-| `git-wt 1,2 merge --review --dry-run` | `'--dry-run' and '--review' answer the same question` |
-| `git-wt 1,2 merge --review --squash` | `'--squash' shapes a merge commit` + drop-one hint |
-| `git-wt 1,2 merge --review --all` | `no '--all' under '--review'` — the rows are the range `dest..src` |
-| `git-wt 1,2 merge --review -a` | Same; `-a` is `--all`, refused under its full name |
-| `git-wt 1,2 merge dry-run` (git < 2.38) | `dry-run needs git 2.38 or newer (git merge-tree --write-tree)` |
-| `git-wt merged` (bare word) | `'merged' needs another worktree: 'git-wt merged -b <N>' or 'git-wt <N>,<M> merged'` |
-| `git-wt 1 merged 2` | `merged takes a worktree list: 'git-wt 1,2 merged' (or use 'heads/2' for a branch of the same name)` |
-| `git-wt 1,2,3 merged` | `merged takes exactly two worktrees, not 3` |
-| `git-wt 1 merged feat/x extra` | `too many arguments` |
-| `git-wt 1 merged zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
-| `git-wt 1 merged 1` | `'main' is already checked out in worktree 1` |
-| `git-wt 1,1 merged` | `worktree #1 listed twice` |
-| `git-wt 1,2 merged` (2 not in 1) | `error: Ahead <branch> is NOT in <branch> (ahead N)`, exit 1 |
+| `git-wt merge 1,2,3` | `merge takes exactly two worktrees, not 3` |
+| `git-wt merge 1,2 continue` | `'continue' takes no source, so a target list has nothing to name` |
+| `git-wt merge 1,x` | `bad target list '1,x'; want numbers, e.g. '1,2'` |
+| `git-wt switch 1,2` | `switch takes a single worktree` |
+| `git-wt merge 1` | `merge needs a source: 'git-wt merge <N>,<M>' (or 'git-wt merge <N> <BRANCH>', or continue/abort)` |
+| `git-wt merge 1 zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
+| `git-wt merge 1,1` | `'main' is already checked out in worktree 1` |
+| `git-wt merge 1,2` (worktree 1 dirty) | `worktree 1 has uncommitted changes` + `-f` hint |
+| `git-wt merge 1,2` (merge in progress) | `a merge is already in progress` + continue/abort hint |
+| `git-wt merge 1,2 theirs` (merge in progress) | Explains, then prompts to abort and redo `[y/N]` |
+| `git-wt merge 1 continue` (none started) | `no merge in progress in <path>` |
+| `git-wt merge 1 continue 2` | `continue takes no argument (got '2')` |
+| `git-wt merge 1,2 ours theirs` | `ours and theirs conflict` |
+| `git-wt merge 1 theirs continue` | `continue takes no merge options` + why, and the abort/redo route |
+| `git-wt merge 1,2 dry-run --no-ff` | `dry-run takes no merge options` |
+| `git-wt merge 1,2 -f --review` | `review takes no merge options (got -f)` — it was claimed before `--review` was read |
+| `git-wt merge 1,2 --review --dry-run` | `'--dry-run' and '--review' answer the same question` |
+| `git-wt merge 1,2 --review --squash` | `'--squash' shapes a merge commit` + drop-one hint |
+| `git-wt merge 1,2 --review --all` | `no '--all' under '--review'` — the rows are the range `dest..src` |
+| `git-wt merge 1,2 --review -a` | Same; `-a` is `--all`, refused under its full name |
+| `git-wt merge 1,2 dry-run` (git < 2.38) | `dry-run needs git 2.38 or newer (git merge-tree --write-tree)` |
+| `git-wt merged` (bare word) | `'merged' needs another worktree: 'git-wt merged -b <N>' or 'git-wt merged <N>,<M>'` |
+| `git-wt merged 1 2` | `merged takes a target list: 'git-wt merged 1,2' (or use 'heads/2' for a branch of the same name)` |
+| `git-wt merged 1,2,3` | `merged takes exactly two worktrees, not 3` |
+| `git-wt merged 1 feat/x extra` | `too many arguments` |
+| `git-wt merged 1 zzz` | `no worktree or branch 'zzz' (see 'git-wt list')` |
+| `git-wt merged 1 1` | `'main' is already checked out in worktree 1` |
+| `git-wt merged 1,1` | `worktree #1 listed twice` |
+| `git-wt merged 1,2` (2 not in 1) | `error: Ahead <branch> is NOT in <branch> (ahead N)`, exit 1 |
 | `git-wt list --col 6` | Adds a `merged`/`ahead N`/`ahead` column relative to current branch |
 | `git-wt list --col 11` | `no column 11 (use 1=id, 2=branch, 3=dir, 4=status, 5=last-commit, 6=merged, 7=merged-ref, 8=merged-at, 9=push, 10=pull)` |
 | `add feat/x -n a --dirname b` | `--name and --dirname conflict` |

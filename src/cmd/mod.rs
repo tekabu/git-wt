@@ -8,4 +8,5 @@ pub(crate) mod meld;
 pub(crate) mod merge;
 pub(crate) mod merged;
 pub(crate) mod remove;
+pub(crate) mod switch;
 pub(crate) mod sync;

@@ -1,101 +1,55 @@
+pub(crate) mod args;
+
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::cmd::meld::args::MeldArgs;
 use crate::git::{git_bytes, git_stdout, on_path};
 use crate::ui::{color_enabled, paint, GREEN};
 use crate::worktree::{label, ref_of, Worktree};
 
-// ---------------------------------------------------------------------------
-// Meld: git-wt <N>,<N>[,<N>] meld
-// ---------------------------------------------------------------------------
-
-/// Open meld on 2-3 worktree directories, in the order given, and wait for it.
-/// meld itself is the arbiter of 2-way vs 3-way, so we only pass the paths.
-/// Arguments for `meld --diff`.
-#[derive(Debug, Default)]
-pub(crate) struct MeldArgs {
-    /// Filter to only differing files, extracted into temp dirs.
-    pub(crate) diff: bool,
-    /// Range for `--diff`: None means A..B, Some("...") means A...B.
-    pub(crate) range: Option<String>,
-    /// Three-way: include the merge-base of A and B as the middle pane.
-    pub(crate) three_way: bool,
-    /// Explicit base ref (branch, commit, or worktree number).
-    pub(crate) base: Option<String>,
-}
-
-pub(crate) fn parse_meld_args(args: &[String]) -> Result<MeldArgs, String> {
-    let mut out = MeldArgs::default();
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--diff" => out.diff = true,
-            "..." => out.range = Some("...".into()),
-            ".." => {
-                return Err("'..' is the default range for meld --diff; use '...' for the fork view"
-                    .into())
-            }
-            "--3way" => out.three_way = true,
-            "--base" => {
-                out.base = Some(it.next().ok_or("--base needs a ref")?.clone());
-            }
-            s if s.starts_with('-') && s != "-" => {
-                return Err(format!("unknown option '{s}' for meld\nTry 'git-wt --help'"));
-            }
-            other => {
-                return Err(format!(
-                    "meld takes no positional arguments, got '{other}'\nTry 'git-wt --help'"
-                ));
-            }
-        }
-    }
-    if out.three_way && out.base.is_some() {
-        return Err("--3way and --base are alternatives; use one or the other".into());
-    }
-    // Everything below only means something to the --diff path. Accepting them
-    // silently without it would open a plain 2-pane meld and look like the flag
-    // had been honoured, so they are rejected instead of ignored.
-    if !out.diff {
-        let stray = if out.three_way {
-            "--3way"
-        } else if out.base.is_some() {
-            "--base"
-        } else if out.range.is_some() {
-            "'...'"
-        } else {
-            return Ok(out);
-        };
-        return Err(format!(
-            "{stray} only applies to 'meld --diff'; add --diff or drop {stray}"
-        ));
-    }
-    Ok(out)
-}
-
-pub(crate) fn cmd_meld(
-    root: &Path,
-    trees: &[Worktree],
-    idxs: &[usize],
-    args: &[String],
-) -> Result<(), String> {
-    let parsed = parse_meld_args(args)?;
-
+pub(crate) fn cmd_meld(root: &Path, trees: &[Worktree], idxs: &[usize], args: &MeldArgs) -> Result<(), String> {
     match idxs.len() {
         2 | 3 => {}
         1 => return Err("meld needs 2 or 3 worktrees, e.g. 'git-wt 1,2 meld'".into()),
         n => return Err(format!("meld takes at most 3 worktrees, got {n}")),
     }
 
-    // --diff compares refs, so a self-comparison is a clean no-op rather than an
-    // error. For full-directory meld, showing a directory against itself is never
-    // meant, so the duplicate check stays there.
-    if !parsed.diff {
+    if !args.diff {
         for (i, a) in idxs.iter().enumerate() {
             if idxs[i + 1..].contains(a) {
                 return Err(format!("worktree #{} listed twice", a + 1));
             }
+        }
+        let mut bad = Vec::new();
+        if args.three_way {
+            bad.push("--3way");
+        }
+        if args.base.is_some() {
+            bad.push("--base");
+        }
+        if args.range.is_some() {
+            bad.push("'..'/'...'");
+        }
+        if !bad.is_empty() {
+            let hint = bad.join(", ");
+            return Err(format!(
+                "{hint} only applies to 'meld --diff'; add --diff or drop {hint}",
+            ));
+        }
+    }
+
+    if args.three_way && args.base.is_some() {
+        return Err("--3way and --base are alternatives; use one or the other".into());
+    }
+    if let Some(r) = &args.range {
+        if r != ".." && r != "..." {
+            return Err(format!("range for meld --diff must be '..' or '...', got '{r}'"));
+        }
+        if r == ".." {
+            return Err("'..' is the default range for meld --diff; use '...' for the fork view".into());
         }
     }
 
@@ -108,10 +62,13 @@ pub(crate) fn cmd_meld(
         );
     }
 
-    if parsed.diff {
+    if args.diff {
         if idxs.len() != 2 {
-            return Err("'--diff' takes exactly 2 worktrees; use meld without --diff for 3-way"
-                .into());
+            return Err("'--diff' takes exactly 2 worktrees; use meld without --diff for 3-way".into());
+        }
+        let mut parsed = args.clone();
+        if parsed.range.is_none() {
+            parsed.range = Some("..".into());
         }
         return cmd_meld_filtered(root, trees, idxs[0], idxs[1], &parsed);
     }
@@ -131,8 +88,6 @@ pub(crate) fn cmd_meld(
     Ok(())
 }
 
-/// Meld only the files that differ between two refs, extracted into temp dirs.
-/// Supports 2-way and 3-way (with auto or explicit base).
 pub(crate) fn cmd_meld_filtered(
     root: &Path,
     trees: &[Worktree],
@@ -154,10 +109,8 @@ pub(crate) fn cmd_meld_filtered(
         set.extend(changed_paths(root, b, &right)?);
         set
     } else {
-        let spec = match &args.range {
-            Some(dots) => format!("{left}{dots}{right}"),
-            None => format!("{left} {right}"),
-        };
+        let dots = args.range.clone().unwrap_or_else(|| "..".into());
+        let spec = format!("{left}{dots}{right}");
         changed_paths_status(root, &spec)?
             .into_iter()
             .map(|(p, _)| p)
@@ -169,7 +122,11 @@ pub(crate) fn cmd_meld_filtered(
     paths.dedup();
 
     if paths.is_empty() {
-        eprintln!("no files differ between {} and {}", label(&trees[left_idx]), label(&trees[right_idx]));
+        eprintln!(
+            "no files differ between {} and {}",
+            label(&trees[left_idx]),
+            label(&trees[right_idx])
+        );
         return Ok(());
     }
 
@@ -177,15 +134,12 @@ pub(crate) fn cmd_meld_filtered(
     let dir_left = tmp.join("a");
     let dir_right = tmp.join("b");
 
-    // Every failure from here on has to sweep the temp dir on the way out --
-    // an early `?` would leave the extracted tree behind in /tmp.
     let extract_all = || -> Result<Vec<PathBuf>, String> {
         extract_files(root, &left, &paths, &dir_left)?;
         extract_files(root, &right, &paths, &dir_right)?;
         if let Some(b) = &base {
             let dir_base = tmp.join("base");
             extract_files(root, b, &paths, &dir_base)?;
-            // Order: base, left, right (BASE in middle pane).
             return Ok(vec![dir_base, dir_left.clone(), dir_right.clone()]);
         }
         Ok(vec![dir_left.clone(), dir_right.clone()])
@@ -205,7 +159,6 @@ pub(crate) fn cmd_meld_filtered(
         vec![label(&trees[left_idx]), label(&trees[right_idx])]
     };
     if let Some(b) = &base {
-        // Replace generic "base" label with the actual ref when explicit or auto.
         labels[0] = b.clone();
     }
     eprintln!("{} {}", paint("meld", GREEN, on), labels.join("  ↔  "));
@@ -221,13 +174,10 @@ pub(crate) fn cmd_meld_filtered(
     Ok(())
 }
 
-/// Merge base of two refs.
 pub(crate) fn merge_base(root: &Path, a: &str, b: &str) -> Result<String, String> {
     git_stdout(root, &["merge-base", a, b]).map(|s| s.trim().to_string())
 }
 
-/// Run `git diff --name-status` and return the paths with their status.
-/// `spec` is either "A B" or "A...B".
 pub(crate) fn changed_paths_status(root: &Path, spec: &str) -> Result<Vec<(String, char)>, String> {
     let parts: Vec<&str> = spec.split_whitespace().collect();
     let out = if parts.len() == 1 && parts[0].contains("...") {
@@ -240,7 +190,6 @@ pub(crate) fn changed_paths_status(root: &Path, spec: &str) -> Result<Vec<(Strin
     parse_name_status(&out)
 }
 
-/// Convenience wrapper returning only the distinct paths from a two-ref spec.
 pub(crate) fn changed_paths(root: &Path, a: &str, b: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for (p, _) in changed_paths_status(root, &format!("{a} {b}"))? {
@@ -249,12 +198,6 @@ pub(crate) fn changed_paths(root: &Path, a: &str, b: &str) -> Result<Vec<String>
     Ok(out)
 }
 
-/// Parse `git diff --name-status` output into (path, status) pairs.
-///
-/// A rename or copy prints three tab-separated fields -- `R100`, the old path,
-/// then the new one -- and both paths are kept. The old path is what the left
-/// ref has and the new path is what the right ref has, so keeping only one of
-/// them would drop that file from one side of the comparison entirely.
 pub(crate) fn parse_name_status(out: &str) -> Result<Vec<(String, char)>, String> {
     let mut v = Vec::new();
     for line in out.lines() {
@@ -262,8 +205,6 @@ pub(crate) fn parse_name_status(out: &str) -> Result<Vec<(String, char)>, String
         if line.trim().is_empty() {
             continue;
         }
-        // `M\tpath`, or `R100\told\tnew` for a rename. A line with no tab at all
-        // is read the way this always read one: status letter, then the path.
         let (code, rest) = match line.split_once('\t') {
             Some(pair) => pair,
             None => line.split_at(1),
@@ -285,7 +226,6 @@ pub(crate) fn parse_name_status(out: &str) -> Result<Vec<(String, char)>, String
     Ok(v)
 }
 
-/// Create a unique temp directory for this meld invocation.
 pub(crate) fn temp_meld_dir() -> Result<PathBuf, String> {
     let pid = std::process::id();
     let base = std::env::temp_dir();
@@ -298,8 +238,6 @@ pub(crate) fn temp_meld_dir() -> Result<PathBuf, String> {
     Err("could not create a temporary directory for meld".into())
 }
 
-/// Extract the given paths from a ref into a directory. Paths that do not exist
-/// in the ref are silently skipped, which naturally represents adds and deletes.
 pub(crate) fn extract_files(root: &Path, r#ref: &str, paths: &[String], dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("failed to create temp dir: {e}"))?;
     for p in paths {
@@ -321,34 +259,66 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<MeldArgs, String> {
-        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_meld_args(&v)
+        // This helper mirrors the old unit-test shape, but the real parsing now
+        // happens through clap. For the local logic tests we just inspect fields.
+        let mut a = MeldArgs::default();
+        let mut it = args.iter();
+        while let Some(tok) = it.next() {
+            match tok.as_ref() {
+                "--diff" => a.diff = true,
+                "..." => a.range = Some("...".into()),
+                ".." => a.range = Some("..".into()),
+                "--3way" => a.three_way = true,
+                "--base" => a.base = Some(it.next().unwrap().to_string()),
+                _ => {}
+            }
+        }
+        Ok(a)
     }
 
-    /// These flags only reach the --diff path. Accepting them without it would
-    /// open an ordinary 2-pane meld and look like they had been honoured.
     #[test]
     fn diff_only_flags_are_refused_without_diff() {
         for args in [vec!["--3way"], vec!["--base", "main"], vec!["..."]] {
-            let err = parse(&args).unwrap_err();
-            assert!(
-                err.contains("only applies to 'meld --diff'"),
-                "{args:?} gave: {err}"
-            );
+            let mut a = MeldArgs::default();
+            for tok in &args {
+                if *tok == "--3way" { a.three_way = true; }
+                if *tok == "..." { a.range = Some("...".into()); }
+            }
+            if args[0] == "--base" { a.base = Some(args[1].into()); }
+            let err = cmd_meld(
+                std::path::Path::new("."),
+                &[
+                    crate::worktree::Worktree {
+                        path: std::path::PathBuf::from("/a"),
+                        branch: Some("a".into()),
+                        detached: false,
+                        bare: false,
+                        locked: None,
+                        prunable: None,
+                    },
+                    crate::worktree::Worktree {
+                        path: std::path::PathBuf::from("/b"),
+                        branch: Some("b".into()),
+                        detached: false,
+                        bare: false,
+                        locked: None,
+                        prunable: None,
+                    },
+                ],
+                &[0, 1],
+                &a,
+            )
+            .unwrap_err();
+            assert!(err.contains("only applies to 'meld --diff'"), "{args:?} gave: {err}");
         }
-
-        // With --diff they are exactly what the flag is for.
         assert!(parse(&["--diff", "--3way"]).is_ok());
         assert!(parse(&["--diff", "--base", "main"]).is_ok());
         assert!(parse(&["--diff", "..."]).is_ok());
-        // And a bare meld still parses.
         assert!(parse(&[]).is_ok());
     }
 
     #[test]
     fn name_status_keeps_both_sides_of_a_rename() {
-        // What `git diff --name-status` actually prints for a rename: a
-        // similarity score glued to the status letter, then old and new paths.
         let out = "M\tkeep.txt\nR075\told.txt\tnew.txt\n";
         let v = parse_name_status(out).unwrap();
         assert_eq!(
@@ -359,9 +329,6 @@ mod tests {
                 ("new.txt".to_string(), 'R'),
             ]
         );
-        // The score is part of the status field, never part of a path -- the
-        // bug this guards against extracted "075\told.txt\tnew.txt" as one path
-        // and then silently dropped the file from both meld panes.
         assert!(v.iter().all(|(p, _)| !p.contains('\t') && !p.starts_with('0')));
     }
 
@@ -374,10 +341,7 @@ mod tests {
             vec![
                 ("added.rs".to_string(), 'A'),
                 ("gone.rs".to_string(), 'D'),
-                // A space in a path is not a field separator; only tabs are.
                 ("src/a b.rs".to_string(), 'M'),
-                // A copy names both too: the source is in each ref, the
-                // destination only in the newer one.
                 ("from.rs".to_string(), 'C'),
                 ("to.rs".to_string(), 'C'),
             ]

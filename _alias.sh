@@ -39,59 +39,74 @@ gitwt_write_alias() {
        /# <<< git-wt alias <<</{s=0; next}
        s==0{print}' "$rc" > "$tmp"
 
-  # Wrapper for the target-first grammar. Two names, one behavioral difference:
-  # cd. For `<N>` with switch/cd (or nothing) it cd's into the worktree; bare
-  # (no args) or bare switch/cd/s runs the interactive picker and cd's into
-  # the pick; for `<N> remove` it cd's back to the main worktree git prints;
-  # path/show and every other non-target verb (list/add/help/...) pass
-  # straight through, printing only. A declined prompt or an error prints
-  # nothing, so the guard skips the cd.
+  # Wrapper for the verb-first grammar: every command is
+  # `git-wt <VERB> [TARGET_LIST] [-b/--branch TARGET_LIST] [FLAGS...]`.
+  # Verbs that don't change the shell's cwd (list/version/path/show/fetch/
+  # pull/push/diff/meld/commits/log/merge/merged/doctor, plus their aliases)
+  # pass straight through — they're listed explicitly so a single-word
+  # invocation isn't mistaken for a bare switch target below.
+  # `add`/`a` creates a worktree and cd's into the printed path unless --stay.
+  # `remove`/`rm` removes the named (or current) worktree and cd's back to the
+  # main worktree if git-wt prints one. `switch`/`cd`/`s` (and a bare alias call
+  # with no args) switches worktrees and cd's; with no target git-wt opens the
+  # interactive picker. A single bare token that looks like a target (number,
+  # branch name, or comma list) is rewritten as `git-wt switch <tok>` so `wt <N>`
+  # still works for convenience, but the preferred form is `wt switch <N>`.
   cat >> "$tmp" <<EOF
 
 # >>> git-wt alias >>>
 # Managed by git-wt; edits here are overwritten on reinstall.
 $alias_name() {
+  # Help and version flags are terminal anywhere on the line; let git-wt
+  # print clap's generated message and return without trying to cd.
+  local a
+  for a in "\$@"; do
+    case "\$a" in
+      -h|--help|-V|--version) git-wt "\$@"; return \$? ;;
+    esac
+  done
+
   case "\${1:-}" in
-    -h|--help|-V|--version|version|help|list|ls)
+    help|list|ls|version|path|show|fetch|pull|p|push|diff|meld|commits|c|log|l|merge|merged|m|doctor)
       git-wt "\$@"; return \$? ;;
     add|a)
       # Create, then cd into the new worktree — unless --stay was passed.
-      local stay=0 a
-      for a in "\$@"; do [ "\$a" = "--stay" ] && stay=1; done
+      local stay=0 arg
+      for arg in "\$@"; do [ "\$arg" = "--stay" ] && stay=1; done
       local d; d="\$(git-wt "\$@")" || return \$?
       [ "\$stay" = 0 ] && [ -n "\$d" ] && cd "\$d"
       return 0 ;;
     remove|rm)
-      # Bare remove/rm (no leading <N>) acts on the worktree you're standing
-      # in, same as '<N> remove' below — and needs the same cd-back-to-main
-      # when git-wt prints a path (i.e. you were inside the tree it removed).
+      # Remove prints the main worktree path when it removed the tree you
+      # were standing in; cd there if it printed one.
       local d; d="\$(git-wt "\$@")" || return \$?
       [ -n "\$d" ] && cd "\$d"
       return 0 ;;
     ""|switch|cd|s)
-      # No args, or bare switch/cd/s: the interactive picker. Its prompts
-      # live on stderr, so they still show through the \$(...) capture below.
+      # No args or a switch verb: switch to the worktree and cd. With no
+      # target, git-wt runs the interactive picker; prompts live on stderr
+      # so they still show through the \$(...) capture below.
       local d; d="\$(git-wt "\$@")" || return \$?
       [ -n "\$d" ] && cd "\$d"
       return 0 ;;
   esac
-  # A leading token that is not a numeric target index (e.g. an unknown verb
-  # or a stray flag) passes straight through, so git-wt prints its own error
-  # instead of the wrapper building a confusing 'git-wt <tok> path'.
-  case "\${1:-}" in
-    *[!0-9]*) git-wt "\$@"; return \$? ;;
-  esac
-  # <N> [action]: switch (default) & remove cd the shell; path/show print.
-  case "\${2:-}" in
-    ""|switch|cd|s)
-      local d; d="\$(git-wt "\$1" path)" || return \$?
-      [ -n "\$d" ] && cd "\$d" ;;
-    remove|rm)
-      local d; d="\$(git-wt "\$@")" || return \$?
-      [ -n "\$d" ] && cd "\$d" ;;
-    *)  # path/show and anything else: pass through
-      git-wt "\$@" ;;
-  esac
+
+  # A lone bare target (number, branch, or comma list) without a verb is
+  # treated as "git-wt switch <tok>" so the wrapper still cd's on "wt <N>".
+  # Anything else (multiple tokens, a leading flag, or an unknown verb)
+  # passes straight through so git-wt can report its own errors.
+  if [ "\$#" -eq 1 ]; then
+    case "\$1" in
+      -*)
+        git-wt "\$@"; return \$? ;;
+      *)
+        local d; d="\$(git-wt switch "\$1")" || return \$?
+        [ -n "\$d" ] && cd "\$d"
+        return 0 ;;
+    esac
+  fi
+
+  git-wt "\$@"; return \$?
 }
 # <<< git-wt alias <<<
 EOF

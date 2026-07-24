@@ -5,6 +5,7 @@ edition = "2021"
 description = "Create git worktrees in sibling directories named <repo>-<branch>"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 
 [profile.release]
 opt-level = "z"

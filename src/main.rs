@@ -2,9 +2,6 @@
 //! `<repo-folder>-<sanitized-branch>`.
 //!
 //! Installed on PATH as `git-wt`, so it is also reachable as `git wt`.
-//!
-//! Grammar is target-first for existing worktrees (`git-wt <N> <action>`) with
-//! an explicit `add` verb for creation.
 
 mod cli;
 mod cmd;
@@ -13,934 +10,32 @@ mod ui;
 mod worktree;
 
 use crate::cli::{
-    branch_targets, dispatch_target, dispatch_targets, extract_branch_flag, list_from_args,
-    parse_target_list, resolve_target, resolve_target_list, unknown_command_msg,
-    warn_if_alias_shadows_branch,
+    check_index, effective_target, extract_branch_flag, extract_target_flag, gather_targets,
+    resolve_target_list, typed_verb, warn_if_alias_shadows_branch, worktree_on_branch, Cli,
+    Commands,
 };
+use clap::{CommandFactory, Parser};
 use crate::cmd::add::cmd_add;
+use crate::cmd::commits::cmd_commits;
+use crate::cmd::diff::cmd_diff;
 use crate::cmd::doctor::cmd_doctor;
-use crate::cmd::list::cmd_switch;
+use crate::cmd::list::cmd_list;
+use crate::cmd::log::cmd_log;
+use crate::cmd::meld::cmd_meld;
+use crate::cmd::merge::{cmd_merge, parse_merge_args};
+use crate::cmd::merged::{cmd_merged, cmd_merged_others};
+use crate::cmd::remove::cmd_remove;
+use crate::cmd::switch::{cmd_path, cmd_switch};
 use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp, ALL_HINT};
-use crate::worktree::{current_worktree_index, repo_root, worktrees};
+use crate::worktree::{current_worktree_index, ref_of, repo_root, worktrees};
+use crate::git::git_stdout;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The short usage list -- one line per command, no inline prose. The
-/// option tables below it are not duplicated by hand: `short_help` pulls
-/// them straight out of `HELP`, so a flag added there never has to be
-/// added here too.
-const SHORT_USAGE: &str = "\
-git-wt — worktrees in sibling directories named <repo>-<branch>
-
-USAGE:
-    git-wt                       Interactive picker (fzf, or numbered fallback)
-    git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path] [--files]
-    git-wt <N>                   == git-wt <N> switch
-    git-wt <N> switch            cd into worktree N (alias: cd)
-    git-wt switch                Interactive picker (fzf, or numbered
-                                 fallback); cd's into the pick (alias: cd)
-    git-wt <N> path              Print worktree N's path only (alias: show)
-    git-wt <N> remove [-y] [-f] [-D]  Remove worktree N (-D: delete branch too)
-    git-wt <N>,<M> merge         Merge M into N
-    git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
-    git-wt merge -b <M>          Merge M into the worktree you are in
-    git-wt <N>,<M> merge review  What would that merge bring over?
-    git-wt <N> merge continue|abort
-    git-wt <N>,<M> merged        Is M's branch already in N's branch?
-    git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
-    git-wt <N> merged            Is N's branch already in the current branch?
-    git-wt <N> merged --others, --ot, -o
-                                 List all worktrees; show which are merged into N
-    git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
-    git-wt <N>,<M>[,...] commits Table: which commit is on which branch
-    git-wt <N> commits           Same, N against the worktree you are in
-    git-wt <N>[,<M>...] log [PATH...] [flags]
-                                 Same table, narrowed to one file's history
-    git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
-    git-wt -b/--branch LIST <action>
-                                 LIST with the current worktree prepended
-    git-wt <N> fetch|pull|push   Run it in worktree N
-    git-wt <N>,<M> pull          Run it in each worktree listed
-    git-wt fetch|pull|push --all Run it in every worktree
-    git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
-    git-wt doctor [--repair]     Report worktree issues (moved/deleted dirs,
-                                 locked, corrupt); --repair attempts fixes
-    git-wt version
-    git-wt --help                This: options, no prose
-    git-wt --help -f             Full manual: every flag, every section
-
-    Aliases: ls = list, rm = remove, cd = switch, show = path,
-    a = add, c = commits, l = log, m = merged, p = pull, s = switch.
-
-    A worktree may be named by the branch it holds instead of its number:
-    'git-wt main commits', 'git-wt main,2 diff'.
-";
-
-const SHORT_FOOTER: &str = "\
-'git-wt --help -f' (or '-hf') for the full manual, prose and all -- the
-same option tables above, plus every section explaining them.
-";
-
-/// Section headers (the text before ':') worth keeping in the short help:
-/// pure option tables, no prose paragraphs mixed in. Order here doesn't
-/// matter -- sections are emitted in the order `HELP` already has them.
-const SHORT_HELP_SECTIONS: &[&str] = &[
-    "ADD OPTIONS",
-    "REMOVE OPTIONS",
-    "DIFF OPTIONS",
-    "COMMITS OPTIONS",
-    "SYNC OPTIONS",
-    "MERGE WORDS",
-    "MERGE OPTIONS",
-];
-
-/// A section's header line has no leading indentation; every other line in
-/// `HELP` (body text, blanks) does. That is the one signal used to tell
-/// them apart -- no regex, no line-number bookkeeping to keep in sync by
-/// hand as sections are added or reordered.
-fn short_help() -> String {
-    let mut out = String::from(SHORT_USAGE);
-    out.push('\n');
-    out.push_str(&sections_text(SHORT_HELP_SECTIONS));
-    out.push_str(SHORT_FOOTER);
-    out
-}
-
-/// Pulls the named sections (by header, text before ':') out of `HELP`,
-/// verbatim, in the order `HELP` already has them.
-fn sections_text(names: &[&str]) -> String {
-    let mut out = String::new();
-    let mut keep = false;
-    for line in HELP.lines() {
-        let is_header = !line.is_empty() && !line.starts_with(' ');
-        if is_header {
-            let name = line.split(':').next().unwrap_or("").trim();
-            keep = names.contains(&name);
-        }
-        if keep {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-/// Alias -> canonical verb, so `--help` after an alias still finds the
-/// right USAGE line and OPTIONS sections (both spelled with the full word).
-fn canonical_verb(v: &str) -> &str {
-    match v {
-        "ls" => "list",
-        "a" => "add",
-        "rm" => "remove",
-        "cd" => "switch",
-        "show" => "path",
-        "c" => "commits",
-        "l" => "log",
-        "m" => "merged",
-        "p" => "pull",
-        "s" => "switch",
-        other => other,
-    }
-}
-
-/// Every word that can stand as a command verb -- checked against each
-/// token in argv to find which command `--help` is asking about.
-const VERB_WORDS: &[&str] = &[
-    "list", "ls", "add", "a", "remove", "rm", "fetch", "pull", "push", "p", "merge", "merged",
-    "m", "diff", "commits", "c", "log", "l", "meld", "switch", "cd", "s", "path", "show", "version",
-];
-
-/// OPTIONS-table sections in `HELP` relevant to one verb -- pure flag
-/// tables, no prose, same spirit as `SHORT_HELP_SECTIONS`.
-fn verb_sections(verb: &str) -> &'static [&'static str] {
-    match verb {
-        "add" => &["ADD OPTIONS"],
-        "remove" => &["REMOVE OPTIONS"],
-        "diff" => &["DIFF OPTIONS"],
-        "commits" => &["COMMITS OPTIONS"],
-        "log" => &["COMMITS OPTIONS"],
-        "merge" => &["MERGE OPTIONS", "MERGE WORDS"],
-        "fetch" | "pull" | "push" => &["SYNC OPTIONS"],
-        _ => &[],
-    }
-}
-
-/// The USAGE line(s) for one verb, pulled out of `SHORT_USAGE`: the primary
-/// `git-wt ...` line naming it, plus any wrapped continuation lines that
-/// follow (more-indented, no `git-wt` prefix) up to the next command or a
-/// blank line.
-fn usage_snippet(verb: &str) -> String {
-    let mut out = String::new();
-    let mut lines = SHORT_USAGE.lines().peekable();
-    while let Some(line) = lines.next() {
-        let is_primary = line.trim_start().starts_with("git-wt");
-        if is_primary && line.split_whitespace().any(|w| w == verb) {
-            out.push_str(line);
-            out.push('\n');
-            while let Some(&next) = lines.peek() {
-                if next.trim().is_empty() || next.trim_start().starts_with("git-wt") {
-                    break;
-                }
-                out.push_str(next);
-                out.push('\n');
-                lines.next();
-            }
-        }
-    }
-    out
-}
-
-/// `git-wt <verb> --help`: that verb's USAGE line(s) plus its OPTIONS/prose
-/// sections, instead of the whole manual.
-fn command_help(verb: &str) -> String {
-    let canon = canonical_verb(verb);
-    let usage = usage_snippet(canon);
-    let sections = sections_text(verb_sections(canon));
-    let mut out = String::new();
-    if usage.is_empty() && sections.is_empty() {
-        out.push_str(&format!("git-wt {canon}: no extra options.\n"));
-    } else {
-        out.push_str(&usage);
-        if !sections.is_empty() {
-            out.push('\n');
-            out.push_str(&sections);
-        }
-    }
-    out.push_str("\n'git-wt --help -f' for prose and the full manual.\n");
-    out
-}
-
-const HELP: &str = "\
-git-wt — worktrees in sibling directories named <repo>-<branch>
-
-USAGE:
-    git-wt                       Interactive picker (fzf, or numbered fallback)
-    git-wt list [SEARCH] [--col ...] [--long|--short] [--show-path] [--files]
-                                 List, optional fuzzy filter; --col picks/orders
-                                 columns (1=id, 2=branch, 3=dir, 4=status,
-                                 5=last-commit, 6=merged, 7=merged-ref, 8=merged-at,
-                                 9=push, 10=pull). Push/pull are the commits ahead of
-                                 and behind the branch's upstream, as of the last fetch.
-                                 --show-path (-p) adds the dir column, which a terminal
-                                 leaves out; --long shows id/branch/dir/status/last/push/pull; --short
-                                 id+branch+status summary. --files (-f) lists each
-                                 worktree's uncommitted files under its row.
-    git-wt <N>                   == git-wt <N> switch
-    git-wt <N> switch            cd into worktree N (alias: cd)
-    git-wt switch                Interactive picker (fzf, or numbered
-                                 fallback); cd's into the pick (alias: cd)
-    git-wt <N> path              Print worktree N's path only (alias: show)
-    git-wt <N> remove [-y] [-f] [-D]  Remove worktree N (-D: delete branch too)
-    git-wt <N>,<M> merge         Merge M into N
-    git-wt <N> merge <BRANCH>    Merge BRANCH into worktree N
-    git-wt merge -b <M>          Merge M into the worktree you are in
-    git-wt <N>,<M> merge review  What would that merge bring over?
-    git-wt <N> merge continue|abort
-    git-wt <N>,<M> merged        Is M's branch already in N's branch?
-    git-wt <N> merged <BRANCH>   Is BRANCH already in worktree N's branch?
-    git-wt <N> merged            Is N's branch already in the current branch?
-    git-wt <N> merged --others, --ot, -o
-                                 List all worktrees; show which are merged into N
-    git-wt <N>,<M> diff [flags]  Diff worktree N against worktree M
-    git-wt <N>,<M>[,...] commits Table: which commit is on which branch
-    git-wt <N> commits           Same, N against the worktree you are in
-    git-wt <N>[,<M>...] log [PATH...] [flags]
-                                 Same table, narrowed to one file's history
-    git-wt <N>,<N>[,<N>] meld    Diff 2-3 worktrees side by side in meld
-    git-wt -b/--branch LIST <action>
-                                 LIST with the current worktree prepended:
-                                 '-b 1,2 commits' == '<cur>,1,2 commits'
-    git-wt <N> fetch|pull|push   Run it in worktree N
-    git-wt <N>,<M> pull          Run it in each worktree listed
-    git-wt fetch|pull|push --all Run it in every worktree
-    git-wt add [BRANCH] [flags]  Create a worktree (picker when BRANCH omitted)
-    git-wt doctor [--repair]     Report worktree issues; --repair attempts fixes
-    git-wt version
-    git-wt --help
-    git-wt --help -f             Full manual, this (alias: --full, -hf)
-
-    Aliases: ls = list, rm = remove, cd = switch, show = path,
-    a = add, c = commits, l = log, m = merged, p = pull, s = switch.
-
-    Anywhere <N> or a <N>,<M> list appears above, a worktree may be named by
-    the branch it holds instead of its number, and the two spellings mix:
-    'git-wt main commits', 'git-wt main,2 diff', 'git-wt main,feat/x merge'.
-    A bare number is always the worktree number, and a verb always wins over
-    a branch of the same name; 'heads/main' reaches the branch either way.
-
-GRAMMAR:
-    git-wt [TARGET] [VERB] [FLAGS...]
-
-    TARGET is one of:
-        <N>               A worktree number, 1-based, from 'git-wt list'
-        <BRANCH>          A branch name -- must be checked out in some
-                          worktree; 'heads/<name>' forces branch over number
-        <N>,<M>[,...]     Comma list, no spaces; numbers and branches mix
-                          freely: '1,main,3'
-        (omitted)         Defaults to 'switch' (interactive), or
-                          'fetch|pull|push --all'
-    -b/--branch LIST is not a target itself; it prepends the current
-    worktree to whatever list the command already has:
-        git-wt -b 1,2 commits   == git-wt <cur>,1,2 commits
-        git-wt --branch=main diff  == git-wt <cur>,main diff
-
-    VERB count per command depends on the target list's length:
-        one target   -> switch, path, remove, commits, fetch/pull/push,
-                         merge <BRANCH>, merged [BRANCH]
-        two targets   -> merge, merged, diff, meld (also 3 for meld)
-        any length    -> commits, meld (2-3), pull (each in turn)
-    Some verbs also take a bare word before their own flags, matched ahead
-    of a branch of the same name ('merge continue', 'merged --others'):
-    spell it 'heads/continue' on the rare branch actually called that.
-
-    FLAGS combine freely after the verb, in any order, short or long:
-        git-wt 1,2 commits --author alex --all-files --filename api.php -n 5
-        git-wt 1,2 commits -af          # bundle: -a (--all) + -f (--files)
-        git-wt 1,2 commits -fn 20       # bundle ending in a value-flag
-    Bundling (see -af above) only applies to single-dash letters in
-    'commits'; a bundle stops at the first flag that takes a value, which
-    then must be last in the bundle. Double-dash long forms and their
-    short aliases (--au, --cs, --nf, --rb, ...) are never bundled -- each
-    is typed on its own, exactly like the long spelling it stands in for.
-    '-h'/'--help' and '-f'/'--full' bundle as the one exception: '-hf'
-    is 'git-wt --help -f' spelled as a single token.
-
-ADD OPTIONS:
-    -n, --name NAME       Suffix only -> leaf = <repo>-NAME
-        --dirname DIR     Whole leaf, verbatim (sanitized); with '/' = a path
-    -p, --parentdir DIR   Parent dir (default: primary worktree's parent)
-        --from REF        Base ref for a NEW branch
-                          (default: the branch of the worktree you run from)
-        --stay            wrapper: do NOT cd into the new worktree
-
-REMOVE OPTIONS:
-    -y                    Skip the confirmation prompt
-    -f, --force           Discard uncommitted/untracked changes; alongside
-                          -D, also force-deletes the branch (git branch -D)
-    -D, --delete-branch   Delete the worktree's branch too (git branch -d;
-                          -D above forces it). Errors on a detached worktree.
-
-DIFF OPTIONS:
-    live                  Compare the files on disk, not the commits
-    hunks                 Print each file's changed line numbers
-    ...                   Range: only what M added since it forked from N (default)
-    ..                    Range: everything that differs between the two tips
-        --name-only       File names only
-        --name-status     File names with A/M/D
-        --stat            File names with a churn summary
-    -- PATH...            Limit to these paths
-
-DIFF:
-    Diffs the two worktrees' committed state (their branches), through git's
-    own pager, so uncommitted work does not show up; diff warns when either
-    side is dirty and points at 'live'.
-
-        git-wt 1,2 diff              -> git diff <branch 1>...<branch 2>
-        git-wt 1,2 diff ..           -> git diff <branch 1>..<branch 2>
-        git-wt 1,2 diff --stat
-        git-wt 1,2 diff -- src/
-
-    The default range is '...', so '1,2 diff' shows exactly what '1,2 merge'
-    would bring in: M's own commits since the fork, and nothing of N's. '..'
-    compares the two tips instead, which also reports N's commits, inverted,
-    as if M had removed them.
-
-    Any other git flag is an error, not a passthrough: run git yourself,
-    'git diff <A>...<B> <flag>'. The error prints that command for you.
-
-DIFF LIVE:
-    'live' compares the literal bytes in the two directories, so uncommitted
-    work shows up -- including the case no ref diff can ever answer, two
-    worktrees sitting on the same commit. Only paths git would list are
-    considered, so .gitignore is honored and build output stays out.
-
-        git-wt 1,2 diff live         # literal files on disk
-        git-wt 1,2 diff live hunks   # + changed line numbers
-        git-wt 1,2 diff --live       # dashes optional, same thing
-
-    'live' takes no range: '..'/'...' compare commits, which is the opposite
-    question. --name-only/--name-status/--stat/-- PATH... all still apply.
-    'hunks' works without 'live' too; its line numbers are the '+' side (M).
-
-COMMITS OPTIONS:
-    -n, --limit N         Show at most N commits (newest first; default 10,
-                          lifted by --all or --union)
-    -a, --all             Full log of the first worktree (default is the
-                          range the other worktrees are missing)
-        --union           Rows from every worktree listed, not just the
-                          first one's range
-        --merges          Keep merge commits; they are dropped by default
-        --no-cherry, --nc Skip the patch comparison behind '≈' (faster)
-        --pick-id, --pi   Add a 'pick' column: the sha the '≈' copy of the
-                          commit carries elsewhere
-    -f, --files           Add the changed files under each commit, with
-                          status and +/- line counts
-        --topo            Group each branch's commits, don't interleave
-        --reverse         Newest last (alias: --oldest-first)
-    -w, --wrap [N]        Let a long subject take N terminal lines, not
-                          one; 'full' or a bare --wrap never cuts it
-        --subject-width, --subjw N
-                          Give the subject N columns rather than what the
-                          terminal left it; 'full' never cuts
-        --branch-width, --branchw N
-                          Cut a mark column's branch name to N columns
-                          (default 24); 'full' never cuts
-        --md [FILE]       Write a markdown table instead of printing one
-                          (default: commits_<date>_<time>.md in the cwd)
-        --time            Add the time to the date column, 24-hour
-        --date-human, --dh 'Jan. 31, 2026' instead of '2026-01-31'
-        --author, --au NAME
-                          Only NAME's commits (fuzzy, like list's SEARCH)
-    -d, --date DATE       Only commits on exactly this YYYY-MM-DD day
-        --date-since, --ds DATE  That day and after
-        --date-until, --du DATE  That day and before
-        --commit-since, --cs C   Same bound, dated by commit C: C's day,
-                          and after
-        --commit-until, --cu C   Same bound, dated by commit C: C's day,
-                          and before
-    -c, --commits IDS     Only these commits, comma-separated shas
-    -m, --message TERM    Only commits whose subject or body contains TERM
-        --search TERM      Highlight every match of TERM; never drops a row.
-                          'a|b' highlights both, each its own color -- quote
-                          it, or the shell reads '|' as a pipe
-        --filename, --fn TERM
-                          Only commits touching a path containing TERM;
-                          implies --files, and cuts the block to the matches
-        --all-files, --af With --filename, show every file each commit
-                          touched, not only the matched paths
-
-COMMITS:
-    A merge-request-style view of the first worktree, counter-checked
-    against the rest. The default rows are the slice of the first branch
-    that the other branches are missing -- from the oldest missing commit
-    up to the first branch's tip -- so the table reads like a set of MRs
-    opened against worktree 1. Add --all to see the first branch's whole
-    log, or --union to see every listed branch's commits.
-
-        git-wt 1,2,3 commits         # branch 1's range the others miss
-        git-wt 1,2,3 commits --all   # 1's full log, checked against 2 and 3
-        git-wt 2 commits             # worktree 2's own log, no comparison
-        git-wt 1,2 commits -n 20     # newest 20 rows of the range
-        git-wt 1,2,3 commits --union # every branch's commits as rows
-        git-wt 1,2 commits --merges  # add the merge commits back
-        git-wt 1,2 commits -af       # short flags bundle: == --all --files
-        git-wt 1,2 commits -fn 20    # a value-taking flag ends the bundle
-
-    The first worktree is the target: 'git-wt 1,2,3 commits' asks what 1
-    has that 2 and 3 do not. The range is computed from those missing
-    commits, so rows can include shared history if another branch diverged
-    earlier and branch 1 has kept committing since.
-
-    '--union' asks the other question -- 'who is out of sync with who' --
-    and every worktree listed contributes rows: the table becomes the union
-    of their full logs, and a commit missing from the first one gets a row
-    with a '·' under it.
-
-    '-n' caps the rows after the range is chosen; filters apply the same
-    way. Merge commits are dropped: they carry no work of their own, and on
-    a branch that merges often they are most of the table. The commits a
-    merge joined all stay either way -- only the merge's own row goes, and
-    the marks are untouched. '--merges' puts those rows back.
-
-    A single target is that worktree alone: 'git-wt 2 commits' is 2's own
-    log, with no mark columns and nothing to be ahead of, for when the
-    question is about one branch's history rather than two branches'
-    difference. Name a second worktree to get the comparison back.
-
-    Any number of worktrees can be columns -- there is no cap, unlike
-    diff's two or meld's three. Each column costs its branch name plus
-    two; the name itself is cut at 24 columns by default so one
-    issue-shaped branch cannot push the subject off the edge on every
-    row. '--branch-width'/'--branchw' moves that cut, and 'full' lifts
-    it -- same shape as '--subject-width' below. The marks never wrap:
-    they are left of the subject.
-
-COMMITS FILTERS:
-    Filters narrow the rows; the columns stay whatever the worktree list
-    named. They AND together, and -n counts what survives them.
-
-        git-wt 1,2 commits --author alex
-        git-wt 1,2 commits --date 2026-01-31        # exactly that day
-        git-wt 1,2 commits --date-since 2026-01-01 --date-until 2026-06-30
-        git-wt 1,2 commits --commit-since 5568a21 --commit-until HEAD
-        git-wt 1,2 commits --commits af48509,f9e2427
-
-    Two vocabularies, one shape: '--commit-' bounds take a commit -- a
-    sha, a branch, a tag, 'HEAD~3' -- and '--date-' bounds take a
-    YYYY-MM-DD. A commit bound is read for its DAY and nothing else.
-    Both ends include what they name, and '--date' is one exact day: no
-    operators anywhere, so nothing here needs quoting against the shell.
-
-    The default rows are cut at the BOTTOM, at the earliest divergent
-    commit, so only a filter that names a floor has to widen them:
-    --commits, --date, --date-since and --commit-since imply --all, since
-    what they name can sit below that cut. --date-until/--commit-until do
-    not -- an upper bound only trims the top, which the rows already end
-    at, so it stays a post-filter. A range widens via its lower bound.
-    --author never widens: it matches many commits and named none of them.
-    When a filter keeps nothing, the message says which flag reaches back.
-
-    A filter also highlights what it read, so a long table can be
-    skimmed. The highlight follows the flag you typed, not the filter it
-    became: --author lights the author column, --date/--date-since/
-    --date-until light the date column, and --commits/--commit-since/
-    --commit-until light only the sha of the commit they name -- a
-    commit bound is a date bound underneath, but you named a commit.
-
-    --date compares the date the table prints, which is the AUTHOR date;
-    git's own --since/--until read committer dates and would disagree
-    with the column, so they are not flags here. --author is a fuzzy subsequence, case-folded, the
-    same match 'git-wt list SEARCH' uses: 'ach' finds 'Alex Chen'.
-
-    Date bounds are whole days: '--date 2026-07-17' takes every commit
-    of that day, 09:00 and 23:30 alike. The day is the author's own --
-    a commit written at 23:30 +0800 belongs to the day it was there, not
-    to yours -- so a bound never contradicts the printed column. Rows are
-    still ordered by the full timestamp: same-day commits sort by time of
-    day, even though the column only shows the day. '--time' prints
-    that time, 24-hour, which is what tells a busy day's rows apart.
-
-COMMITS MD:
-    '--md' writes the table to a markdown file rather than the terminal.
-    The file records the command that made it, so a report pasted into an
-    issue says how to reproduce itself.
-
-        git-wt 1,2 commits --md              -> commits_<date>_<time>.md
-        git-wt 1,2 commits --md report.md    -> that path, overwritten
-        git-wt 1,2 commits --merges --md  # filters apply as usual
-
-    The default name is stamped to the second, so a re-run never eats the
-    last report; a name you pass is yours, and is overwritten. The path is
-    optional, so a flag may follow '--md' -- it is read as a flag, never
-    as a filename.
-
-    Subjects are whole in a file: there is no right edge to run out of, so
-    nothing is truncated. A '|' in a subject is escaped rather than left
-    to end the cell and shift the columns after it.
-
-COMMITS DATES:
-    The date column is ISO, the same shape the filters take, so a date
-    read off the table pastes straight back into --date-since. It also
-    sorts, greps, and is one width on every row.
-
-        git-wt 1,2 commits                     -> 2026-01-31
-        git-wt 1,2 commits --time              -> 2026-01-31 14:30:05
-        git-wt 1,2 commits --date-human        -> Jan. 31, 2026
-        git-wt 1,2 commits --date-human --time
-                                               -> Jan. 31, 2026 14:30:05
-
-    --date-human is easier to read a date out of, at the cost of the
-    round-trip: it is not what --date-since accepts. What --date compares
-    never changes shape whatever the column is spelled as.
-
-    Quote --date, always. '>' and '<' are redirects, so an unquoted
-    --date >=2026-01-01 writes a file called '=2026-01-01' and git-wt
-    sees no date at all. --date-since/--date-until need no quoting.
-
-    Rows are ancestry-first: no parent is ever listed above its child, so
-    reading down the table is reading the real history. Dates only order
-    commits that do not descend from each other -- which is why a commit
-    authored before its own parent (a rebase, a cherry-pick, a bad clock)
-    reads as out of order against the date column. The story is right; the
-    clock is not.
-
-    Within that, two readings. By default the rows are newest-first, so a
-    row's neighbors are its contemporaries -- what happened when. '--topo'
-    keeps each line of history in one block instead -- what each branch did,
-    which is what --union tables are usually read for. Neither depends on --time:
-    the order always reads the full timestamp, and --time only prints
-    what it read. '--reverse' puts the newest last, after the -n cap, so
-    the rows are the same ones read bottom-up.
-
-        git-wt 1,2,3 commits --topo
-
-    The subject comes last because it is the only free-form cell: an emoji is
-    two terminal columns wide but one character, so a padded subject column
-    would shift every column after it. Nothing is padded after it, so the marks
-    line up whatever the subject holds. Too long for the terminal, it is cut
-    rather than wrapped; piped output is never cut, so 'commits | grep' still
-    sees whole subjects. Dates are author dates, and the author is
-    .mailmap-aware, so one contributor is one name.
-
-    '--wrap N' buys the cut subject more room: N lines instead of one, each
-    the width the subject column already had, so what a conventional-commit
-    prefix pushes past the edge lands on the next line rather than in an
-    ellipsis. The extra lines are indented to the subject column, so the
-    table still reads as one row per commit -- and one row per commit is
-    why the default stays 1.
-
-        git-wt 1,2 commits --wrap 2      # two lines of subject
-        git-wt 1,2 commits -w full       # whole subject, however many
-        git-wt 1,2 commits --wrap        # the same 'full'
-
-    Only the last line an N allows is ellipsized, and only when the subject
-    outruns it. 'full' wraps until the subject is spent, so nothing is ever
-    lost; off a terminal there is nothing to wrap to and --wrap does nothing,
-    the whole subject being on the line already.
-
-    '--subject-width N' moves the cut itself. The subject's width is normally
-    whatever the columns left of it did not take, which is the right answer
-    until the subject is what you came to read -- and then those columns are
-    the ones in the way. N is that width instead, however wide the terminal
-    is, so a subject may run past the edge. That is the point: the terminal
-    soft-wraps it, or 'less -S' scrolls it, and either beats an ellipsis.
-
-        git-wt 1,2 commits --subject-width 100   # 100 columns, edge or no edge
-        git-wt 1,2 commits --subjw full          # never cut, however long
-        git-wt 1,2 commits --subjw 60 --wrap 3   # 3 lines of 60
-
-    The two compose: --subject-width is how wide a line is, --wrap is how many
-    of them. An asked-for width is the width, so unlike --wrap it also applies
-    off a terminal -- '--subjw 60 | grep' cuts at 60, where a bare 'commits |
-    grep' still sees whole subjects. N is at least 24: below that a cut subject
-    says nothing, which is what 'full' is for.
-
-    '--branch-width N' does the same for a mark column's header: branch
-    names have no natural bound the way author names do, and an
-    issue-shaped one is cut to 24 columns by default, on a terminal or
-    off, so it cannot drag every row's marks and subject rightward.
-    'full' never cuts it; N is at least 12, the shortest a header can be
-    and still tell two branches apart.
-
-        git-wt 1,2 commits --branch-width 40   # allow longer names
-        git-wt 1,2 commits --branchw full      # never cut, however long
-
-    Unlike '--subject-width', this has nothing to do with the terminal --
-    the branch column is fixed-width, so the cut is the same piped or not.
-
-    '--files' adds the files a commit touched, indented under the subject.
-    Each file shows a status letter (A/M/D/R/C) and the added/removed line
-    count. A blank line separates the commit from its file block, and another
-    separates the block from the next commit. The work is scoped to the rows
-    the table already shows, so pair it with '-n' or filters on large logs.
-    Merge commits show the diff against their first parent.
-
-        git-wt 1,2 commits -n 10 --files
-        git-wt 1,2 commits --author chen --files
-
-LOG:
-    'log' is the same table as 'commits' -- same rows, columns, filters,
-    renderer -- with a pathspec selecting the rows instead of a branch range.
-
-        git-wt 1,2 log src/cmd/commits/render.rs
-        git-wt log src/ui.rs --author alex --date-since 2026-01-01 -w
-
-    Targets are worktrees or branches, exactly like 'commits': the first is
-    the row source, the rest are mark columns. PATH always comes after the
-    verb, never in the target slot -- that would collide with a branch name
-    like 'feature/foo'. It resolves against the worktree it sits under
-    (absolute, relative, or repo-relative, from anywhere), so any worktree's
-    copy of the path names the same file in history. PATH omitted is the
-    current directory, repo-relative.
-
-    Every 'commits' flag still works the same way, with four exceptions:
-    '--filename', '--all', and '--all-files' are not words 'log' knows at
-    all -- the path already is the target, so typing one gets the same
-    unknown-argument error any other typo would. '--union' is load-bearing:
-    the default rows are the first branch's history of the path; '--union'
-    unions in every listed branch's. '-f'/'--files' means the *other* files
-    each shown commit touched, since the row already carries the path's own
-    '±'. '--squash' becomes the path's lifetime totals -- commits, authors,
-    '±', first and last touch -- folded into the header line.
-
-        git-wt 1,2,3 log src/ui.rs --union     # every branch's touches
-        git-wt 2 log src/ui.rs -f               # + the other files touched
-        git-wt 1 log src/ui.rs --squash         # lifetime totals
-
-    '--no-follow' is new: with exactly one PATH, 'log' follows a rename
-    automatically; '--no-follow' stops at it instead. A path deleted on this
-    branch and alive on another is not an error -- that is exactly what
-    'log' is for -- and the empty result names the rename escape hatch:
-
-        no commits touched 'src/old.rs' on main
-        hint: it may live under another name; --no-follow shows the literal path only
-
-    A path outside every worktree is an error naming both readings:
-
-        error: '/etc/hosts' is outside the repository
-        hint: paths are resolved against the worktree they sit in
-
-    The table adds one column, '±': the added/removed line count scoped to
-    the path alone, not the commit-wide count '-f' prints. A 'path' column
-    appears only when it varies -- a rename crossed under '--follow', or more
-    than one PATH given -- otherwise the header already names it.
-
-MARKS:
-    ✓   the branch has this commit
-    ≈   the branch has this patch under a different sha
-    ←   the branch has a commit whose `-x` trailer names this commit
-    ~   the branch has a commit with the same author/date/subject
-    ·   the branch has none of the above
-
-    Precedence: ✓ > ≈ > ← > ~ > ·.
-
-    '≈' is a cherry-pick or a rebase's copy detected by patch-id. To git
-    those are different commits, so a bare '✓/·' calls them missing -- which
-    reads as work to do, when the work is done. The comparison is git's own
-    'git cherry': patch-ids, not history, per pair of branches. '--no-cherry'
-    skips it and takes the old, cheaper answer, for a repo whose branches have
-    diverged by thousands of commits.
-
-    '←' is a stronger signal: a `git cherry-pick -x` on the other branch left
-    a trailer that names this exact commit. '~' is the fallback for picks that
-    changed enough in conflict resolution to defeat patch-id, or for picks made
-    without `-x`: it matches the author email, author date (with timezone), and
-    subject that cherry-pick preserves exactly.
-
-    A picked commit shows twice, once per sha: the original row is '≈'/←/~ in
-    the branch that took it, the copy's row is '≈'/←/~ in the branch it came
-    from. Both are true -- they are two commits carrying one patch.
-
-    '--pick-id' names the other sha for '≈': a 'pick' column after 'commit',
-    holding the sha the same patch was committed under elsewhere. It is the
-    row's other half -- the sha to hand 'git show', or to check a pick landed
-    where you meant it to. Rows with no copy leave it blank, and a patch
-    carried under three shas names the first of the others.
-
-SYNC OPTIONS:        (fetch/pull/push; any other git flag is an error, not a passthrough)
-    -a, --all             Every worktree, not the ones a list named
-    fetch: -p, --prune | --tags | --no-tags, --nt | --force
-    pull:  --rebase, --rb | --no-rebase, --nr | --ff-only | -p, --prune |
-           --autostash, --as
-    push:  -u, --set-upstream | --force-with-lease, --fl | --tags |
-           -n, --dry-run
-
-SYNC:
-    fetch/pull/push run git in a worktree's own directory, so each one syncs
-    its own branch against its own upstream. Nothing here is a shortcut for
-    something git does not do -- it is the cd you would type first.
-
-        git-wt 1 pull                # git -C <dir 1> pull
-        git-wt 1,3 fetch --prune     # both, one after the other
-        git-wt pull --all            # every worktree
-        git-wt 2 push -u             # push and set the upstream
-
-    '--all' is the whole point: a repo with six worktrees is six branches, and
-    they go stale one at a time. It sweeps every worktree in 'list' order, and
-    it names no target -- 'git-wt pull --all' is the one verb-first form left,
-    because there is nothing to put in front of it.
-
-    A sweep never stops on a failure. One worktree with no upstream, or a pull
-    that hits a conflict, would otherwise leave the worktrees after it untouched
-    and unmentioned -- half-synced, and no line saying which half. So every one
-    runs, each failure prints where it happened, and the last line counts them:
-
-        pull: 4 ok, 1 failed, 1 skipped
-
-    The exit code is that summary, nonzero when anything failed. A single
-    target is not a sweep: git's own error is the whole story, and it exits
-    with it unsummarized.
-
-    Skipped is what the verb cannot mean. A bare worktree has nothing to pull
-    into, and a detached HEAD has no branch, so no upstream to push to; fetch
-    only moves remote-tracking refs, so it runs on both. A skip is not a
-    failure -- there was nothing to do.
-
-    'git fetch --all' means every REMOTE. Here '--all' means every worktree,
-    always, for all three verbs: 'git-wt' counts worktrees, that is what it is
-    for. For every remote, run git yourself.
-
-    Flags are the curated list above, not a passthrough, the same rule diff
-    follows. 'push --force' is the one refused outright: it overwrites a remote
-    branch without checking what is on it, and '--all' would do that to every
-    branch at once. '--force-with-lease' is the one that checks.
-
-MELD:
-    Opens meld on the worktree directories, in the order you list them, and
-    waits until you close it. Requires meld on PATH.
-
-        git-wt 1,3 meld      -> meld <dir 1> <dir 3>
-        git-wt 2,1,3 meld    -> meld <dir 2> <dir 1> <dir 3>  (3-way)
-
-    With --diff, meld sees only the files that differ between the two refs,
-    extracted into sparse temp directories. Add --3way or --base <ref> to
-    include the merge-base as a third pane.
-
-        git-wt 1,2 meld --diff            # only files that differ
-        git-wt 1,2 meld --diff ...        # only what branch 2 added since fork
-        git-wt 1,2 meld --diff --3way     # + merge-base in the middle pane
-        git-wt 1,2 meld --diff --base main # + explicit base in the middle pane
-
-MERGE WORDS:            (each takes an optional '--': 'abort' == '--abort')
-    -c, continue          Conclude a conflicted merge
-    -a, abort             Undo a conflicted merge
-    -o, ours              On a conflicting hunk, keep worktree N's side
-    -t, theirs            On a conflicting hunk, take the source's side
-    -d, dry-run           Report whether it would merge; change nothing
-        review            Show the commits it would bring over; change nothing
-
-MERGE OPTIONS:
-    -m, --message MSG     Merge commit message
-        --no-ff, --nf     Always create a merge commit
-        --ff-only, --fo   Refuse anything but a fast-forward
-        --squash          Stage the merge without committing
-    -f, --force           Merge even when worktree N has uncommitted changes
-
-MERGE:
-    The merge runs inside worktree N, so N's branch is the one that moves:
-
-        git-wt 1,2 merge            # worktree 2's branch -> worktree 1's branch
-        git-wt 1 merge feat/x       # a branch name works too
-        git-wt merge -b 2           # worktree 2's branch -> the worktree you're in
-        git-wt 1,2 merge dry-run    # would it conflict? nothing is touched
-        git-wt 1,2 merge theirs     # let 2 win every collision
-
-    The list reads dest-first, so '1,2 merge' merges 2 into 1. It takes
-    exactly two worktrees -- unlike meld, which diffs 2-3 -- because a
-    merge has one destination and one source. The list already names the
-    source, so it cannot be combined with 'continue'/'abort'; those take a
-    single target, 'git-wt 1 merge continue' (or 'git-wt 1 merge abort').
-
-    A number that names a worktree wins over a branch of the same name, and
-    the words above win over a branch of the same name: to merge a branch
-    called 'theirs', spell it 'heads/theirs'.
-
-    On conflict, git-wt exits nonzero and lists the conflicted files; fix
-    them in worktree N, then run 'git-wt N merge continue' (or abort).
-    Merge commits never open an editor: without -m, git's default message is
-    taken as-is.
-
-MERGE REVIEW:
-    'dry-run' answers whether a merge conflicts. '--review' answers what it
-    would bring: the same verdict as a header, then the commit table for
-    'dest..src'. It merges nothing and keeps dry-run's exit codes, 0 clean
-    and 1 on conflict.
-
-        git-wt 1,2 merge --review        # what would 2 bring into 1?
-        git-wt 1,2 merge --review -f     # + the files under each commit
-        git-wt 1,2 merge --review -n 5 --author alex
-
-    '--review' ends merge's own flags. Everything after it is a 'commits'
-    flag and is passed through untouched, which is the only way both can keep
-    the letters they share: '-f' after '--review' is --files, not --force.
-    Merge options before it are an error rather than a silent claim, so put
-    them after -- or drop them, since nothing is being merged. After it they
-    are an error too, and one that says which: '--review --dry-run' is told
-    the two answer the same question, not that '--dry-run' is unexpected.
-
-    '--all' and '--union' are refused as well, though they are commits flags:
-    both name a row source, and a review's is already the range 'dest..src'.
-    ('-a' is '--all', so it is refused under that name -- '-fn 5' is the
-    bundle that still works here.)
-
-    The single mark column is the DESTINATION's, and it has four answers:
-
-        ·  the commit is new to the destination
-        ≈  its patch is already there under a different sha
-        ←  a `-x` trailer on the destination names this commit as its source
-        ~  the destination has a commit with the same author/date/subject
-
-    The non-'·' marks are what a cherry-picked hotfix leaves behind: the row is
-    genuinely absent by sha, so the merge still lists it, but the work has
-    landed. There is no check column -- every row is in the source by
-    definition, so it would say nothing.
-
-    Merge commits are shown, unlike in 'commits', where they are dropped: a
-    review range is bounded by the merge about to happen, so a merge inside
-    it is the cargo rather than the noise. '--review --no-merges' drops them.
-    A merge carries no patch of its own, so it can never be marked '≈' and
-    '--review --pick-id' leaves its cell empty; that is the mark saying
-    nothing about merges, not a missing answer.
-
-    'ours'/'theirs' are git's -X strategy options, so they settle only the
-    hunks that actually collide -- the rest of both sides still merges. They
-    are applied while the merge is computed, so they cannot join a merge that
-    has already stopped: git-wt offers to abort and redo it instead.
-
-MERGED:
-    Ask whether one branch is already contained in another.
-
-        git-wt 1,2 merged             # is 2's branch in 1's branch?
-        git-wt 1 merged feat/x        # is feat/x in worktree 1's branch?
-        git-wt 1 merged               # is worktree 1's branch in the current branch?
-        git-wt 1 merged --others      # list every worktree against worktree 1
-        git-wt 1 merged --ot -p       # short alias for --others; -p adds the path column
-        git-wt 1 merged -o            # -o is the same short alias
-
-    The normal forms answer yes/no, exiting 0 for \"already merged\" and nonzero
-    for \"ahead\". The `--others` form prints a table with a `merged` column and
-    a `merged-at` column showing when the source branch was last merged into the
-    selected branch. `merged-at` is '-' for fast-forward merges and for branches
-    that are not yet merged.
-
-ADD:
-    The worktree directory is a sibling of the repo root, named
-    <repo-folder>-<branch>, with '/', ' ', ':' and '\\' collapsed to '-'.
-
-        ~/code/myapp  +  feature/login  ->  ~/code/myapp-feature-login
-
-    Branch resolution, in order:
-      1. Local branch exists      -> check it out
-      2. <remote>/<branch> exists -> create a tracking branch from it
-                                     (prefers origin, else first remote match)
-      3. Neither                  -> prompt, then create from --from (HEAD)
-
-    With no BRANCH, a picker lists local branches: fzf when installed,
-    otherwise a numbered prompt.
-
-DOCTOR:
-    Reports what is wrong with a worktree's registration -- not its working
-    tree contents, which 'list' already covers -- read straight off git's own
-    'worktree list --porcelain' and the filesystem, so it costs no extra
-    history walk:
-
-        prunable        git's own verdict: the directory is gone or its
-                          administrative files no longer point at a live one
-                          (the same signal 'git worktree prune' acts on) --
-                          this is what a moved or deleted worktree looks like
-        directory not found on disk   the filesystem check, for a git that
-                          has not rescanned yet
-        '.git' points to a missing admin dir   the directory is still there,
-                          but its back-pointer names an admin dir that no
-                          longer exists -- what a linked worktree looks like
-                          after the *main* worktree gets moved or renamed,
-                          since git never updates that pointer on its own
-        HEAD unreadable   the directory exists but git can't read its HEAD
-        locked            not broken -- why 'remove'/'prune' refuse to
-                          touch it -- reported alongside, never suppressing
-                          the checks above it
-
-        git-wt doctor              # report only, nothing changed
-        git-wt doctor --repair     # attempt to fix what it found
-
-    '--repair' runs 'git worktree repair' over every candidate this repo
-    might mean: every worktree's own recorded path (the fix when the *main*
-    worktree moved -- each linked worktree's stale '.git' file is rewritten
-    using the path 'worktree list' already had), plus every sibling of the
-    repo root whose '.git' is a plain file (the fix when a *linked* worktree
-    moved -- 'add' puts every worktree it creates there, so one moved by
-    hand usually still turns up in the list even though its old recorded
-    path does not name it anymore). 'repair' only relinks a candidate whose
-    '.git' file already agrees with one of this repo's admin dirs, so
-    handing it every candidate is safe: an unrelated directory is left
-    untouched. Whatever neither fixes -- a directory truly deleted, not
-    moved -- is swept by 'git worktree prune' afterward, which only removes
-    entries git already marked prunable. The report then re-runs, so the
-    output says what is actually still wrong, not what was true before the
-    repair.
-
-STDOUT:
-    Only 'switch'/'path' (bare <N>), bare 'switch'/'cd', 'add', and 'remove'
-    print a path, alone, on stdout, so a shell can cd into it or capture it.
-    Status (and, for bare 'switch', the picker prompt) goes to stderr.
-
-        cd \"$(git-wt 1 path)\"
-        cd \"$(git-wt switch)\"
-        dir=\"$(git-wt add feature/login)\"
-
-COLOR:
-    Color and status/last-commit columns turn on only when stdout is a
-    terminal, so 'git-wt list | cat' stays plain and parseable. Honors
-    NO_COLOR (disable) and CLICOLOR_FORCE (force on).
-";
-
 // Rust starts every process with SIGPIPE ignored, so a write into a reader
-// that quit early (`git-wt commits | head`, or a shell word after a stray
-// unquoted `|` that isn't even a pipe into this process's stdout the reader
-// wants) surfaces as an `Err` on the write call -- which `println!` turns
-// into a panic instead of the quiet exit every other Unix tool makes. Putting
-// the handler back to its default restores that: the process just dies on
-// the signal, before the panic machinery ever runs.
+// that quit early surfaces as an `Err` on the write call -- which `println!`
+// turns into a panic instead of the quiet exit every other Unix tool makes.
+// Putting the handler back to its default restores that.
 extern "C" {
     fn signal(signum: i32, handler: usize) -> usize;
 }
@@ -962,261 +57,530 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cli = Cli::parse();
 
-    // Meta / no-args first — these don't all need a repo, and no-args = list.
-    match args.first().map(String::as_str) {
-        None => {
-            let root = repo_root()?;
-            return cmd_switch(&root);
+    if cli.help || cli.full {
+        if cli.full {
+            print!("{}", include_str!("../docs/MANUAL.md"));
+        } else {
+            Cli::command().print_help().map_err(|e| e.to_string())?;
+            println!();
         }
-        // A leading list flag with no `list` word: `git-wt --col 1,2`.
-        Some("--col") | Some("-c") | Some("--files") | Some("-f") | Some("--search") => {
-            let root = repo_root()?;
-            return list_from_args(&root, &args);
-        }
-        Some(s) if s.starts_with("--col=") || s.starts_with("--search=") => {
-            let root = repo_root()?;
-            return list_from_args(&root, &args);
-        }
-        Some("-hf") => {
-            print!("{HELP}");
-            return Ok(());
-        }
-        Some("-h") | Some("--help") | Some("help") => {
-            let full = args[1..].iter().any(|a| a == "-f" || a == "--full");
-            print!("{}", if full { HELP.to_string() } else { short_help() });
-            return Ok(());
-        }
-        Some("-V") | Some("--version") | Some("version") => {
+        return Ok(());
+    }
+
+    let root = repo_root()?;
+    let trees = worktrees(&root)?;
+
+    // No verb: default to switch. A bare target list selects one worktree;
+    // no target list shows the worktree list.
+    let cmd = match cli.command {
+        Some(Commands::Version) => {
             println!("git-wt {VERSION}");
             return Ok(());
         }
-        _ => {}
-    }
-
-    // `git-wt <verb> --help` (target and flags optional/anywhere around it):
-    // that verb's own help, not the whole manual. `--help`/`-h` as args[0]
-    // is already caught above, so this only fires for the trailing spelling.
-    if args.iter().any(|a| a == "-h" || a == "--help") {
-        if let Some(verb) = args.iter().find(|a| VERB_WORDS.contains(&a.as_str())) {
-            print!("{}", command_help(verb));
-            return Ok(());
-        }
-    }
-
-    let first = &args[0];
-
-    if first == "list" || first == "ls" {
-        let root = repo_root()?;
-        return list_from_args(&root, &args[1..]);
-    }
-
-    // Bare `switch`/`cd`/`s`, no target: the interactive picker, since a
-    // target's own `<N> switch`/`<N> cd`/`<N> s` already means "this one, no
-    // picking needed".
-    if (first == "switch" || first == "cd" || first == "s") && args.len() == 1 {
-        let root = repo_root()?;
-        if first == "s" {
-            if let Ok(trees) = worktrees(&root) {
-                warn_if_alias_shadows_branch(&trees, "s", "switch");
+        Some(c) => c,
+        None => {
+            if let Some(t) = cli.targets {
+                return cmd_switch(
+                    &root,
+                    crate::cmd::switch::args::SwitchArgs { target: Some(t), target_flag: None },
+                );
             }
+            return cmd_list(&root, crate::cmd::list::args::ListArgs::default());
         }
-        return cmd_switch(&root);
+    };
+
+    // The new grammar is verb-first: the optional positional target list comes
+    // after the subcommand. Any target captured at the top level means the user
+    // wrote target-first (e.g. `git-wt 2 diff`), which has been retired.
+    if cli.targets.is_some() {
+        return Err("target list must come after the verb, e.g. 'git-wt diff 1,2'".into());
     }
 
-    if first == "doctor" {
-        let repair = args[1..].iter().any(|a| a == "--repair" || a == "-r");
-        if let Some(bad) = args[1..]
-            .iter()
-            .find(|a| a.as_str() != "--repair" && a.as_str() != "-r")
-        {
-            return Err(format!("unknown option '{bad}' for doctor\nTry 'git-wt --help'"));
-        }
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        return cmd_doctor(&root, &trees, repair);
-    }
+    // The one-letter alias each of these matched, if that's the spelling the
+    // user actually typed -- see `typed_verb`'s docs for why the parsed
+    // `Commands` variant alone can't tell us that.
+    let typed = typed_verb();
+    let typed_alias = |a: &str| typed.as_deref() == Some(a);
 
-    if first == "add" || first == "a" {
-        let root = repo_root()?;
-        if first == "a" {
-            if let Ok(trees) = worktrees(&root) {
+    match cmd {
+        Commands::Add(args) => {
+            if !cli.branch.is_empty() {
+                return Err("'add' does not take '-b/--branch'".into());
+            }
+            if typed_alias("a") {
                 warn_if_alias_shadows_branch(&trees, "a", "add");
             }
+            cmd_add(&root, args)
         }
-        return cmd_add(&root, &args[1..]);
-    }
 
-    // `git-wt fetch --all` sweeps every worktree; bare `git-wt fetch` (no
-    // target, no `--all`) stands for the current worktree, the same way bare
-    // `commits` and `remove` do below. "p" is the one-letter alias for `pull`
-    // specifically -- `fetch`/`push` keep only their full words.
-    let sync_op = if first == "p" { Some(SyncOp::Pull) } else { SyncOp::from_word(first) };
-    if let Some(op) = sync_op {
-        let parsed = parse_sync_args(op, &args[1..])?;
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        if first == "p" {
-            warn_if_alias_shadows_branch(&trees, "p", "pull");
+        Commands::List(args) => {
+            if cli.targets.is_some() || !cli.branch.is_empty() {
+                return Err("'list' does not take worktree targets".into());
+            }
+            cmd_list(&root, args)
         }
-        if parsed.all {
-            let idxs: Vec<usize> = (0..trees.len()).collect();
-            return cmd_sync(&trees, &idxs, &parsed);
+
+        Commands::Switch(args) => {
+            let target = effective_target(args.target, args.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, false, false)?;
+            if idxs.len() > 1 {
+                return Err(format!(
+                    "switch takes one worktree, got {}\nhint: use 'git-wt commits {}' to compare",
+                    idxs.len(),
+                    idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(",")
+                ));
+            }
+            if typed_alias("s") {
+                warn_if_alias_shadows_branch(&trees, "s", "switch");
+            }
+            let mut args = crate::cmd::switch::args::SwitchArgs { target, target_flag: None };
+            if args.target.is_none() && !cli.branch.is_empty() {
+                args.target = Some(cli.branch.join(","));
+            }
+            cmd_switch(&root, args)
         }
-        let idx = current_worktree_index(&trees).ok_or_else(|| {
-            format!("not inside a worktree; use 'git-wt <N> {first}'\n{ALL_HINT}")
-        })?;
-        return dispatch_target(&root, idx + 1, &args);
-    }
 
-    // `remove`/`rm` with no target — the worktree standing in for itself, the
-    // same as bare `commits` below.
-    if first == "remove" || first == "rm" {
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        let idx = current_worktree_index(&trees)
-            .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {first}'"))?;
-        return dispatch_target(&root, idx + 1, &args);
-    }
-
-    // `merged --others` with no leading target — a one-worktree question
-    // (which of the others are already merged into the one you're standing
-    // in), so it takes the bare-`commits`/`remove` reading, not the
-    // bare-`merged`-needs-a-pair one below.
-    if (first == "merged" || first == "m")
-        && args[1..].iter().any(|a| a == "--others" || a == "--ot" || a == "-o")
-    {
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        if first == "m" {
-            warn_if_alias_shadows_branch(&trees, "m", "merged");
+        Commands::Path(args) => {
+            if !cli.branch.is_empty() {
+                return Err("'path' does not combine with '-b/--branch'".into());
+            }
+            let target = effective_target(args.target, args.target_flag.as_ref())?;
+            cmd_path(&root, crate::cmd::switch::args::PathArgs { target, target_flag: None })
         }
-        let idx = current_worktree_index(&trees)
-            .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {first}'"))?;
-        return dispatch_target(&root, idx + 1, &args);
-    }
 
-    // `diff`/`meld`/`merge`/`merged` with no leading target — same reading as
-    // bare `commits -b`, but `-b` isn't optional: diff, meld and merge always
-    // need a pair, and target-first `merged` already owns the no-source
-    // meaning ("is my branch merged into what I'm standing in"), so the bare
-    // verb needs `-b` to say what it's being compared against.
-    if first == "diff" || first == "meld" || first == "merge" || first == "merged" || first == "m" {
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        if first == "m" {
-            warn_if_alias_shadows_branch(&trees, "m", "merged");
+        Commands::Remove(args) => {
+            let target = effective_target(args.target.clone(), args.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
+            if idxs.len() > 1 {
+                return Err(format!("remove takes one worktree, got {}", idxs.len()));
+            }
+            let idx = idxs.into_iter().next().expect("len 1");
+            let args = crate::cmd::remove::args::RemoveArgs { target, target_flag: None, ..args };
+            cmd_remove(&root, &trees, idx, args)
         }
-        let cur = current_worktree_index(&trees)
-            .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N>,<M> {first}'"))?;
-        let (rest, val) = extract_branch_flag(&args[1..])?;
-        let val = val.ok_or_else(|| {
-            format!(
-                "'{first}' needs another worktree: 'git-wt {first} -b <N>' or \
-                 'git-wt <N>,<M> {first}'"
-            )
-        })?;
-        let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();
-        ns.insert(0, cur + 1);
-        let mut full_rest = vec![first.clone()];
-        full_rest.extend(rest);
-        return dispatch_targets(&root, &ns, &full_rest);
-    }
 
-    // `--branch/-b LIST` — the multi-target grammar with the current worktree
-    // prepended, so it can join a comparison without its own number being
-    // looked up first: 'git-wt -b 1,branch1' is 'git-wt <cur>,1,branch1'.
-    if first == "--branch" || first == "-b" || first.starts_with("--branch=") {
-        let (rest, val) = extract_branch_flag(&args)?;
-        let val = val.expect("matched above");
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        let cur = current_worktree_index(&trees)
-            .ok_or("not inside a worktree; can't resolve --branch's current worktree")?;
-        let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();
-        ns.insert(0, cur + 1);
-        return dispatch_targets(&root, &ns, &rest);
-    }
-
-    // `commits` with no target — the worktree standing in for itself, so a
-    // solo log doesn't require typing its own number back at it. `-b <N>`
-    // still adds a comparison target, the same as the leading-`-b` form:
-    // 'git-wt commits -b 2' is 'git-wt <cur>,2 commits'.
-    if first == "commits" || first == "c" {
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        if first == "c" {
-            warn_if_alias_shadows_branch(&trees, "c", "commits");
+        Commands::Fetch(ref args) | Commands::Pull(ref args) | Commands::Push(ref args) => {
+            let op = match &cmd {
+                Commands::Fetch(_) => SyncOp::Fetch,
+                Commands::Pull(_) => {
+                    if typed_alias("p") {
+                        warn_if_alias_shadows_branch(&trees, "p", "pull");
+                    }
+                    SyncOp::Pull
+                }
+                Commands::Push(_) => SyncOp::Push,
+                _ => unreachable!(),
+            };
+            let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
+            if args.all && (target.is_some() || !cli.branch.is_empty()) {
+                return Err(format!(
+                    "'--all' is every worktree, so a target list has nothing to add\n\
+                     hint: 'git-wt {} --all', or drop it to sweep just the ones you named",
+                    op.word()
+                ));
+            }
+            let idxs = if args.all {
+                (0..trees.len()).collect()
+            } else {
+                let mut idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
+                if idxs.is_empty() {
+                    let cur = current_worktree_index(&trees)
+                        .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {}'\n{ALL_HINT}", op.word()))?;
+                    idxs.push(cur);
+                }
+                idxs
+            };
+            let mut parsed = parse_sync_args(op, &args.flags)?;
+            parsed.all = parsed.all || args.all;
+            cmd_sync(&trees, &idxs, &parsed)
         }
-        let cur = current_worktree_index(&trees)
-            .ok_or("not inside a worktree; use 'git-wt <N> commits'")?;
-        let (rest, val) = extract_branch_flag(&args[1..])?;
-        if let Some(val) = val {
-            let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();
-            ns.insert(0, cur + 1);
-            let mut full_rest = vec![first.clone()];
-            full_rest.extend(rest);
-            return dispatch_targets(&root, &ns, &full_rest);
+
+        Commands::Diff(args) => {
+            let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
+            if idxs.len() != 2 {
+                return Err(format!(
+                    "diff takes exactly two worktrees, got {}\n\
+                     hint: 'git-wt diff 1,2' or 'git-wt diff 1 -b 2'",
+                    idxs.len()
+                ));
+            }
+            cmd_diff(&root, &trees, &idxs, &args)
         }
-        return dispatch_target(&root, cur + 1, &args);
-    }
 
-    // `log` with no target — the worktree standing in for itself, same reading
-    // as bare `commits` above: 'git-wt log src/ui.rs' is that worktree's own
-    // history of the path, and '-b <N>' still adds a comparison target.
-    if first == "log" || first == "l" {
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        if first == "l" {
-            warn_if_alias_shadows_branch(&trees, "l", "log");
+        Commands::Meld(args) => {
+            let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, true)?;
+            if idxs.len() < 2 {
+                return Err(format!(
+                    "meld needs 2 or 3 worktrees, got {}\n\
+                     hint: 'git-wt meld 1,2' or 'git-wt meld 1,2,3'",
+                    idxs.len()
+                ));
+            }
+            if idxs.len() > 3 {
+                return Err(format!(
+                    "meld takes at most 3 worktrees, got {}\n\
+                     hint: 'git-wt meld 1,2' or 'git-wt meld 1,2,3'",
+                    idxs.len()
+                ));
+            }
+            cmd_meld(&root, &trees, &idxs, &args)
         }
-        let cur = current_worktree_index(&trees)
-            .ok_or("not inside a worktree; use 'git-wt <N> log'")?;
-        let (rest, val) = extract_branch_flag(&args[1..])?;
-        if let Some(val) = val {
-            let mut ns: Vec<usize> = branch_targets(&trees, &val)?.iter().map(|i| i + 1).collect();
-            ns.insert(0, cur + 1);
-            let mut full_rest = vec![first.clone()];
-            full_rest.extend(rest);
-            return dispatch_targets(&root, &ns, &full_rest);
+
+        Commands::Merge(args) => {
+            let (rest, branch) = split_rest_branch(args.rest, &cli.branch)?;
+            let (target_token, merge_rest) = if let Some(first) = rest.first() {
+                if first.starts_with('-') {
+                    (None, rest)
+                } else if gather_targets(Some(first), &[])
+                    .and_then(|p| resolve_target_list(&trees, &p))
+                    .is_ok()
+                {
+                    (Some(first.clone()), rest[1..].to_vec())
+                } else {
+                    (None, rest)
+                }
+            } else {
+                (None, rest)
+            };
+
+            // `-b/--branch` on merge means the source to merge, not an
+            // "other target" the way it does elsewhere: `git-wt merge -b 2`
+            // is "merge 2 into <target, default current>", so it takes
+            // exactly one branch and skips the generic dest/source idxs
+            // dance below entirely.
+            if !branch.is_empty() {
+                if branch.len() > 1 || branch.iter().any(|b| b.contains(',')) {
+                    return Err("merge's '-b/--branch' takes exactly one source branch".into());
+                }
+                if target_token.as_deref().is_some_and(|t| t.contains(',')) {
+                    return Err(
+                        "merge: can't combine a 'dest,source' target list with '-b/--branch'".into(),
+                    );
+                }
+                let dest_idx = match &target_token {
+                    Some(t) => {
+                        let ns = resolve_target_list(&trees, &[t.clone()])?;
+                        check_index(ns[0], trees.len())?
+                    }
+                    None => current_worktree_index(&trees)
+                        .ok_or("not inside a worktree; use 'git-wt merge <N> -b <BRANCH>'")?,
+                };
+                let src_tok = &branch[0];
+                let src_ns = resolve_target_list(&trees, &[src_tok.clone()])?;
+                let src_idx = check_index(src_ns[0], trees.len())?;
+                if src_idx == dest_idx {
+                    return Err(format!("branch '{src_tok}' is already the target"));
+                }
+                let mut merge_argv = vec![ref_of(&trees[src_idx])?];
+                merge_argv.extend(merge_rest.iter().cloned());
+                let parsed = parse_merge_args(&merge_argv)?;
+                return cmd_merge(&root, &trees, dest_idx, &parsed);
+            }
+
+            let idxs = resolve_targets(&trees, target_token.as_ref(), &branch, true, false)?;
+            if idxs.is_empty() {
+                return Err("not inside a worktree; use 'git-wt merge <N>[,<M>]'".into());
+            }
+            if idxs.len() > 2 {
+                return Err(format!(
+                    "merge takes exactly two worktrees, got {}\n\
+                     hint: 'git-wt merge 1,2' or 'git-wt merge 1 <BRANCH>'",
+                    idxs.len()
+                ));
+            }
+            // A single resolved worktree named by a *branch* (not a plain
+            // number) is ambiguous between "destination, still needs a
+            // source" and "source, destination is current" -- the grammar
+            // reads a bare branch as the latter (`git-wt merge <BRANCH>`).
+            // A number always keeps its long-standing meaning, destination,
+            // whatever flags or resume words follow it (`git-wt merge 2
+            // --abort`, `git-wt merge 2 continue`).
+            let is_branch_word = target_token
+                .as_deref()
+                .is_some_and(|t| t.parse::<usize>().is_err());
+            let (dest_idx, mut merge_argv) = if idxs.len() == 1 && is_branch_word {
+                let cur = current_worktree_index(&trees)
+                    .ok_or("not inside a worktree; use 'git-wt merge <N>[,<M>]'")?;
+                if idxs[0] == cur {
+                    return Err(
+                        "merge needs a source: 'git-wt <N>,<M> merge' (or 'git-wt <N> merge <BRANCH>', or continue/abort)"
+                            .into(),
+                    );
+                }
+                (cur, vec![ref_of(&trees[idxs[0]])?])
+            } else if idxs.len() == 2 {
+                (idxs[0], vec![ref_of(&trees[idxs[1]])?])
+            } else {
+                (idxs[0], Vec::new())
+            };
+            merge_argv.extend(merge_rest.iter().cloned());
+            let parsed = parse_merge_args(&merge_argv)?;
+            cmd_merge(&root, &trees, dest_idx, &parsed)
         }
-        return dispatch_target(&root, cur + 1, &args);
-    }
 
-    // <N> <action> — the target-first grammar.
-    if let Ok(n) = first.parse::<usize>() {
-        let root = repo_root()?;
-        return dispatch_target(&root, n, &args[1..]);
-    }
+        Commands::Merged(args) => {
+            if typed_alias("m") {
+                warn_if_alias_shadows_branch(&trees, "m", "merged");
+            }
+            let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, false, false)?;
+            if args.others {
+                let idx = if idxs.len() == 1 {
+                    idxs[0]
+                } else if idxs.is_empty() {
+                    current_worktree_index(&trees)
+                        .ok_or("not inside a worktree; use 'git-wt merged --others <N>'")?
+                } else {
+                    return Err(format!("--others takes one worktree, got {}", idxs.len()));
+                };
+                return cmd_merged_others(&root, &trees, idx, args.show_path);
+            }
+            if idxs.len() == 2 {
+                if args.source.is_some() {
+                    return Err("merged takes no arguments after a two-worktree list".into());
+                }
+                let dest = ref_of(&trees[idxs[0]])?;
+                let src = ref_of(&trees[idxs[1]])?;
+                if src == dest {
+                    return Err(format!("'{src}' is already checked out in worktree {}", idxs[0] + 1));
+                }
+                return cmd_merged(&root, &src, &dest);
+            }
+            if let Some(raw_src) = args.source {
+                let idx = if idxs.len() == 1 {
+                    idxs[0]
+                } else if idxs.is_empty() {
+                    current_worktree_index(&trees)
+                        .ok_or("not inside a worktree; use 'git-wt merged <N> <BRANCH>'")?
+                } else {
+                    return Err(format!("merged takes one worktree with a branch source, got {}", idxs.len()));
+                };
+                let dest = ref_of(&trees[idx])?;
+                let src = resolve_source(&root, &trees, &raw_src)?;
+                if src == dest {
+                    return Err(format!("'{raw_src}' is already checked out in worktree {}", idx + 1));
+                }
+                return cmd_merged(&root, &src, &dest);
+            }
+            let idx = if idxs.len() == 1 {
+                idxs[0]
+            } else if idxs.is_empty() {
+                current_worktree_index(&trees)
+                    .ok_or("not inside a worktree; use 'git-wt merged <N>'")?
+            } else {
+                return Err(format!(
+                    "merged takes one or two worktrees, got {}\n\
+                     hint: 'git-wt merged 1,2' or 'git-wt merged 1 <BRANCH>'",
+                    idxs.len()
+                ));
+            };
+            let dest = ref_of(&trees[idx])?;
+            let src = crate::worktree::current_ref();
+            cmd_merged(&root, &src, &dest)
+        }
 
-    // <N>,<N>[,<N>] <action> — the multi-target grammar (meld). Parts may also
-    // be branch names; they are resolved to numbers here so the grammar below
-    // only ever sees numbers.
-    if let Some(parts) = parse_target_list(first)? {
-        let root = repo_root()?;
-        let trees = worktrees(&root)?;
-        let ns = resolve_target_list(&trees, &parts)?;
-        return dispatch_targets(&root, &ns, &args[1..]);
-    }
+        Commands::Commits { rest } => {
+            let (rest, branch, embedded_target) = split_rest_flags(rest, &cli.branch)?;
+            let (target_token, commit_rest) = if let Some(first) = rest.first() {
+                if first.starts_with('-') {
+                    (None, rest)
+                } else if gather_targets(Some(first), &[])
+                    .and_then(|p| resolve_target_list(&trees, &p))
+                    .is_ok()
+                {
+                    (Some(first.clone()), rest[1..].to_vec())
+                } else {
+                    (None, rest)
+                }
+            } else {
+                (None, rest)
+            };
+            let target_token = effective_target(target_token, embedded_target.as_ref())?;
+            let idxs = resolve_targets(
+                &trees,
+                target_token.as_ref(),
+                &branch,
+                true,
+                false,
+            )?;
+            if idxs.is_empty() {
+                return Err("not inside a worktree; use 'git-wt commits <N>[,...]'".into());
+            }
+            if typed_alias("c") {
+                warn_if_alias_shadows_branch(&trees, "c", "commits");
+            }
+            cmd_commits(&root, &trees, &idxs, &commit_rest)
+        }
 
-    if first.starts_with('-') {
-        return Err(format!("unknown option '{first}'\nTry 'git-wt --help'"));
-    }
+        Commands::Log { rest } => {
+            let (rest, branch, embedded_target) = split_rest_flags(rest, &cli.branch)?;
+            // `log` is ambiguous: its first positional may be a target, a path, or
+            // a git option. If it resolves as a worktree list, consume it as the
+            // target; otherwise keep it as part of the path/options passed to git.
+            let (target_token, log_rest) = if let Some(first) = rest.first() {
+                if first.starts_with('-') {
+                    (None, rest)
+                } else if gather_targets(Some(first), &[])
+                    .and_then(|p| resolve_target_list(&trees, &p))
+                    .is_ok()
+                {
+                    (Some(first.clone()), rest[1..].to_vec())
+                } else {
+                    (None, rest)
+                }
+            } else {
+                (None, rest)
+            };
+            let target_token = effective_target(target_token, embedded_target.as_ref())?;
+            let mut idxs = resolve_targets(
+                &trees,
+                target_token.as_ref(),
+                &branch,
+                true,
+                false,
+            )?;
+            if idxs.is_empty() {
+                idxs = current_or_empty(&trees, "log")?;
+            }
+            if typed_alias("l") {
+                warn_if_alias_shadows_branch(&trees, "l", "log");
+            }
+            cmd_log(&root, &trees, &idxs, &log_rest)
+        }
 
-    // <BRANCH> <action> — the same grammar, with the worktree named by the
-    // branch it holds instead of its number. Last, so every verb outranks it: a
-    // branch called `list` is reachable only as `heads/list`. A failure to find
-    // the repo is swallowed rather than reported, because outside one the honest
-    // answer is still "unknown command", which is what falls through below.
-    if let Ok(root) = repo_root() {
-        if let Ok(trees) = worktrees(&root) {
-            if let Some(n) = resolve_target(&trees, first) {
-                return dispatch_target(&root, n, &args[1..]);
+        Commands::Doctor(args) => {
+            if !cli.branch.is_empty() {
+                return Err("'doctor' does not take '-b/--branch'".into());
+            }
+            cmd_doctor(&root, &trees, args)
+        }
+
+        Commands::Version => unreachable!(),
+    }
+}
+
+/// Recover `-b`/`--branch` and `-t`/`--target` from a raw catch-all `rest`
+/// (see `extract_branch_flag`'s doc comment for why they can end up there),
+/// and fold them into whatever the global flags already caught.
+fn split_rest_flags(
+    rest: Vec<String>,
+    cli_branch: &[String],
+) -> Result<(Vec<String>, Vec<String>, Option<String>), String> {
+    let (rest, embedded_branch) = extract_branch_flag(&rest)?;
+    let (rest, embedded_target) = extract_target_flag(&rest)?;
+    let mut branch = cli_branch.to_vec();
+    if let Some(b) = embedded_branch {
+        branch.push(b);
+    }
+    Ok((rest, branch, embedded_target))
+}
+
+/// `merge`'s own `rest` twin: extracts `-b/--branch` the same way, but never
+/// `-t/--target` -- `merge` already spells `-t` for `theirs` in its own hand
+/// parser, so that letter stays reserved and merge's target is positional-only.
+fn split_rest_branch(
+    rest: Vec<String>,
+    cli_branch: &[String],
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let (rest, embedded_branch) = extract_branch_flag(&rest)?;
+    let mut branch = cli_branch.to_vec();
+    if let Some(b) = embedded_branch {
+        branch.push(b);
+    }
+    Ok((rest, branch))
+}
+
+/// Resolve a positional target list plus any `-b` values to 0-based worktree
+/// indexes. Duplicates are removed, order is preserved.
+fn resolve_targets(
+    trees: &[crate::worktree::Worktree],
+    targets: Option<&String>,
+    branch: &[String],
+    default_current: bool,
+    allow_duplicates: bool,
+) -> Result<Vec<usize>, String> {
+    if !allow_duplicates {
+        if let Some(t) = targets {
+            let items: Vec<&str> = t.split(',').collect();
+            if let Some(dup) = items.iter().enumerate().find_map(|(i, p)| {
+                if items[..i].contains(p) {
+                    Some(*p)
+                } else {
+                    None
+                }
+            }) {
+                return if dup.parse::<usize>().is_ok() {
+                    Err(format!("worktree #{} listed twice", dup))
+                } else {
+                    Err(format!("branch '{}' listed twice", dup))
+                };
             }
         }
     }
-
-    Err(unknown_command_msg(first))
+    // The positional target list defaults to the current worktree when it is
+    // absent entirely -- not merely when the combined (positional + `-b`)
+    // result would otherwise be empty. This is what makes `-b` purely
+    // additive: `git-wt commits -b 2` must reach `<cur>,2`, not just `2`.
+    let mut idxs = Vec::new();
+    if let Some(t) = targets {
+        let parts: Vec<String> = t.split(',').map(String::from).collect();
+        let ns = resolve_target_list(trees, &parts)?;
+        for n in ns {
+            let i = check_index(n, trees.len())?;
+            if allow_duplicates || !idxs.contains(&i) {
+                idxs.push(i);
+            }
+        }
+    } else if default_current {
+        if let Some(cur) = current_worktree_index(trees) {
+            idxs.push(cur);
+        }
+    }
+    if !branch.is_empty() {
+        let bparts: Vec<String> = branch.iter().flat_map(|b| b.split(',').map(String::from)).collect();
+        if bparts.iter().any(|p| p.is_empty()) {
+            return Err("bad worktree list; want numbers or branches, e.g. '1,2' or 'main,2'".into());
+        }
+        let ns = resolve_target_list(trees, &bparts)?;
+        for n in ns {
+            let i = check_index(n, trees.len())?;
+            if allow_duplicates || !idxs.contains(&i) {
+                idxs.push(i);
+            }
+        }
+    }
+    Ok(idxs)
 }
 
+fn current_or_empty(trees: &[crate::worktree::Worktree], verb: &str) -> Result<Vec<usize>, String> {
+    current_worktree_index(trees)
+        .map(|i| vec![i])
+        .ok_or_else(|| format!("not inside a worktree; use 'git-wt {verb} <N>[,...]'"))
+}
+
+/// Resolve a `merged` source token: a 1-based worktree number, a branch name
+/// checked out in a worktree, or any git ref/branch name.
+fn resolve_source(
+    root: &std::path::Path,
+    trees: &[crate::worktree::Worktree],
+    tok: &str,
+) -> Result<String, String> {
+    if let Ok(n) = tok.parse::<usize>() {
+        let i = check_index(n, trees.len())?;
+        if trees[i].branch.is_none() {
+            return Err(format!("no worktree or branch '{tok}'"));
+        }
+        return ref_of(&trees[i]);
+    }
+    if let Some(i) = worktree_on_branch(trees, tok) {
+        return ref_of(&trees[i]);
+    }
+    if git_stdout(root, &["rev-parse", "--verify", tok]).is_ok() {
+        return Ok(tok.to_string());
+    }
+    Err(format!("no worktree or branch '{tok}'"))
+}

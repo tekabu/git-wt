@@ -1,25 +1,14 @@
+pub(crate) mod args;
+
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use crate::cmd::diff::args::DiffArgs;
 use crate::git::{git_cmd, git_stdout};
 use crate::ui::{color_enabled, paint, DIM, GREEN, RED, RESET, YELLOW};
 use crate::worktree::{is_dirty, label, ref_of, Worktree};
 
-// ---------------------------------------------------------------------------
-// Diff: git-wt <N>,<M> diff [..|...] [flags] [-- PATH...]
-// ---------------------------------------------------------------------------
-
-/// Diff two worktrees, as `git diff <ref1><dots><ref2>`.
-///
-/// Refs, not directories: a directory diff would drag in build output and
-/// everything else .gitignore exists to hide. That also means uncommitted work
-/// is invisible here, so warn when either side is dirty and point at meld.
-pub(crate) fn cmd_diff(
-    root: &Path,
-    trees: &[Worktree],
-    idxs: &[usize],
-    rest: &[String],
-) -> Result<(), String> {
+pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &DiffArgs) -> Result<(), String> {
     let (idx, other) = match idxs {
         [a, b] => (*a, *b),
         _ => {
@@ -30,21 +19,13 @@ pub(crate) fn cmd_diff(
         }
     };
     if other == idx {
-        return Err(format!(
-            "worktree #{} against itself is always empty",
-            idx + 1
-        ));
+        return Err(format!("worktree #{} against itself is always empty", idx + 1));
     }
 
     let a = ref_of(&trees[idx])?;
     let b = ref_of(&trees[other])?;
+    let rest = &args.rest;
 
-    // rather than becoming a flag with a new name to learn. `live`/`hunks` are
-    // bare words for the same reason `..` is: they read as part of the sentence.
-    // A pathspec can never be mistaken for one, since pathspecs follow `--`.
-    // Settled before the main pass, so the unknown-argument hint below is right
-    // whatever the word order: '1,2 diff -w live' must not be told to go run a
-    // ref diff. Stops at `--`, where a *pathspec* named 'live' could begin.
     let live = rest
         .iter()
         .take_while(|a| a.as_str() != "--")
@@ -59,19 +40,14 @@ pub(crate) fn cmd_diff(
         match arg.as_str() {
             ".." => dots = Some(".."),
             "..." => dots = Some("..."),
-            // Already counted by the pre-scan.
             "live" | "--live" => {}
             "hunks" | "--hunks" => hunks = true,
-            // Everything past `--` is a pathspec; git validates it, not us.
             "--" => {
                 paths.extend(it.cloned());
                 break;
             }
             "--name-only" | "--name-status" | "--stat" => listing = Some(arg.clone()),
             unknown => {
-                // Under `live` there is no single git command to hand off to --
-                // that is the whole reason `live` exists -- so pointing at one
-                // would contradict the mode the user is already in.
                 let hint = if live {
                     "hint: live has no git equivalent to defer to; \
                      'git diff --no-index <dir A>/<file> <dir B>/<file>' is the \
@@ -94,8 +70,6 @@ pub(crate) fn cmd_diff(
         }
     }
 
-    // A range is a statement about refs. `live` never looks at a ref, so the
-    // two cannot both be honored -- silently dropping one would be worse.
     if live {
         if let Some(d) = dots {
             return Err(format!(
@@ -113,7 +87,6 @@ pub(crate) fn cmd_diff(
     }
 
     let on_err = color_enabled(std::io::stderr().is_terminal());
-    // `live` is the answer to the dirty warning, so it does not get warned at.
     if !live {
         for &i in &[idx, other] {
             if is_dirty(&trees[i].path) {
@@ -130,11 +103,6 @@ pub(crate) fn cmd_diff(
         }
     }
 
-    // '...' by default so a bare '1,2 diff' previews '1,2 merge': the range
-    // holds M's commits since the fork and nothing of N's, which is what the
-    // merge brings in. '..' answers a different question -- tip vs tip -- and
-    // reports N's own commits as deletions, which reads as a huge phantom diff
-    // on branches that have diverged at all.
     let dots = dots.unwrap_or("...");
     if live {
         let files = live_diff(
@@ -142,9 +110,6 @@ pub(crate) fn cmd_diff(
             &trees[idx].path,
             &trees[other].path,
             &paths,
-            // --name-only/--name-status answer "which files", which the byte
-            // compare already knows -- no per-file git process needed. Every
-            // other view prints counts, which only the patch can supply.
             !matches!(listing.as_deref(), Some("--name-only") | Some("--name-status")),
         )?;
         let head = format!("diff {a} ↔ {b}   live — literal contents, .gitignore honored");
@@ -165,8 +130,6 @@ pub(crate) fn cmd_diff(
         argv.extend(paths);
     }
 
-    // Inherit stdio so git's own pager and color logic apply, exactly as a
-    // hand-typed `git diff` would.
     let status = git_cmd(root, &[])
         .arg("diff")
         .arg(format!("{a}{dots}{b}"))
@@ -179,20 +142,12 @@ pub(crate) fn cmd_diff(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// live: compare worktrees by file content instead of by commit
-// ---------------------------------------------------------------------------
-
-/// One hunk, reduced to what the `hunks` view prints: where it lands on the
-/// `+` side, and what kind of change it is.
 pub(crate) struct Hunk {
     pub(crate) line: usize,
     pub(crate) kind: &'static str,
     pub(crate) count: usize,
 }
 
-/// One differing path. `status` is A/M/D from the union of both sides, so a
-/// file that is untracked-and-new on the `+` side is genuinely an add.
 pub(crate) struct FileDiff {
     pub(crate) path: String,
     pub(crate) status: char,
@@ -202,9 +157,6 @@ pub(crate) struct FileDiff {
     pub(crate) hunks: Vec<Hunk>,
 }
 
-/// Paths worth considering in a worktree: tracked, plus untracked that
-/// `.gitignore` does not hide. Only git knows this set -- `diff -rq` would
-/// drown in `target/`. `-z` because a path may contain anything but NUL.
 pub(crate) fn live_files(dir: &Path, paths: &[String]) -> Result<Vec<String>, String> {
     let mut args: Vec<&str> = vec!["ls-files", "-z", "--cached", "--others", "--exclude-standard"];
     if !paths.is_empty() {
@@ -219,9 +171,6 @@ pub(crate) fn live_files(dir: &Path, paths: &[String]) -> Result<Vec<String>, St
         .collect())
 }
 
-/// Byte-for-byte equality. Length first, so unequal files usually cost one
-/// `stat` each. An unreadable file counts as differing: better to show it and
-/// let the diff report why than to silently call it unchanged.
 pub(crate) fn same_bytes(a: &Path, b: &Path) -> bool {
     match (a.metadata(), b.metadata()) {
         (Ok(ma), Ok(mb)) if ma.len() != mb.len() => return false,
@@ -234,9 +183,6 @@ pub(crate) fn same_bytes(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// The union of both worktrees' candidate paths, filtered to those that
-/// actually differ on disk. With `content`, each survivor also gets a
-/// `git diff --no-index` run for its counts and hunks.
 pub(crate) fn live_diff(
     root: &Path,
     a_dir: &Path,
@@ -253,8 +199,6 @@ pub(crate) fn live_diff(
     for p in union {
         let pa = a_dir.join(&p);
         let pb = b_dir.join(&p);
-        // `--cached` lists index entries, so a path can be listed on a side
-        // where the file is gone. Absent from both is nothing to report.
         let (ea, eb) = (pa.is_file(), pb.is_file());
         let status = match (ea, eb) {
             (false, false) => continue,
@@ -276,8 +220,6 @@ pub(crate) fn live_diff(
             hunks: Vec::new(),
         };
         if content {
-            // Substituting /dev/null for the missing side turns a one-sided
-            // file into real hunks instead of an error.
             let null = PathBuf::from("/dev/null");
             let text = no_index_diff(
                 root,
@@ -292,13 +234,6 @@ pub(crate) fn live_diff(
     Ok(out)
 }
 
-/// `git diff --no-index` on two literal paths: git ignoring that it is git.
-/// It exits 1 to mean "they differ", which is the expected case here, so only
-/// a code above 1 is a real failure. `show` names the path for errors, since
-/// `a`/`b` may be absolute, or /dev/null for a one-sided file.
-///
-/// `root` is only the process's cwd; `--no-index` resolves the two paths
-/// itself and never consults a repo, so any existing directory would do.
 pub(crate) fn no_index_diff(root: &Path, a: &Path, b: &Path, show: &str) -> Result<String, String> {
     let out = git_cmd(root, &["diff", "--no-index", "-U0", "--no-color"])
         .arg(a)
@@ -314,12 +249,7 @@ pub(crate) fn no_index_diff(root: &Path, a: &Path, b: &Path, show: &str) -> Resu
     }
 }
 
-/// The `hunks` view over a ref diff. Line numbers are just as useful against
-/// commits, so `hunks` does not require `live`.
 pub(crate) fn ref_diff(root: &Path, range: &str, paths: &[String]) -> Result<Vec<FileDiff>, String> {
-    // A rename reported as one entry would have no single `+` side to number;
-    // --no-renames splits it back into the add and the delete `live` would
-    // have seen anyway, so the two views agree.
     let mut args: Vec<&str> = vec!["diff", "-U0", "--no-color", "--no-renames", range];
     if !paths.is_empty() {
         args.push("--");
@@ -329,9 +259,6 @@ pub(crate) fn ref_diff(root: &Path, range: &str, paths: &[String]) -> Result<Vec
     Ok(split_patch(&text))
 }
 
-/// Split a multi-file patch on its `diff --git` headers. The path comes from
-/// the `+++ b/` line, falling back to `--- a/` for a deletion, where the `+`
-/// side is /dev/null.
 pub(crate) fn split_patch(text: &str) -> Vec<FileDiff> {
     let mut out: Vec<FileDiff> = Vec::new();
     let mut cur: Option<FileDiff> = None;
@@ -382,15 +309,12 @@ pub(crate) fn split_patch(text: &str) -> Vec<FileDiff> {
     out
 }
 
-/// Fold one file's `-U0` patch into `fd`'s counts and hunks.
 pub(crate) fn parse_patch_into(text: &str, fd: &mut FileDiff) {
     let mut in_hunks = false;
     for line in text.lines() {
         if line.starts_with("@@") {
             in_hunks = true;
         }
-        // The `---`/`+++` headers are +/- lines to a naive counter; skipping
-        // everything before the first `@@` keeps them out of the totals.
         if !in_hunks && !line.starts_with("Binary files ") {
             continue;
         }
@@ -416,10 +340,6 @@ pub(crate) fn eat_patch_line(line: &str, fd: &mut FileDiff) {
     }
 }
 
-/// `@@ -oldStart,oldCount +newStart,newCount @@`. Two traps live here: an
-/// omitted count means 1, and a zero count is not an edit -- `old == 0` is a
-/// pure insertion, `new == 0` a pure deletion. Labeling off the new-side
-/// number alone would report every deletion as `+0`.
 pub(crate) fn parse_hunk_header(line: &str) -> Option<Hunk> {
     let mut it = line.split_whitespace();
     it.next()?; // @@
@@ -430,14 +350,9 @@ pub(crate) fn parse_hunk_header(line: &str) -> Option<Hunk> {
         (o, 0) => ("deleted", o),
         (_, n) => ("modified", n),
     };
-    Some(Hunk {
-        line: new_start,
-        kind,
-        count,
-    })
+    Some(Hunk { line: new_start, kind, count })
 }
 
-/// `-119,3` / `+119` -> (start, count). No comma means a count of 1.
 pub(crate) fn parse_range(tok: &str) -> Option<(usize, usize)> {
     let body = tok.strip_prefix('-').or_else(|| tok.strip_prefix('+'))?;
     match body.split_once(',') {
@@ -445,10 +360,6 @@ pub(crate) fn parse_range(tok: &str) -> Option<(usize, usize)> {
         None => Some((body.parse().ok()?, 1)),
     }
 }
-
-// ---------------------------------------------------------------------------
-// live: output
-// ---------------------------------------------------------------------------
 
 pub(crate) fn status_paint(s: char) -> &'static str {
     match s {
@@ -466,10 +377,6 @@ pub(crate) fn render(
 ) -> Result<(), String> {
     let on = color_enabled(std::io::stdout().is_terminal());
 
-    // Silence is the right answer for "nothing differs", but on stdout it is
-    // indistinguishable from the empty ref diff `live` exists to fix. Say so
-    // on stderr, where it cannot corrupt a pipe -- from every view, so that
-    // "no output" never means two different things depending on the flags.
     if files.is_empty() {
         eprintln!("no differences");
         return Ok(());
@@ -493,9 +400,6 @@ pub(crate) fn render(
     }
 
     println!("{}\n", paint(head, DIM, on));
-    // `{:<w$}` pads by character count, so the width must be measured the same
-    // way -- `len()` is bytes, and a path with any multi-byte character would
-    // reserve more columns than the padding then fills.
     let w = files.iter().map(|f| f.path.chars().count()).max().unwrap_or(0);
     let pw = files
         .iter()
@@ -510,9 +414,6 @@ pub(crate) fn render(
                 "{:<pw$} {}",
                 paint(&format!("+{}", f.plus), GREEN, on),
                 paint(&format!("−{}", f.minus), RED, on),
-                // `{:<n}` pads to a byte count, and paint() added bytes that
-                // occupy no columns: "\x1b[" + GREEN + "m" ... RESET. Hence
-                // +3 -- the two bytes of "\x1b[" plus the "m".
                 pw = pw + if on { GREEN.len() + RESET.len() + 3 } else { 0 }
             )
         };
@@ -524,8 +425,6 @@ pub(crate) fn render(
             w = w
         );
         if hunks {
-            // Right-align to this file's widest line number so the numbers
-            // form a column, without padding every file out to a fixed width.
             let lw = f
                 .hunks
                 .iter()
@@ -541,13 +440,8 @@ pub(crate) fn render(
     Ok(())
 }
 
-/// `git diff --stat`'s shape: a churn bar per file, scaled so the widest row
-/// fits, then the same summary line.
 pub(crate) fn render_stat(files: &[FileDiff], on: bool) -> Result<(), String> {
     const BAR: usize = 40;
-    // `{:<w$}` pads by character count, so the width must be measured the same
-    // way -- `len()` is bytes, and a path with any multi-byte character would
-    // reserve more columns than the padding then fills.
     let w = files.iter().map(|f| f.path.chars().count()).max().unwrap_or(0);
     let max = files
         .iter()
@@ -566,8 +460,6 @@ pub(crate) fn render_stat(files: &[FileDiff], on: bool) -> Result<(), String> {
             continue;
         }
         let total = f.plus + f.minus;
-        // Scale only when the widest row would overflow, so small diffs show
-        // their exact churn one character per line, as git does.
         let cell = |n: usize| -> usize {
             if max <= BAR {
                 n
@@ -577,8 +469,6 @@ pub(crate) fn render_stat(files: &[FileDiff], on: bool) -> Result<(), String> {
                 (n * BAR / max).max(1)
             }
         };
-        // An empty run must stay empty: painting "" would emit a colour code
-        // wrapping nothing, which is invisible but real bytes on the pipe.
         let run = |n: usize, ch: &str, col: &str| match n {
             0 => String::new(),
             _ => paint(&ch.repeat(n), col, on),
@@ -594,16 +484,10 @@ pub(crate) fn render_stat(files: &[FileDiff], on: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// git's own phrasing, singulars and all, so the line reads the same as the
-/// `--stat` a user would get once the work is committed.
 pub(crate) fn summary(files: &[FileDiff]) -> String {
     let p: usize = files.iter().map(|f| f.plus).sum();
     let m: usize = files.iter().map(|f| f.minus).sum();
-    let mut s = format!(
-        "{} file{} changed",
-        files.len(),
-        if files.len() == 1 { "" } else { "s" }
-    );
+    let mut s = format!("{} file{} changed", files.len(), if files.len() == 1 { "" } else { "s" });
     if p > 0 {
         s += &format!(", {p} insertion{}(+)", if p == 1 { "" } else { "s" });
     }
@@ -612,7 +496,6 @@ pub(crate) fn summary(files: &[FileDiff]) -> String {
     }
     s
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -623,29 +506,22 @@ mod tests {
         (h.line, h.kind, h.count)
     }
 
-
     #[test]
     fn omitted_hunk_count_means_one() {
-        // '@@ -119 +119 @@' is a one-line change, not a malformed header.
         assert_eq!(hunk("@@ -119 +119 @@"), (119, "modified", 1));
         assert_eq!(parse_range("-119"), Some((119, 1)));
         assert_eq!(parse_range("+42,7"), Some((42, 7)));
     }
 
-
     #[test]
     fn zero_hunk_count_is_not_an_edit() {
-        // A zero side is a pure insert/delete. Labeling off the new-side
-        // number alone would report every deletion as '+0' additions.
         assert_eq!(hunk("@@ -0,0 +290,2 @@"), (290, "added", 2));
         assert_eq!(hunk("@@ -5,3 +4,0 @@"), (4, "deleted", 3));
         assert_eq!(hunk("@@ -119,3 +119,5 @@ fn x() {"), (119, "modified", 5));
     }
 
-
     #[test]
     fn patch_counts_skip_the_file_headers() {
-        // '--- a/x' / '+++ b/x' are +/- lines to a naive counter.
         let patch = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new\n+extra\n";
         let mut fd = FileDiff {
             path: "x".into(),
@@ -659,7 +535,6 @@ mod tests {
         assert_eq!((fd.plus, fd.minus), (2, 1));
         assert_eq!(fd.hunks.len(), 1);
     }
-
 
     #[test]
     fn patch_splits_by_file_and_reads_status_from_dev_null() {
@@ -683,7 +558,6 @@ diff --git a/gone.txt b/gone.txt
         assert_eq!((files[1].plus, files[1].minus), (0, 1));
     }
 
-
     #[test]
     fn binary_patch_reports_no_counts() {
         let mut fd = FileDiff {
@@ -698,7 +572,6 @@ diff --git a/gone.txt b/gone.txt
         assert!(fd.binary);
         assert_eq!((fd.plus, fd.minus), (0, 0));
     }
-
 
     #[test]
     fn summary_matches_gits_phrasing() {
@@ -717,5 +590,4 @@ diff --git a/gone.txt b/gone.txt
         assert_eq!(summary(&[f(1, 1)]), "1 file changed, 1 insertion(+), 1 deletion(-)");
         assert_eq!(summary(&[f(0, 2)]), "1 file changed, 2 deletions(-)");
     }
-
 }

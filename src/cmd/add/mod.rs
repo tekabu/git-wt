@@ -1,76 +1,31 @@
+pub(crate) mod args;
+
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::cmd::add::args::AddArgs;
 use crate::git::{git_quiet, git_run, git_stdout};
 use crate::ui::{color_enabled, confirm, paint, DIM, GREEN};
 use crate::worktree::{current_ref, leaf_of, sanitize, sh_quote, worktrees};
 
-// ---------------------------------------------------------------------------
-// Create: git-wt add [BRANCH] [flags]
-// ---------------------------------------------------------------------------
-
-pub(crate) fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
-    let mut branch: Option<String> = None;
-    let mut name: Option<String> = None;
-    let mut dirname: Option<String> = None;
-    let mut parentdir: Option<String> = None;
-    let mut from: Option<String> = None;
-
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "-n" | "--name" => {
-                name = Some(it.next().ok_or("--name needs a name")?.clone());
-            }
-            "--dirname" => {
-                dirname = Some(it.next().ok_or("--dirname needs a directory")?.clone());
-            }
-            "-p" | "--parentdir" => {
-                parentdir = Some(it.next().ok_or("--parentdir needs a directory")?.clone());
-            }
-            "--from" => {
-                from = Some(it.next().ok_or("--from needs a ref")?.clone());
-            }
-            s if s.starts_with("--name=") => name = Some(s["--name=".len()..].to_string()),
-            s if s.starts_with("--dirname=") => {
-                dirname = Some(s["--dirname=".len()..].to_string())
-            }
-            s if s.starts_with("--parentdir=") => {
-                parentdir = Some(s["--parentdir=".len()..].to_string())
-            }
-            s if s.starts_with("--from=") => from = Some(s["--from=".len()..].to_string()),
-            // A hint for the `wt` wrapper (stay put instead of cd'ing into the
-            // new worktree). The binary never cd's, so it just accepts it.
-            "--stay" => {}
-            s if s.starts_with('-') && s != "-" => {
-                return Err(format!("unknown option '{s}'\nTry 'git-wt --help'"));
-            }
-            s => {
-                if branch.is_some() {
-                    return Err("too many arguments\nTry 'git-wt --help'".into());
-                }
-                branch = Some(s.to_string());
-            }
-        }
-    }
-
-    if name.is_some() && dirname.is_some() {
+/// Create a new worktree in a sibling directory.
+pub(crate) fn cmd_add(root: &Path, args: AddArgs) -> Result<(), String> {
+    if args.name.is_some() && args.dirname.is_some() {
         return Err("--name and --dirname conflict".into());
     }
-    if let Some(n) = &name {
+    if let Some(n) = &args.name {
         if n.is_empty() {
             return Err("--name cannot be empty".into());
         }
     }
-    if let Some(d) = &dirname {
+    if let Some(d) = &args.dirname {
         if d.is_empty() {
             return Err("--dirname cannot be empty".into());
         }
     }
 
-    // No branch -> interactive picker over local branches.
-    let branch = match branch {
+    let branch = match args.branch_name {
         Some(b) => b,
         None => pick_branch(root)?,
     };
@@ -78,9 +33,9 @@ pub(crate) fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     let dir = match resolve_add_path(
         root,
         &branch,
-        name.as_deref(),
-        dirname.as_deref(),
-        parentdir.as_deref(),
+        args.name.as_deref(),
+        args.dirname.as_deref(),
+        args.parentdir.as_deref(),
     )? {
         Some(d) => d,
         None => {
@@ -93,8 +48,6 @@ pub(crate) fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
         return Err(format!("{} already exists", dir.display()));
     }
 
-    // Refuse to point a new worktree at a branch already checked out; git
-    // shares one ref between worktrees, so the two HEADs would drift.
     if let Some(w) = worktrees(root)?
         .into_iter()
         .find(|w| w.branch.as_deref() == Some(branch.as_str()))
@@ -108,9 +61,7 @@ pub(crate) fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     let has_local = git_quiet(root, &["show-ref", "--verify", &format!("refs/heads/{branch}")]);
     let remote = find_remote_branch(root, &branch);
 
-    // --from only affects creating a NEW branch; if the branch already exists
-    // it is silently overridden, so warn + confirm.
-    if from.is_some()
+    if args.from.is_some()
         && (has_local || remote.is_some())
         && !confirm(&format!(
             "branch '{branch}' already exists; --from ignored. Continue? [y/N] "
@@ -120,10 +71,8 @@ pub(crate) fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
-    // Default base for a NEW branch is the ref checked out where the user is
-    // standing (the current worktree), not the primary's HEAD. `--from` wins.
     let default_from = current_ref();
-    let from_ref = from.as_deref().unwrap_or(&default_from);
+    let from_ref = args.from.as_deref().unwrap_or(&default_from);
     let dir_s = dir.to_string_lossy().to_string();
     let mut argv: Vec<String> = vec!["worktree".into(), "add".into()];
 
@@ -152,8 +101,6 @@ pub(crate) fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     git_run(root, &refs)?;
 
-    // One-line summary on stderr (never stdout) so interactive users get
-    // context without polluting the captured path.
     let summary = if has_local {
         format!("branch {branch}")
     } else if let Some(r) = &remote {
@@ -165,15 +112,11 @@ pub(crate) fn cmd_add(root: &Path, args: &[String]) -> Result<(), String> {
     let on = color_enabled(std::io::stderr().is_terminal());
     eprintln!("{} {leaf}  ({summary})", paint("Created", GREEN, on));
 
-    // Print the new worktree path on stdout (alone) so scripts can capture it:
-    // `dir=$(git-wt add feat/x)`. Status/progress went to stderr.
     println!("{dir_s}");
     Ok(())
 }
 
-/// Find a remote whose tracking ref `<remote>/<branch>` exists, so `add`
-/// works with any remote name (not just `origin`). Prefers `origin`; otherwise
-/// the first configured remote that has the branch.
+/// Find a remote whose tracking ref `<remote>/<branch>` exists.
 pub(crate) fn find_remote_branch(root: &Path, branch: &str) -> Option<String> {
     let has = |r: &str| {
         git_quiet(
@@ -193,9 +136,7 @@ pub(crate) fn find_remote_branch(root: &Path, branch: &str) -> Option<String> {
         .map(String::from)
 }
 
-/// Resolve the worktree directory for `add`. Returns `Ok(None)` when the user
-/// declines a warn-and-confirm (an override), which the caller treats as an
-/// abort rather than an error.
+/// Resolve the worktree directory for `add`.
 pub(crate) fn resolve_add_path(
     root: &Path,
     branch: &str,
@@ -210,7 +151,6 @@ pub(crate) fn resolve_add_path(
         .to_string();
     let default_parent = root.parent().ok_or("repo root has no parent directory")?;
 
-    // --dirname with a '/' is a path: sanitize skipped, -p ignored.
     if let Some(d) = dirname {
         if d.contains('/') {
             if parentdir.is_some()
@@ -240,19 +180,8 @@ pub(crate) fn resolve_add_path(
     Ok(Some(parent.join(leaf)))
 }
 
-// ---------------------------------------------------------------------------
-// Branch picker (no BRANCH given to `add`)
-// ---------------------------------------------------------------------------
-
-/// Choose a local branch interactively. Prefers fzf's search filter; falls
-/// back to a numbered prompt when fzf is not installed.
-///
-/// Branches already checked out in a worktree can't be added again, so they are
-/// dropped from the selectable list and shown separately, for reference.
+/// Choose a local branch interactively.
 pub(crate) fn pick_branch(root: &Path) -> Result<String, String> {
-    // Sort recently-committed branches to the top so the picker surfaces what
-    // you're likely reaching for. Fetch each branch's relative age in the same
-    // call (tab-delimited) so the numbered picker needs no per-branch git log.
     let out = git_stdout(
         root,
         &[
@@ -262,7 +191,6 @@ pub(crate) fn pick_branch(root: &Path) -> Result<String, String> {
             "refs/heads",
         ],
     )?;
-    // Each line is "<branch>\t<age>"; a missing tab leaves the age empty.
     let branches: Vec<(&str, &str)> = out
         .lines()
         .filter(|l| !l.is_empty())
@@ -292,13 +220,10 @@ pub(crate) fn pick_branch(root: &Path) -> Result<String, String> {
         for (b, p) in &checked_out {
             eprintln!("  {:<w$}  {}", b, p.display(), w = w);
         }
-        // Separator between the reference list and the selectable choices.
         eprintln!("{}", "─".repeat(48));
     }
 
     if selectable.is_empty() {
-        // Every local branch is checked out; rather than dead-end, offer to
-        // create a new branch by name (cmd_add then confirms the base ref).
         return new_branch_prompt();
     }
 
@@ -309,8 +234,7 @@ pub(crate) fn pick_branch(root: &Path) -> Result<String, String> {
     number_pick(&selectable)
 }
 
-/// Empty-state fallback: no branch is available to check out, so read a new
-/// branch name to create. Empty input / EOF cancels.
+/// Empty-state fallback: read a new branch name to create.
 pub(crate) fn new_branch_prompt() -> Result<String, String> {
     eprintln!("All local branches are already checked out.");
     eprint!("Enter a new branch name to create (Enter to cancel): ");
@@ -329,11 +253,8 @@ pub(crate) fn new_branch_prompt() -> Result<String, String> {
     Ok(name.to_string())
 }
 
-/// Run fzf over `items`. Returns Ok(None) when fzf is not on PATH so the caller
-/// can fall back; an empty/aborted selection is an error.
+/// Run fzf over `items`.
 pub(crate) fn fzf_pick(root: &Path, items: &[&str]) -> Result<Option<String>, String> {
-    // Preview the highlighted branch's last commit. fzf shell-quotes {} before
-    // substitution, and root is quoted here, so both are safe in `sh -c`.
     let preview = format!(
         "git -C {} log -1 --format='%h  %s%n%an · %ar' {{}} --",
         sh_quote(root)
@@ -355,7 +276,7 @@ pub(crate) fn fzf_pick(root: &Path, items: &[&str]) -> Result<Option<String>, St
         .spawn()
     {
         Ok(c) => c,
-        Err(_) => return Ok(None), // fzf not available
+        Err(_) => return Ok(None),
     };
 
     child
@@ -367,7 +288,7 @@ pub(crate) fn fzf_pick(root: &Path, items: &[&str]) -> Result<Option<String>, St
 
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Err("no branch selected".into()); // ESC / Ctrl-C in fzf
+        return Err("no branch selected".into());
     }
     let sel = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if sel.is_empty() {
@@ -376,9 +297,7 @@ pub(crate) fn fzf_pick(root: &Path, items: &[&str]) -> Result<Option<String>, St
     Ok(Some(sel))
 }
 
-/// Numbered fallback picker; reads a number from stdin. Each branch is shown
-/// with the relative age of its last commit (dimmed on a terminal) for context.
-/// `items` are `(branch, age)` pairs already gathered by `pick_branch`.
+/// Numbered fallback picker.
 pub(crate) fn number_pick(items: &[(&str, &str)]) -> Result<String, String> {
     let color = color_enabled(std::io::stderr().is_terminal());
     eprintln!("Available branches (most recent first):");
@@ -386,7 +305,14 @@ pub(crate) fn number_pick(items: &[(&str, &str)]) -> Result<String, String> {
     let bw = items.iter().map(|(b, _)| b.chars().count()).max().unwrap_or(0);
     for (i, (b, age)) in items.iter().enumerate() {
         let meta = paint(age, DIM, color && !age.is_empty());
-        eprintln!("  {:>w$}  {:<bw$}  {}", i + 1, b, meta, w = w, bw = bw);
+        eprintln!(
+            "  {:>w$}  {:<bw$}  {}",
+            i + 1,
+            b,
+            meta,
+            w = w,
+            bw = bw
+        );
     }
     eprint!("Select a branch [1-{}], or Enter to cancel: ", items.len());
     std::io::stderr().flush().ok();
@@ -418,7 +344,6 @@ mod tests {
         assert_eq!(p, PathBuf::from("/code/myapp-feat-x"));
     }
 
-
     #[test]
     fn add_path_name_is_suffix() {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", Some("test"), None, None)
@@ -426,7 +351,6 @@ mod tests {
             .unwrap();
         assert_eq!(p, PathBuf::from("/code/myapp-test"));
     }
-
 
     #[test]
     fn add_path_dirname_is_whole_leaf() {
@@ -436,7 +360,6 @@ mod tests {
         assert_eq!(p, PathBuf::from("/code/test"));
     }
 
-
     #[test]
     fn add_path_parentdir_overrides() {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, Some("/work"))
@@ -445,16 +368,19 @@ mod tests {
         assert_eq!(p, PathBuf::from("/work/myapp-feat-x"));
     }
 
-
     #[test]
     fn add_path_dirname_absolute_is_verbatim() {
-        let p =
-            resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("/tmp/scratch"), None)
-                .unwrap()
-                .unwrap();
+        let p = resolve_add_path(
+            Path::new("/code/myapp"),
+            "feat/x",
+            None,
+            Some("/tmp/scratch"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(p, PathBuf::from("/tmp/scratch"));
     }
-
 
     #[test]
     fn add_path_dirname_relative_path_is_parent_relative() {
@@ -463,5 +389,4 @@ mod tests {
             .unwrap();
         assert_eq!(p, PathBuf::from("/code/sub/test"));
     }
-
 }

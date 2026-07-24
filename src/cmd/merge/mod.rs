@@ -3,8 +3,9 @@ pub(crate) mod args;
 use std::io::IsTerminal;
 use std::path::Path;
 
+use crate::cmd::commits::rows::commit_files;
 use crate::cmd::commits::{cmd_commits_review, ReviewCtx};
-use crate::cmd::meld::{changed_paths, extract_files, require_meld, temp_meld_dir};
+use crate::cmd::meld::{extract_files, require_meld, temp_meld_dir};
 use crate::git::{git_cmd, git_quiet, git_run, git_run_no_editor, git_stdout};
 use crate::ui::{color_enabled, confirm, paint, GREEN};
 use crate::worktree::{label, leaf_of, ref_of, Worktree};
@@ -458,10 +459,18 @@ fn review_conflict_msg(files: &[String]) -> String {
 /// `merge <N>,<M> --review --meld`: open meld on the files 'dest_ref..src'
 /// touches, each side extracted from git (not the worktree's on-disk
 /// state), same as `meld --diff` does for two worktrees.
+///
+/// The path set is the union of each reviewed commit's first-parent diff --
+/// exactly the set the `--review --squash` "consolidated files" block lists,
+/// computed through the same `commit_files`. A plain `merge-base..src` tree
+/// diff instead nets merges against neither parent, so a merge inside the
+/// range drops its whole second-parent import into the set even though the
+/// table (first-parent) never shows it: that is what made meld's file list
+/// disagree with the consolidated one printed beside it.
 fn review_meld(root: &Path, dest_ref: &str, dest_label: &str, src: &str) -> Result<(), String> {
     require_meld()?;
 
-    let mut paths = changed_paths(root, dest_ref, src)?;
+    let mut paths = review_paths(root, dest_ref, src)?;
     paths.sort();
     paths.dedup();
     if paths.is_empty() {
@@ -483,6 +492,8 @@ fn review_meld(root: &Path, dest_ref: &str, dest_label: &str, src: &str) -> Resu
 
     let on = color_enabled(std::io::stderr().is_terminal());
     eprintln!("{} {dest_label} ↔ {src}", paint("meld", GREEN, on));
+    eprintln!("  {dest_label}: {}", dir_dest.display());
+    eprintln!("  {src}: {}", dir_src.display());
 
     let status = std::process::Command::new("meld").arg(&dir_dest).arg(&dir_src).status();
     let _ = std::fs::remove_dir_all(&tmp);
@@ -491,6 +502,34 @@ fn review_meld(root: &Path, dest_ref: &str, dest_label: &str, src: &str) -> Resu
         return Err("meld exited with an error".into());
     }
     Ok(())
+}
+
+/// The files the reviewed commits touch, defined exactly as the review
+/// table's consolidated block defines them: the union of each commit's
+/// first-parent diff over `dest_ref..src`, via the same `commit_files`. So
+/// the meld tree and the `--squash` "consolidated files" list name the same
+/// paths rather than two subtly different sets.
+///
+/// A rename's `commit_files` path is `old => new`; both halves are kept, so
+/// meld can extract the file under whichever name each side holds it by.
+fn review_paths(root: &Path, dest_ref: &str, src: &str) -> Result<Vec<String>, String> {
+    let range = format!("{dest_ref}..{src}");
+    let shas = git_stdout(root, &["rev-list", &range])?;
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for sha in shas.lines().map(str::trim).filter(|s| !s.is_empty()) {
+        for f in commit_files(root, sha)? {
+            match f.path.split_once(" => ") {
+                Some((old, new)) => {
+                    set.insert(old.to_string());
+                    set.insert(new.to_string());
+                }
+                None => {
+                    set.insert(f.path);
+                }
+            }
+        }
+    }
+    Ok(set.into_iter().collect())
 }
 
 pub(crate) fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> Result<(), String> {

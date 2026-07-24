@@ -278,7 +278,7 @@ fn merge_word_msg(word: &str) -> String {
              hint: 'git-wt <N>,<M> merge dry-run {}' reports whether it would still conflict",
             word.trim_start_matches('-')
         ),
-        "--no-ff" | "--ff-only" | "--squash" => after("shapes a merge commit"),
+        "--no-ff" | "--ff-only" => after("shapes a merge commit"),
         "--force" => after("gates whether a merge may run"),
         _ => format!("unexpected argument '{word}' for commits\nTry 'git-wt --help'"),
     }
@@ -426,10 +426,11 @@ pub(crate) fn parse_commits_args_with(
             "--no-cherry" | "--nc" => no_cherry = true,
             "--pick-id" | "--pi" => pick = true,
             "--files" | "-f" => files = true,
-            // Only outside a review: under one, '--squash' shapes the merge
-            // commit that '--review' is not making, so it falls through to the
-            // merge-vocabulary message rather than becoming a file view here.
-            "--squash" if !review => squash = true,
+            // Same file view as plain 'commits --squash': one consolidated
+            // file block instead of one per commit. Under '--review' this
+            // still means nothing about the merge itself -- it does not ask
+            // for a squash merge, just the consolidated file rendering.
+            "--squash" => squash = true,
             "--union" => union = true,
             // Only a word `log` knows: elsewhere there is no follow to opt out
             // of, so it falls through to the plain unknown-argument error.
@@ -941,6 +942,8 @@ mod tests {
         // Nothing else moves with it.
         assert!(!parse_review(&[]).unwrap().files);
         assert!(parse_review(&["-f"]).unwrap().files);
+        assert!(!parse_review(&[]).unwrap().squash);
+        assert!(parse_review(&["--squash"]).unwrap().squash);
     }
 
     /// Both name a row source, and a review's is already fixed. Refused rather
@@ -979,7 +982,6 @@ mod tests {
         assert!(!e.contains("unexpected argument"), "{e}");
 
         for (w, want) in [
-            ("--squash", "shapes a merge commit"),
             ("--no-ff", "shapes a merge commit"),
             ("--force", "gates whether a merge may run"),
             ("--abort", "already in progress"),

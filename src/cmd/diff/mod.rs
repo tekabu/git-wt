@@ -2,8 +2,10 @@ pub(crate) mod args;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::cmd::diff::args::DiffArgs;
+use crate::cmd::meld::{extract_files, merge_base, require_meld, temp_meld_dir};
 use crate::git::{git_cmd, git_stdout};
 use crate::ui::{color_enabled, paint, DIM, GREEN, RED, RESET, YELLOW};
 use crate::worktree::{is_dirty, label, ref_of, Worktree};
@@ -26,13 +28,10 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
     let b = ref_of(&trees[other])?;
     let rest = &args.rest;
 
-    let live = rest
-        .iter()
-        .take_while(|a| a.as_str() != "--")
-        .any(|a| a == "live" || a == "--live");
+    let live = args.live;
 
     let mut dots: Option<&str> = None;
-    let mut hunks = false;
+    let hunks = args.hunks;
     let mut listing: Option<String> = None;
     let mut paths: Vec<String> = Vec::new();
     let mut it = rest.iter();
@@ -40,8 +39,6 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         match arg.as_str() {
             ".." => dots = Some(".."),
             "..." => dots = Some("..."),
-            "live" | "--live" => {}
-            "hunks" | "--hunks" => hunks = true,
             "--" => {
                 paths.extend(it.cloned());
                 break;
@@ -49,7 +46,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
             "--name-only" | "--name-status" | "--stat" => listing = Some(arg.clone()),
             unknown => {
                 let hint = if live {
-                    "hint: live has no git equivalent to defer to; \
+                    "hint: --live has no git equivalent to defer to; \
                      'git diff --no-index <dir A>/<file> <dir B>/<file>' is the \
                      closest, one file at a time"
                         .to_string()
@@ -62,7 +59,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
                 };
                 return Err(format!(
                     "unexpected argument '{unknown}' for diff\n\
-                     diff takes live, hunks, .., ..., --name-only, --name-status, \
+                     diff takes --live, --hunks, .., ..., --name-only, --name-status, \
                      --stat, -- PATH...\n\
                      {hint}"
                 ));
@@ -73,16 +70,28 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
     if live {
         if let Some(d) = dots {
             return Err(format!(
-                "'live' and '{d}' cannot combine: a range compares commits, \
-                 live compares the files on disk\n\
-                 hint: drop '{d}' for live contents, or drop 'live' for the range"
+                "'--live' and '{d}' cannot combine: a range compares commits, \
+                 --live compares the files on disk\n\
+                 hint: drop '{d}' for live contents, or drop '--live' for the range"
             ));
         }
     }
     if let (true, Some(l)) = (hunks, listing.as_deref()) {
         return Err(format!(
-            "'hunks' and '{l}' cannot combine: hunks prints line numbers per file, \
+            "'--hunks' and '{l}' cannot combine: --hunks prints line numbers per file, \
              {l} prints a listing"
+        ));
+    }
+    if args.meld && hunks {
+        return Err(
+            "'--meld' and '--hunks' cannot combine: --hunks prints line numbers per file, \
+             --meld opens a diff viewer"
+                .into(),
+        );
+    }
+    if let (true, Some(l)) = (args.meld, listing.as_deref()) {
+        return Err(format!(
+            "'--meld' and '{l}' cannot combine: {l} prints a listing, --meld opens a diff viewer"
         ));
     }
 
@@ -92,7 +101,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
             if is_dirty(&trees[i].path) {
                 eprintln!(
                     "{} #{} {} has uncommitted changes; this diff is committed state only \
-                     (try 'git-wt {},{} diff live')",
+                     (try 'git-wt {},{} diff --live')",
                     paint("warning:", YELLOW, on_err),
                     i + 1,
                     label(&trees[i]),
@@ -112,8 +121,16 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
             &paths,
             !matches!(listing.as_deref(), Some("--name-only") | Some("--name-status")),
         )?;
+        if args.meld {
+            return open_meld_live(&trees[idx].path, &trees[other].path, &files);
+        }
         let head = format!("diff {a} ↔ {b}   live — literal contents, .gitignore honored");
         return render(&files, &head, listing.as_deref(), hunks);
+    }
+    if args.meld {
+        let files = ref_diff(root, &format!("{a}{dots}{b}"), &paths)?;
+        let left = if dots == "..." { merge_base(root, &a, &b)? } else { a.clone() };
+        return open_meld_ref(root, &left, &b, &format!("{a}{dots}{b}"), &files);
     }
     if hunks {
         let files = ref_diff(root, &format!("{a}{dots}{b}"), &paths)?;
@@ -359,6 +376,90 @@ pub(crate) fn parse_range(tok: &str) -> Option<(usize, usize)> {
         Some((s, c)) => Some((s.parse().ok()?, c.parse().ok()?)),
         None => Some((body.parse().ok()?, 1)),
     }
+}
+
+pub(crate) fn open_meld_ref(
+    root: &Path,
+    left_ref: &str,
+    right_ref: &str,
+    head: &str,
+    files: &[FileDiff],
+) -> Result<(), String> {
+    if files.is_empty() {
+        eprintln!("no differences");
+        return Ok(());
+    }
+    require_meld()?;
+
+    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+    let tmp = temp_meld_dir()?;
+    let dir_a = tmp.join("a");
+    let dir_b = tmp.join("b");
+    let extract = || -> Result<(), String> {
+        extract_files(root, left_ref, &paths, &dir_a)?;
+        extract_files(root, right_ref, &paths, &dir_b)?;
+        Ok(())
+    };
+    if let Err(e) = extract() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+
+    let on = color_enabled(std::io::stderr().is_terminal());
+    eprintln!("{} {}", paint("meld", GREEN, on), head);
+
+    let status = Command::new("meld").arg(&dir_a).arg(&dir_b).status();
+    let _ = std::fs::remove_dir_all(&tmp);
+    let status = status.map_err(|e| format!("failed to run meld: {e}"))?;
+    if !status.success() {
+        return Err("meld exited with an error".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn open_meld_live(a_dir: &Path, b_dir: &Path, files: &[FileDiff]) -> Result<(), String> {
+    if files.is_empty() {
+        eprintln!("no differences");
+        return Ok(());
+    }
+    require_meld()?;
+
+    let tmp = temp_meld_dir()?;
+    let dir_a = tmp.join("a");
+    let dir_b = tmp.join("b");
+    let extract = || -> Result<(), String> {
+        for f in files {
+            copy_if_exists(&a_dir.join(&f.path), &dir_a.join(&f.path))?;
+            copy_if_exists(&b_dir.join(&f.path), &dir_b.join(&f.path))?;
+        }
+        Ok(())
+    };
+    if let Err(e) = extract() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+
+    let on = color_enabled(std::io::stderr().is_terminal());
+    eprintln!("{} live — literal contents, .gitignore honored", paint("meld", GREEN, on));
+
+    let status = Command::new("meld").arg(&dir_a).arg(&dir_b).status();
+    let _ = std::fs::remove_dir_all(&tmp);
+    let status = status.map_err(|e| format!("failed to run meld: {e}"))?;
+    if !status.success() {
+        return Err("meld exited with an error".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn copy_if_exists(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create {parent:?}: {e}"))?;
+    }
+    std::fs::copy(src, dst).map_err(|e| format!("failed to copy {src:?}: {e}"))?;
+    Ok(())
 }
 
 pub(crate) fn status_paint(s: char) -> &'static str {

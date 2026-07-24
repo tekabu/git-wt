@@ -177,9 +177,10 @@ token is consumed as target only if it resolves as a worktree list):
     git-wt diff 1,2
     git-wt diff 1 -b 2
     git-wt diff 1,2 --stat
-    git-wt diff 1,2 live
+    git-wt diff 1,2 --live
     git-wt diff 1,2 -- src/
     git-wt diff main,2             mix branch names and numbers
+    git-wt diff 1,2 -m             open changed files in meld, wait for exit
 
 Sample (`git-wt diff 1,2 --stat`):
 
@@ -192,8 +193,9 @@ Options:
     -b, --branch TARGET_LIST     extra worktrees to include, alongside the target (global flag)
     ..                            tip-vs-tip range word
     ...                           fork-point range word
-    live / --live                 diff against working tree
-    hunks / --hunks                hunk-level diff
+    --live                        diff against working tree
+    --hunks                       hunk-level diff
+    -m, --meld                    copy changed files to a tmp dir and open meld, waiting for exit
     --name-only / --name-status / --stat   git diff pass-through flags
     -- PATHSPEC                   restrict to paths
 
@@ -216,32 +218,72 @@ Options:
         --base REF                diff only: explicit base ref (branch, commit, or worktree number)
     RANGE                         diff only: `..` (tip-vs-tip, default under --diff) or `...` (fork)
 
+## compare
+
+Compares files in the current worktree against a branch or commit — not two
+worktrees, just files vs. a ref, so `-b/--branch` is reused here for a single
+branch name rather than the usual append-more-targets meaning.
+
+    git-wt compare -f src/main.rs -b main
+    git-wt compare -f src/main.rs,Cargo.toml -c HEAD~3
+    git-wt compare -f src/main.rs -b main -m      open in meld, wait for exit
+
+Sample (`git-wt compare -f Cargo.toml -b main`, plain diff to stdout):
+
+    diff --git a/Cargo.toml b/Cargo.toml
+    index 465958a..66c8ce7 100644
+    --- a/Cargo.toml
+    +++ b/Cargo.toml
+    @@ -13,3 +13,4 @@ lto = true
+     strip = true
+     codegen-units = 1
+     panic = "abort"
+    +test
+
+Options:
+
+    -f, --file FILE_LIST         required; comma-separated relative paths to compare
+    -b, --branch NAME            branch to compare against (global flag, single name only here)
+    -c, --commit COMMIT          commit to compare against; alternative to -b/--branch
+    -m, --meld                   extract ref's versions to a temp dir and open meld, waiting for exit
+
 ## merge
 
     git-wt merge 1,2
-    git-wt merge 1 feat/x
+    git-wt merge 1 -b feat/x
     git-wt merge 1 -b 2
     git-wt merge -b 2
-    git-wt merge 1,2 dry-run
-    git-wt merge 1,2 theirs
-    git-wt merge 1,2 ours
+    git-wt merge 1,2 --dry-run
+    git-wt merge 1,2 --theirs
+    git-wt merge 1,2 --ours
     git-wt merge 1,2 --review
-    git-wt merge 1 continue
-    git-wt merge 1 abort
+    git-wt merge 1,2 --review --meld
+    git-wt merge 1 --continue
+    git-wt merge 1 --abort
     git-wt merge main,2             mix branch names and numbers
 
-Sample (`git-wt merge 1 feature/review dry-run`):
+A target and a separate bare source word (`merge 1 feat/x`) is not accepted —
+use a comma list (`merge 1,feat/x`) or `-b` (`merge 1 -b feat/x`). Before an
+actual merge runs (not `--dry-run`/`--review`/`--continue`/`--abort`), it asks
+`Merge <src> into <dest>? [y/N]`.
+
+`--review --meld` opens meld on the files the merge would touch (each side
+extracted from git, like `compare -m`/`meld --diff`) instead of printing the
+commit table; `--meld` on its own, without `--review`, is refused.
+
+Sample (`git-wt merge 1 -b feature/review --dry-run`):
 
     Clean feature/review merges into main cleanly
 
 Options (target list, then merge options/words — raw catch-all):
 
-    -b, --branch TARGET_LIST     extra worktrees to include, alongside the target (global flag)
+    -b, --branch TARGET_LIST     one source branch (merge's own '-b'; a plain worktree/branch elsewhere)
     -t, --theirs                  take theirs on conflict
-    dry-run                       preview without merging
-    theirs / ours                 conflict-resolution strategy words
+    -o, --ours                    take ours on conflict
+    -d, --dry-run                 preview without merging
     --review                      hand off to review flow
-    continue / abort              resume or abort an in-progress merge
+    -c, --continue                 resume an in-progress merge
+    -a, --abort                    abort an in-progress merge
 
 ## merged / m
 

@@ -17,12 +17,13 @@ use crate::cli::{
 use clap::{CommandFactory, Parser};
 use crate::cmd::add::cmd_add;
 use crate::cmd::commits::cmd_commits;
+use crate::cmd::compare::cmd_compare;
 use crate::cmd::diff::cmd_diff;
 use crate::cmd::doctor::cmd_doctor;
 use crate::cmd::list::cmd_list;
 use crate::cmd::log::cmd_log;
 use crate::cmd::meld::cmd_meld;
-use crate::cmd::merge::{cmd_merge, parse_merge_args};
+use crate::cmd::merge::{cmd_merge, parse_merge_args, retired_bare_word};
 use crate::cmd::merged::{cmd_merged, cmd_merged_others};
 use crate::cmd::remove::cmd_remove;
 use crate::cmd::switch::{cmd_path, cmd_switch};
@@ -230,6 +231,21 @@ fn run() -> Result<(), String> {
             cmd_meld(&root, &trees, &idxs, &args)
         }
 
+        Commands::Compare(args) => {
+            if cli.branch.len() > 1 {
+                return Err("'compare' takes at most one '-b/--branch'".into());
+            }
+            let branch = match cli.branch.first() {
+                Some(b) if b.contains(',') => {
+                    return Err(format!("'compare' takes exactly one branch, got list '{b}'"));
+                }
+                Some(b) => Some(b.as_str()),
+                None => None,
+            };
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            cmd_compare(&cwd, &args, branch)
+        }
+
         Commands::Merge(args) => {
             let (rest, branch) = split_rest_branch(args.rest, &cli.branch)?;
             let (target_token, merge_rest) = if let Some(first) = rest.first() {
@@ -251,7 +267,10 @@ fn run() -> Result<(), String> {
             // "other target" the way it does elsewhere: `git-wt merge -b 2`
             // is "merge 2 into <target, default current>", so it takes
             // exactly one branch and skips the generic dest/source idxs
-            // dance below entirely.
+            // dance below entirely. The source token is handed to
+            // `parse_merge_args`/`resolve_merge_source` unresolved, same as
+            // any other merge source, so a branch with no worktree of its
+            // own still works (`git-wt merge -b feat/x`).
             if !branch.is_empty() {
                 if branch.len() > 1 || branch.iter().any(|b| b.contains(',')) {
                     return Err("merge's '-b/--branch' takes exactly one source branch".into());
@@ -269,13 +288,7 @@ fn run() -> Result<(), String> {
                     None => current_worktree_index(&trees)
                         .ok_or("not inside a worktree; use 'git-wt merge <N> -b <BRANCH>'")?,
                 };
-                let src_tok = &branch[0];
-                let src_ns = resolve_target_list(&trees, &[src_tok.clone()])?;
-                let src_idx = check_index(src_ns[0], trees.len())?;
-                if src_idx == dest_idx {
-                    return Err(format!("branch '{src_tok}' is already the target"));
-                }
-                let mut merge_argv = vec![ref_of(&trees[src_idx])?];
+                let mut merge_argv = vec![branch[0].clone()];
                 merge_argv.extend(merge_rest.iter().cloned());
                 let parsed = parse_merge_args(&merge_argv)?;
                 return cmd_merge(&root, &trees, dest_idx, &parsed);
@@ -288,7 +301,7 @@ fn run() -> Result<(), String> {
             if idxs.len() > 2 {
                 return Err(format!(
                     "merge takes exactly two worktrees, got {}\n\
-                     hint: 'git-wt merge 1,2' or 'git-wt merge 1 <BRANCH>'",
+                     hint: 'git-wt merge 1,2' or 'git-wt merge 1 -b 2'",
                     idxs.len()
                 ));
             }
@@ -298,7 +311,7 @@ fn run() -> Result<(), String> {
             // reads a bare branch as the latter (`git-wt merge <BRANCH>`).
             // A number always keeps its long-standing meaning, destination,
             // whatever flags or resume words follow it (`git-wt merge 2
-            // --abort`, `git-wt merge 2 continue`).
+            // --abort`, `git-wt merge 2 --continue`).
             let is_branch_word = target_token
                 .as_deref()
                 .is_some_and(|t| t.parse::<usize>().is_err());
@@ -307,7 +320,7 @@ fn run() -> Result<(), String> {
                     .ok_or("not inside a worktree; use 'git-wt merge <N>[,<M>]'")?;
                 if idxs[0] == cur {
                     return Err(
-                        "merge needs a source: 'git-wt <N>,<M> merge' (or 'git-wt <N> merge <BRANCH>', or continue/abort)"
+                        "merge needs a source: 'git-wt <N>,<M> merge' (or 'git-wt <N> merge <BRANCH>', or --continue/--abort)"
                             .into(),
                     );
                 }
@@ -315,6 +328,25 @@ fn run() -> Result<(), String> {
             } else if idxs.len() == 2 {
                 (idxs[0], vec![ref_of(&trees[idxs[1]])?])
             } else {
+                // A target was already given (a plain number, or a
+                // dest,source comma list already handled above), so a
+                // further bare word can no longer double as the source --
+                // that two-positional form ("merge 1 feat/x") is retired in
+                // favor of a comma list or '-b'.
+                if let Some(first) = merge_rest.first() {
+                    if let Some(dashed) = retired_bare_word(first) {
+                        return Err(format!(
+                            "bare '{first}' is no longer accepted for merge; use '{dashed}'"
+                        ));
+                    }
+                    if !first.starts_with('-') && first != "review" {
+                        return Err(format!(
+                            "merge no longer takes a bare branch after a target ('{first}')\n\
+                             hint: 'git-wt merge {n},{first}' or 'git-wt merge {n} -b {first}'",
+                            n = idxs[0] + 1
+                        ));
+                    }
+                }
                 (idxs[0], Vec::new())
             };
             merge_argv.extend(merge_rest.iter().cloned());

@@ -53,14 +53,7 @@ pub(crate) fn cmd_meld(root: &Path, trees: &[Worktree], idxs: &[usize], args: &M
         }
     }
 
-    if !on_path("meld") {
-        return Err(
-            "meld is not installed (or not on PATH)\n\
-             hint: macOS 'brew install --cask meld', Debian/Ubuntu 'apt install meld', \
-             Fedora 'dnf install meld'"
-                .into(),
-        );
-    }
+    require_meld()?;
 
     if args.diff {
         if idxs.len() != 2 {
@@ -224,6 +217,18 @@ pub(crate) fn parse_name_status(out: &str) -> Result<Vec<(String, char)>, String
         }
     }
     Ok(v)
+}
+
+pub(crate) fn require_meld() -> Result<(), String> {
+    if on_path("meld") {
+        return Ok(());
+    }
+    Err(
+        "meld is not installed (or not on PATH)\n\
+         hint: macOS 'brew install --cask meld', Debian/Ubuntu 'apt install meld', \
+         Fedora 'dnf install meld'"
+            .into(),
+    )
 }
 
 pub(crate) fn temp_meld_dir() -> Result<PathBuf, String> {

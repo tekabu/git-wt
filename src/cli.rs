@@ -1,6 +1,7 @@
 use clap::{ArgAction, Parser, Subcommand};
 
 use crate::cmd::add::args::AddArgs;
+use crate::cmd::compare::args::CompareArgs;
 use crate::cmd::diff::args::DiffArgs;
 use crate::cmd::doctor::args::DoctorArgs;
 use crate::cmd::list::args::ListArgs;
@@ -83,6 +84,9 @@ pub(crate) enum Commands {
 
     /// Open meld on 2-3 worktrees.
     Meld(MeldArgs),
+
+    /// Compare files against a branch or commit.
+    Compare(CompareArgs),
 
     /// Commit table across worktrees.
     #[command(alias = "c")]

@@ -22,12 +22,14 @@ action, then the worktrees or branches it acts on.
     git-wt remove <N> [-y] [-f] [-D]
                                  Remove worktree N (-D: delete branch too)
     git-wt merge <N>,<M>         Merge M into N
-    git-wt merge <N> <BRANCH>    Merge BRANCH into worktree N
     git-wt merge <N> -b <M>      Merge M into worktree N (-b is the one
                                  source to merge, not an "other target" the
-                                 way it is elsewhere; -t <N> -b <M> also works)
-    git-wt merge <N>,<M> review  What would that merge bring over?
-    git-wt merge <N> continue|abort
+                                 way it is elsewhere; a comma list ('<N>,<M>')
+                                 works the same way -- a target and a bare
+                                 separate source word, e.g. 'merge <N> <M>',
+                                 is not accepted)
+    git-wt merge <N>,<M> --review  What would that merge bring over?
+    git-wt merge <N> --continue|--abort
     git-wt merged <N>,<M>        Is M's branch already in N's branch?
     git-wt merged <N> <BRANCH>   Is BRANCH already in worktree N's branch?
     git-wt merged <N>            Is N's branch already in the current branch?
@@ -41,6 +43,11 @@ action, then the worktrees or branches it acts on.
     git-wt log <N>[,<M>...] [PATH...] [flags]
                                  Same table, narrowed to one file's history
     git-wt meld <N>,<M>[,<N>]   Diff 2-3 worktrees side by side in meld
+    git-wt compare -f <FILES> -b <BRANCH> | -c <COMMIT> [-m]
+                                 Diff file(s) in the current worktree against a
+                                 branch or commit (not two worktrees); -b here
+                                 is that one branch, not "extra targets";
+                                 -m opens meld instead of printing to stdout
     git-wt <VERB> [TARGET_LIST] -b/--branch LIST
                                  Append LIST to the command's target list:
                                  'git-wt commits 1 -b 2,3' == 'git-wt commits 1,2,3'
@@ -108,7 +115,8 @@ action, then the worktrees or branches it acts on.
     target list the command already has:
         git-wt commits 1 -b 2,3     == git-wt commits 1,2,3
     merge reads it differently: there '-b' names the one source branch to
-    merge, and the target list (positional or '-t') is the destination:
+    merge, and the target list (positional only, since '-t' means 'theirs'
+    on merge) is the destination:
         git-wt merge 1 -b 2         == git-wt merge 1,2   (2 into 1)
         git-wt merge -b 2           == git-wt merge 2     (2 into current)
 
@@ -118,8 +126,10 @@ action, then the worktrees or branches it acts on.
         two targets   -> merge, merged, diff, meld (also 3 for meld)
         any length    -> commits, meld (2-3), pull (each in turn)
     Some verbs also take a bare word before their own flags, matched ahead
-    of a branch of the same name ('merge continue', 'merged --others'):
-    spell it 'heads/continue' on the rare branch actually called that.
+    of a branch of the same name ('merged --others'): spell it
+    'heads/others' on the rare branch actually called that. (merge's own
+    words -- continue, abort, ours, theirs, dry-run -- take no bare form
+    at all, so they never compete with a branch name in the first place.)
 
     FLAGS combine freely after the target list, in any order, short or long:
         git-wt commits 1,2 --author alex --all-files --filename api.php -n 5
@@ -151,8 +161,10 @@ action, then the worktrees or branches it acts on.
 
 # DIFF OPTIONS
 
-    live                  Compare the files on disk, not the commits
-    hunks                 Print each file's changed line numbers
+    --live                Compare the files on disk, not the commits
+    --hunks               Print each file's changed line numbers
+    -m, --meld            Copy changed files to a tmp dir and open meld,
+                          waiting for it to exit, instead of printing text
     ...                   Range: only what M added since it forked from N (default)
     ..                    Range: everything that differs between the two tips
         --name-only       File names only
@@ -164,7 +176,7 @@ action, then the worktrees or branches it acts on.
 
 Diffs the two worktrees' committed state (their branches), through git's
 own pager, so uncommitted work does not show up; diff warns when either
-side is dirty and points at 'live'.
+side is dirty and points at '--live'.
 
     git-wt diff 1,2              -> git diff <branch 1>...<branch 2>
     git-wt diff 1,2 ..           -> git diff <branch 1>..<branch 2>
@@ -179,20 +191,29 @@ as if M had removed them.
 Any other git flag is an error, not a passthrough: run git yourself,
 'git diff <A>...<B> <flag>'. The error prints that command for you.
 
+'-m/--meld' skips the text output: each changed file's two sides are
+extracted (via 'git show') into a temp dir apiece, then meld opens on
+the two dirs and 'diff' blocks until you close it; the temp dirs are
+removed after. Works with '--live' too, copying the literal files on
+disk instead of extracting from git. Not combinable with '--hunks' or
+the listing flags, which print text meld doesn't.
+
+    git-wt diff 1,2 -m
+    git-wt diff 1,2 --live -m
+
 # DIFF LIVE
 
-'live' compares the literal bytes in the two directories, so uncommitted
+'--live' compares the literal bytes in the two directories, so uncommitted
 work shows up -- including the case no ref diff can ever answer, two
 worktrees sitting on the same commit. Only paths git would list are
 considered, so .gitignore is honored and build output stays out.
 
-    git-wt diff 1,2 live         # literal files on disk
-    git-wt diff 1,2 live hunks   # + changed line numbers
-    git-wt diff 1,2 --live       # dashes optional, same thing
+    git-wt diff 1,2 --live           # literal files on disk
+    git-wt diff 1,2 --live --hunks   # + changed line numbers
 
-'live' takes no range: '..'/'...' compare commits, which is the opposite
+'--live' takes no range: '..'/'...' compare commits, which is the opposite
 question. --name-only/--name-status/--stat/-- PATH... all still apply.
-'hunks' works without 'live' too; its line numbers are the '+' side (M).
+'--hunks' works without '--live' too; its line numbers are the '+' side (M).
 
 # COMMITS OPTIONS
 
@@ -603,14 +624,38 @@ include the merge-base as a third pane.
     git-wt meld 1,2 --diff --3way     # + merge-base in the middle pane
     git-wt meld 1,2 --diff --base main # + explicit base in the middle pane
 
-# MERGE WORDS            (each takes an optional '--': 'abort' == '--abort')
+# COMPARE
 
-    -c, continue          Conclude a conflicted merge
-    -a, abort             Undo a conflicted merge
-    -o, ours              On a conflicting hunk, keep worktree N's side
-    -t, theirs            On a conflicting hunk, take the source's side
-    -d, dry-run           Report whether it would merge; change nothing
+Diffs file(s) in the current worktree against a branch or commit -- one
+worktree, not two, so this is not diff/meld's target-list grammar. '-f' takes
+a comma-separated list of paths relative to cwd; give exactly one of
+'-b/--branch' or '-c/--commit' as the ref to compare against.
+
+    git-wt compare -f src/main.rs -b main
+    git-wt compare -f src/main.rs,Cargo.toml -c HEAD~3
+
+'-b' here reuses the global flag but means something different from every
+other verb: a single branch name, the thing to diff against, not "extra
+targets to append" -- a list ('-b main,2') is refused. '-c/--commit' is the
+plain alternative when the ref isn't a checked-out branch.
+
+Without '-m/--meld', the diff prints to stdout via plain 'git diff <ref> --
+<files>'. With '-m', each file's version at the ref is extracted into a temp
+dir and meld opens on the pairs (one '--diff local ref-copy' tab per file),
+blocking until you close it; the temp dir is removed on exit either way.
+Requires meld on PATH.
+
+    git-wt compare -f src/main.rs -b main -m
+
+# MERGE WORDS            (short or long only -- bare words are not accepted)
+
+    -c, --continue        Conclude a conflicted merge
+    -a, --abort           Undo a conflicted merge
+    -o, --ours            On a conflicting hunk, keep worktree N's side
+    -t, --theirs          On a conflicting hunk, take the source's side
+    -d, --dry-run         Report whether it would merge; change nothing
         review            Show the commits it would bring over; change nothing
+                           ('review' is not a merge option, so it stays bare)
 
 # MERGE OPTIONS
 
@@ -629,11 +674,15 @@ something different here too -- see MERGE below.
 The merge runs inside worktree N, so N's branch is the one that moves:
 
     git-wt merge 1,2            # worktree 2's branch -> worktree 1's branch
-    git-wt merge 1 feat/x       # a branch name works too
+    git-wt merge 1 -b feat/x    # a branch name works too
     git-wt merge 1 -b 2         # worktree 2's branch -> worktree 1's branch
     git-wt merge -b 2           # same, N defaults to the current worktree
-    git-wt merge 1,2 dry-run    # would it conflict? nothing is touched
-    git-wt merge 1,2 theirs     # let 2 win every collision
+    git-wt merge 1,2 --dry-run  # would it conflict? nothing is touched
+    git-wt merge 1,2 --theirs   # let 2 win every collision
+
+A target with a separate bare source word ('git-wt merge 1 feat/x') is not
+accepted -- name the source with a comma ('1,feat/x') or '-b' ('1 -b
+feat/x'), so a source can never be mistaken for a merge option or vice versa.
 
 '-b/--branch' on merge is the one source branch to merge in, not an
 "other target" the way it is on every other verb -- it takes exactly one
@@ -642,28 +691,37 @@ branch, and errors if it names the same worktree as the target.
 The list reads dest-first, so 'merge 1,2' merges 2 into 1. It takes
 exactly two worktrees -- unlike meld, which diffs 2-3 -- because a
 merge has one destination and one source. The list already names the
-source, so it cannot be combined with 'continue'/'abort'; those take a
-single target, 'git-wt merge 1 continue' (or 'git-wt merge 1 abort').
+source, so it cannot be combined with '--continue'/'--abort'; those take
+a single target, 'git-wt merge 1 --continue' (or 'git-wt merge 1 --abort').
 
-A number that names a worktree wins over a branch of the same name, and
-the words above win over a branch of the same name: to merge a branch
-called 'theirs', spell it 'heads/theirs'.
+A number that names a worktree wins over a branch of the same name: to
+merge a branch called '2', spell it 'heads/2'.
+
+Before it actually merges (not '--dry-run', '--review', '--continue', or
+'--abort'), it asks 'Merge <src> into <dest>? [y/N]'.
 
 On conflict, git-wt exits nonzero and lists the conflicted files; fix
-them in worktree N, then run 'git-wt merge N continue' (or abort).
+them in worktree N, then run 'git-wt merge N --continue' (or --abort).
 Merge commits never open an editor: without -m, git's default message is
 taken as-is.
 
 # MERGE REVIEW
 
-'dry-run' answers whether a merge conflicts. '--review' answers what it
+'--dry-run' answers whether a merge conflicts. '--review' answers what it
 would bring: the same verdict as a header, then the commit table for
-'dest..src'. It merges nothing and keeps dry-run's exit codes, 0 clean
+'dest..src'. It merges nothing and keeps --dry-run's exit codes, 0 clean
 and 1 on conflict.
 
     git-wt merge 1,2 --review        # what would 2 bring into 1?
     git-wt merge 1,2 --review -f     # + the files under each commit
     git-wt merge 1,2 --review -n 5 --author alex
+    git-wt merge 1,2 --review --meld # open the touched files in meld instead
+
+'--meld' only means something after '--review': it swaps the printed commit
+table for meld on the files 'dest..src' touches, each side extracted from
+git (not the worktree's on-disk state) into a temp dir, same as 'compare -m'
+or 'meld --diff'. It takes no arguments of its own and is refused outside
+'--review' -- 'git-wt merge 1,2 --meld' is just an unknown option.
 
 '--review' ends merge's own flags. Everything after it is a 'commits'
 flag and is passed through untouched, which is the only way both can keep

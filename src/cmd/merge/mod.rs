@@ -4,6 +4,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::cmd::commits::{cmd_commits_review, ReviewCtx};
+use crate::cmd::meld::{changed_paths, extract_files, require_meld, temp_meld_dir};
 use crate::git::{git_cmd, git_quiet, git_run, git_run_no_editor, git_stdout};
 use crate::ui::{color_enabled, confirm, paint, GREEN};
 use crate::worktree::{label, leaf_of, ref_of, Worktree};
@@ -31,6 +32,13 @@ impl Side {
 
     pub(crate) fn strategy_option(self) -> &'static str {
         self.word()
+    }
+
+    pub(crate) fn flag(self) -> &'static str {
+        match self {
+            Side::Ours => "--ours",
+            Side::Theirs => "--theirs",
+        }
     }
 }
 
@@ -95,6 +103,24 @@ pub(crate) fn start_only_flags(
     v
 }
 
+/// Bare option words merge no longer accepts, paired with the dashed form
+/// that replaced them -- only the ones that also read as plain identifiers
+/// (`ours`, `theirs`, ...) were ambiguous with a branch/source name, which is
+/// why they were retired; `review` stays bare since it isn't a merge option.
+const RETIRED_BARE_WORDS: [(&str, &str); 5] = [
+    ("dry-run", "--dry-run"),
+    ("theirs", "--theirs"),
+    ("ours", "--ours"),
+    ("continue", "--continue"),
+    ("abort", "--abort"),
+];
+
+/// The dashed replacement for a retired bare merge option word, if `word` is
+/// one of them.
+pub(crate) fn retired_bare_word(word: &str) -> Option<&'static str> {
+    RETIRED_BARE_WORDS.iter().find(|(bare, _)| *bare == word).map(|(_, dashed)| *dashed)
+}
+
 pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, String> {
     let mut source: Option<String> = None;
     let mut op: Option<MergeOp> = None;
@@ -111,11 +137,15 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
                 review = Some(it.by_ref().cloned().collect());
                 break;
             }
-            "continue" | "--continue" | "-c" => set_merge_op(&mut op, MergeOp::Continue)?,
-            "abort" | "--abort" | "-a" => set_merge_op(&mut op, MergeOp::Abort)?,
-            "ours" | "--ours" | "-o" => set_side(&mut side, Side::Ours)?,
-            "theirs" | "--theirs" | "-t" => set_side(&mut side, Side::Theirs)?,
-            "dry-run" | "--dry-run" | "-d" => dry_run = true,
+            "--continue" | "-c" => set_merge_op(&mut op, MergeOp::Continue)?,
+            "--abort" | "-a" => set_merge_op(&mut op, MergeOp::Abort)?,
+            "--ours" | "-o" => set_side(&mut side, Side::Ours)?,
+            "--theirs" | "-t" => set_side(&mut side, Side::Theirs)?,
+            "--dry-run" | "-d" => dry_run = true,
+            s if retired_bare_word(s).is_some() => {
+                let dashed = retired_bare_word(s).unwrap();
+                return Err(format!("bare '{s}' is no longer accepted for merge; use '{dashed}'"));
+            }
             "-m" | "--message" => {
                 message = Some(it.next().ok_or("--message needs a message")?.clone());
             }
@@ -141,13 +171,13 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
     if review.is_some() {
         let mut bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
         if dry_run {
-            bad.push("dry-run");
+            bad.push("--dry-run");
         }
         if let Some(sd) = side {
-            bad.push(sd.word());
+            bad.push(sd.flag());
         }
         if let Some(o) = &op {
-            bad.push(if *o == MergeOp::Continue { "continue" } else { "abort" });
+            bad.push(if *o == MergeOp::Continue { "--continue" } else { "--abort" });
         }
         if !bad.is_empty() {
             return Err(format!(
@@ -175,13 +205,13 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
             return Err(format!(
                 "{word} takes no merge options\n\
                  hint: '{w}' is applied when a merge starts, so it cannot join one already stopped\n\
-                 hint: 'git-wt <N> merge abort', then re-run the merge with '{w}'",
-                w = sd.word()
+                 hint: 'git-wt <N> merge --abort', then re-run the merge with '{w}'",
+                w = sd.flag()
             ));
         }
         let mut bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
         if dry_run {
-            bad.push("dry-run");
+            bad.push("--dry-run");
         }
         if !bad.is_empty() {
             return Err(format!("{word} takes no merge options (got {})", bad.join(", ")));
@@ -202,13 +232,13 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
     if dry_run {
         let bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
         if !bad.is_empty() {
-            return Err(format!("dry-run takes no merge options (got {})", bad.join(", ")));
+            return Err(format!("--dry-run takes no merge options (got {})", bad.join(", ")));
         }
     }
 
     let source = source.ok_or(
         "merge needs a source: 'git-wt <N>,<M> merge' \
-         (or 'git-wt <N> merge <BRANCH>', or continue/abort)",
+         (or 'git-wt <N> merge <BRANCH>', or --continue/--abort)",
     )?;
     Ok(MergeParsedArgs {
         op: MergeOp::Start(source),
@@ -280,7 +310,7 @@ pub(crate) fn cmd_merge(
         let Some(sd) = args.side else {
             return Err(format!(
                 "a merge is already in progress in {}\n\
-                 hint: 'git-wt {n} merge continue' or 'git-wt {n} merge abort'",
+                 hint: 'git-wt {n} merge --continue' or 'git-wt {n} merge --abort'",
                 dir.display(),
                 n = idx + 1
             ));
@@ -318,6 +348,11 @@ pub(crate) fn cmd_merge(
                 idx + 1
             ));
         }
+    }
+
+    if !confirm(&format!("Merge {src_branch} into {}? [y/N] ", label(dest)))? {
+        eprintln!("Aborted.");
+        return Ok(());
     }
 
     let mut argv: Vec<String> = vec!["merge".into()];
@@ -373,6 +408,25 @@ fn cmd_merge_review(
     let dest_label = label(dest);
     let verdict = merge_probe(dir, src)?;
 
+    // '--meld' only means something under review -- outside it, it is just
+    // an unknown option to the merge parser -- so it is pulled out of the
+    // tail here rather than recognized by 'parse_merge_args'.
+    let mut tail = tail.to_vec();
+    let meld = if let Some(i) = tail.iter().position(|a| a == "--meld") {
+        tail.remove(i);
+        true
+    } else {
+        false
+    };
+
+    if meld {
+        review_meld(root, &dest_ref, &dest_label, src)?;
+        return match verdict {
+            MergeVerdict::Clean => Ok(()),
+            MergeVerdict::Conflict(files) => Err(review_conflict_msg(&files)),
+        };
+    }
+
     let range = format!("{dest_ref}..{src}");
     let n: usize = git_stdout(dir, &["rev-list", "--count", &range])?
         .trim()
@@ -393,7 +447,7 @@ fn cmd_merge_review(
     cmd_commits_review(
         root,
         trees,
-        tail,
+        &tail,
         ReviewCtx {
             dest_ref: &dest_ref,
             dest_label: &dest_label,
@@ -405,20 +459,60 @@ fn cmd_merge_review(
 
     match verdict {
         MergeVerdict::Clean => Ok(()),
-        MergeVerdict::Conflict(files) => {
-            let mut m = format!(
-                "{} conflicting {}:\n",
-                files.len(),
-                if files.len() == 1 { "path" } else { "paths" }
-            );
-            for f in &files {
-                m.push_str(&format!("  {f}\n"));
-            }
-            m.push_str("hint: nothing was changed — this was a review\n");
-            m.push_str("hint: 'ours' or 'theirs' would settle these automatically");
-            Err(m)
-        }
+        MergeVerdict::Conflict(files) => Err(review_conflict_msg(&files)),
     }
+}
+
+fn review_conflict_msg(files: &[String]) -> String {
+    let mut m = format!(
+        "{} conflicting {}:\n",
+        files.len(),
+        if files.len() == 1 { "path" } else { "paths" }
+    );
+    for f in files {
+        m.push_str(&format!("  {f}\n"));
+    }
+    m.push_str("hint: nothing was changed — this was a review\n");
+    m.push_str("hint: '--ours' or '--theirs' would settle these automatically");
+    m
+}
+
+/// `merge <N>,<M> --review --meld`: open meld on the files 'dest_ref..src'
+/// touches, each side extracted from git (not the worktree's on-disk
+/// state), same as `meld --diff` does for two worktrees.
+fn review_meld(root: &Path, dest_ref: &str, dest_label: &str, src: &str) -> Result<(), String> {
+    require_meld()?;
+
+    let mut paths = changed_paths(root, dest_ref, src)?;
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        eprintln!("no files differ between {dest_label} and {src}");
+        return Ok(());
+    }
+
+    let tmp = temp_meld_dir()?;
+    let dir_dest = tmp.join("a");
+    let dir_src = tmp.join("b");
+    let extract_all = || -> Result<(), String> {
+        extract_files(root, dest_ref, &paths, &dir_dest)?;
+        extract_files(root, src, &paths, &dir_src)
+    };
+    if let Err(e) = extract_all() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+
+    let on = color_enabled(std::io::stderr().is_terminal());
+    eprintln!("{} {dest_label} ↔ {src}", paint("meld", GREEN, on));
+
+    let status = std::process::Command::new("meld").arg(&dir_dest).arg(&dir_src).status();
+    let _ = std::fs::remove_dir_all(&tmp);
+    let status = status.map_err(|e| format!("failed to run meld: {e}"))?;
+    if !status.success() {
+        return Err("meld exited with an error".into());
+    }
+    Ok(())
 }
 
 pub(crate) fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> Result<(), String> {
@@ -433,7 +527,7 @@ pub(crate) fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> R
                 m.push_str(&format!("  {f}\n"));
             }
             m.push_str("hint: nothing was changed — this was a dry run\n");
-            m.push_str("hint: 'ours' or 'theirs' would settle these automatically");
+            m.push_str("hint: '--ours' or '--theirs' would settle these automatically");
             Err(m)
         }
     }
@@ -509,10 +603,10 @@ pub(crate) fn conflict_msg(dir: &Path, files: &[String], idx: usize) -> String {
     }
     let n = idx + 1;
     m.push_str(&format!(
-        "hint: resolve them there, 'git add' each, then 'git-wt {n} merge continue'\n\
-         hint: or undo the merge with 'git-wt {n} merge abort'\n\
-         hint: or redo it letting one side win: 'git-wt {n} merge abort', then \
-         'git-wt {n},<M> merge theirs'"
+        "hint: resolve them there, 'git add' each, then 'git-wt {n} merge --continue'\n\
+         hint: or undo the merge with 'git-wt {n} merge --abort'\n\
+         hint: or redo it letting one side win: 'git-wt {n} merge --abort', then \
+         'git-wt {n},<M> merge --theirs'"
     ));
     m
 }
@@ -569,34 +663,50 @@ mod tests {
     }
 
     #[test]
-    fn merge_accepts_bare_and_dashed_resume_words() {
-        assert_eq!(merge_args(&["continue"]).unwrap().op, MergeOp::Continue);
+    fn merge_resume_words_take_dashed_or_short_only() {
         assert_eq!(merge_args(&["--continue"]).unwrap().op, MergeOp::Continue);
-        assert_eq!(merge_args(&["abort"]).unwrap().op, MergeOp::Abort);
+        assert_eq!(merge_args(&["-c"]).unwrap().op, MergeOp::Continue);
         assert_eq!(merge_args(&["--abort"]).unwrap().op, MergeOp::Abort);
+        assert_eq!(merge_args(&["-a"]).unwrap().op, MergeOp::Abort);
     }
 
     #[test]
-    fn merge_words_take_optional_dashes_and_shorts() {
-        for (bare, dashed, short) in [
-            ("continue", "--continue", "-c"),
-            ("abort", "--abort", "-a"),
+    fn merge_words_take_dashed_or_short_only() {
+        for (dashed, short, want) in [
+            ("--continue", "-c", MergeOp::Continue),
+            ("--abort", "-a", MergeOp::Abort),
         ] {
-            let want = merge_args(&[bare]).unwrap().op;
             assert_eq!(merge_args(&[dashed]).unwrap().op, want, "{dashed}");
             assert_eq!(merge_args(&[short]).unwrap().op, want, "{short}");
         }
-        for (bare, dashed, short, want) in [
-            ("ours", "--ours", "-o", Side::Ours),
-            ("theirs", "--theirs", "-t", Side::Theirs),
+        for (dashed, short, want) in [
+            ("--ours", "-o", Side::Ours),
+            ("--theirs", "-t", Side::Theirs),
         ] {
-            for w in [bare, dashed, short] {
+            for w in [dashed, short] {
                 assert_eq!(merge_args(&["2", w]).unwrap().side, Some(want), "{w}");
             }
         }
-        for w in ["dry-run", "--dry-run", "-d"] {
+        for w in ["--dry-run", "-d"] {
             assert!(merge_args(&["2", w]).unwrap().dry_run, "{w}");
         }
+    }
+
+    #[test]
+    fn merge_rejects_retired_bare_option_words() {
+        for (bare, dashed) in [
+            ("dry-run", "--dry-run"),
+            ("theirs", "--theirs"),
+            ("ours", "--ours"),
+            ("continue", "--continue"),
+            ("abort", "--abort"),
+        ] {
+            let e = merge_args(&["2", bare]).unwrap_err();
+            assert!(e.contains(&format!("'{bare}'")), "{bare}: {e}");
+            assert!(e.contains(&format!("'{dashed}'")), "{bare}: {e}");
+        }
+        // 'review' is not a merge option and stays bare.
+        assert!(merge_args(&["2", "review"]).unwrap().review.is_some());
     }
 
     #[test]
@@ -607,42 +717,42 @@ mod tests {
 
     #[test]
     fn merge_rejects_both_ops_but_allows_repeats() {
-        let e = merge_args(&["continue", "abort"]).unwrap_err();
+        let e = merge_args(&["--continue", "--abort"]).unwrap_err();
         assert_eq!(e, "continue and abort conflict");
         assert!(merge_args(&["-c", "--abort"]).is_err());
-        assert_eq!(merge_args(&["continue", "-c"]).unwrap().op, MergeOp::Continue);
+        assert_eq!(merge_args(&["--continue", "-c"]).unwrap().op, MergeOp::Continue);
     }
 
     #[test]
     fn merge_rejections_name_the_offending_flag() {
-        let e = merge_args(&["abort", "-m", "x", "--squash"]).unwrap_err();
+        let e = merge_args(&["--abort", "-m", "x", "--squash"]).unwrap_err();
         assert!(e.contains("got -m, --squash"), "{e}");
-        let e = merge_args(&["2", "dry-run", "--no-ff", "-f"]).unwrap_err();
+        let e = merge_args(&["2", "--dry-run", "--no-ff", "-f"]).unwrap_err();
         assert!(e.contains("got --no-ff, -f"), "{e}");
     }
 
     #[test]
     fn merge_rejects_both_sides_but_allows_repeats() {
-        assert!(merge_args(&["2", "ours", "theirs"]).is_err());
+        assert!(merge_args(&["2", "--ours", "--theirs"]).is_err());
         assert!(merge_args(&["2", "-o", "--theirs"]).is_err());
-        assert_eq!(merge_args(&["2", "ours", "-o"]).unwrap().side, Some(Side::Ours));
+        assert_eq!(merge_args(&["2", "--ours", "-o"]).unwrap().side, Some(Side::Ours));
     }
 
     #[test]
     fn merge_resume_rejects_a_side_with_a_pointed_hint() {
-        let e = merge_args(&["theirs", "continue"]).unwrap_err();
+        let e = merge_args(&["--theirs", "--continue"]).unwrap_err();
         assert!(e.contains("applied when a merge starts"), "{e}");
-        assert!(e.contains("merge abort"), "{e}");
+        assert!(e.contains("merge --abort"), "{e}");
     }
 
     #[test]
     fn merge_dry_run_rejects_start_only_flags() {
-        assert!(merge_args(&["2", "dry-run", "--no-ff"]).is_err());
-        assert!(merge_args(&["2", "dry-run", "-m", "x"]).is_err());
-        assert!(merge_args(&["2", "dry-run", "-f"]).is_err());
-        let e = merge_args(&["2", "dry-run", "--ff-only"]).unwrap_err();
+        assert!(merge_args(&["2", "--dry-run", "--no-ff"]).is_err());
+        assert!(merge_args(&["2", "--dry-run", "-m", "x"]).is_err());
+        assert!(merge_args(&["2", "--dry-run", "-f"]).is_err());
+        let e = merge_args(&["2", "--dry-run", "--ff-only"]).unwrap_err();
         assert!(e.contains("got --ff-only"), "{e}");
-        assert!(merge_args(&["2", "dry-run", "theirs"]).is_ok());
+        assert!(merge_args(&["2", "--dry-run", "--theirs"]).is_ok());
     }
 
     #[test]
@@ -673,9 +783,9 @@ mod tests {
             (vec!["2", "-f", "--review"], "-f"),
             (vec!["2", "-m", "x", "--review"], "-m"),
             (vec!["2", "--squash", "--review"], "--squash"),
-            (vec!["2", "dry-run", "--review"], "dry-run"),
-            (vec!["2", "theirs", "--review"], "theirs"),
-            (vec!["-a", "--review"], "abort"),
+            (vec!["2", "--dry-run", "--review"], "--dry-run"),
+            (vec!["2", "--theirs", "--review"], "--theirs"),
+            (vec!["-a", "--review"], "--abort"),
         ] {
             let e = merge_args(&args).unwrap_err();
             assert!(e.starts_with("review takes no merge options"), "{args:?}: {e}");

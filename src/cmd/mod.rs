@@ -1,5 +1,6 @@
 pub(crate) mod add;
 pub(crate) mod commits;
+pub(crate) mod compare;
 pub(crate) mod diff;
 pub(crate) mod doctor;
 pub(crate) mod list;

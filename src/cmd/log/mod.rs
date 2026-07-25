@@ -5,8 +5,7 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cli::{branch_targets, extract_branch_flag};
-use crate::cmd::commits::args::{parse_commits_args_with, DateFilter, DateOp, Mode, Order};
+use crate::cmd::commits::args::{DateFilter, DateOp, LogFlags, Order};
 use crate::cmd::commits::md::{md_filename, write_md, MdHead};
 use crate::cmd::commits::render::Highlight;
 use crate::cmd::commits::rows::{
@@ -25,18 +24,9 @@ pub(crate) fn cmd_log(
     root: &Path,
     trees: &[Worktree],
     idxs: &[usize],
-    rest: &[String],
+    path_args: &[String],
+    flags: LogFlags,
 ) -> Result<(), String> {
-    // `-b`/`--branch` rides anywhere in the line, same as `commits`.
-    let (rest, branch) = extract_branch_flag(rest)?;
-    let mut idxs = idxs.to_vec();
-    if let Some(v) = branch {
-        for i in branch_targets(trees, &v)? {
-            if !idxs.contains(&i) {
-                idxs.push(i);
-            }
-        }
-    }
     if idxs.is_empty() {
         return Err("log needs a worktree, e.g. 'git-wt 1,2 log src/ui.rs'".into());
     }
@@ -45,13 +35,6 @@ pub(crate) fn cmd_log(
             return Err(format!("worktree #{} listed twice", a + 1));
         }
     }
-
-    // PATH... is the leading run of non-flag tokens; everything after is a
-    // `commits` option. A path is never in the target slot -- see the plan's
-    // "Grammar" section for why -- so it always comes after the verb, and
-    // never interleaved with flags.
-    let split = rest.iter().take_while(|a| !a.starts_with('-')).count();
-    let (path_args, opt_args) = rest.split_at(split);
 
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let mut paths: Vec<String> = Vec::new();
@@ -68,7 +51,7 @@ pub(crate) fn cmd_log(
         }
     }
 
-    let mut args = parse_commits_args_with(opt_args, Mode::Log)?;
+    let mut args = flags.into_args()?;
     // Only --union names "give me everything" in `log`: there is no --all to
     // lift the cap the other way, since there is no divergence floor to lift.
     if args.limit.is_none() && !args.union {
@@ -300,12 +283,13 @@ pub(crate) fn cmd_log(
 
     if let Some(path) = &args.md {
         let file = path.clone().unwrap_or_else(md_filename);
+        let tail = crate::cli::raw_tail_after_verb();
         let cmd = format!(
             "git-wt {} log {}{}{}",
             idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
             paths.join(" "),
-            if opt_args.is_empty() { "" } else { " " },
-            opt_args.join(" ")
+            if tail.is_empty() { "" } else { " " },
+            tail
         );
         // The `±` cell and (when it varies) the path, folded into the subject
         // text: `write_md` renders whatever `CommitRow.text` holds, and a

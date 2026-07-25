@@ -7,8 +7,7 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cli::{branch_targets, extract_branch_flag};
-use crate::cmd::commits::args::{parse_commits_args_with, DateFilter, DateOp, Mode, Order};
+use crate::cmd::commits::args::{CommitsArgs, CommitsFlags, DateFilter, DateOp, Order};
 use crate::cmd::commits::md::{md_filename, write_md, MdHead};
 use crate::cmd::commits::render::{render_commits, Highlight};
 use crate::cmd::commits::rows::{
@@ -30,21 +29,10 @@ pub(crate) fn cmd_commits(
     root: &Path,
     trees: &[Worktree],
     idxs: &[usize],
-    rest: &[String],
+    flags: CommitsFlags,
 ) -> Result<(), String> {
-    // `-b`/`--branch` can ride anywhere in a `commits` line, not only in front
-    // of it: 'git-wt commits -b 2' adds worktree 2 to the lone target the bare
-    // form already picked, same as spelling it 'git-wt <cur>,2 commits'.
-    let (rest, branch) = extract_branch_flag(rest)?;
-    let mut idxs = idxs.to_vec();
-    if let Some(v) = branch {
-        for i in branch_targets(trees, &v)? {
-            if !idxs.contains(&i) {
-                idxs.push(i);
-            }
-        }
-    }
-    commits_view(root, trees, &idxs, &rest, None)
+    let args = flags.into_args()?;
+    commits_view(root, trees, idxs, args, &crate::cli::raw_tail_after_verb(), None)
 }
 
 /// Print the `dest..src` table for `merge --review`. See `commits_view`.
@@ -54,7 +42,8 @@ pub(crate) fn cmd_commits_review(
     rest: &[String],
     ctx: ReviewCtx,
 ) -> Result<(), String> {
-    commits_view(root, trees, &[], rest, Some(ctx))
+    let args = crate::cmd::commits::args::parse_commits_args_with(rest, crate::cmd::commits::args::Mode::Review)?;
+    commits_view(root, trees, &[], args, &rest.join(" "), Some(ctx))
 }
 
 /// The two refs a `merge --review` table is about.
@@ -93,7 +82,8 @@ fn commits_view(
     root: &Path,
     trees: &[Worktree],
     idxs: &[usize],
-    rest: &[String],
+    mut args: CommitsArgs,
+    cmd_tail: &str,
     review: Option<ReviewCtx>,
 ) -> Result<(), String> {
     if idxs.is_empty() && review.is_none() {
@@ -104,11 +94,6 @@ fn commits_view(
             return Err(format!("worktree #{} listed twice", a + 1));
         }
     }
-    // Merges are kept under --review and dropped elsewhere: a review range is
-    // bounded by the merge about to happen, so a merge inside it is the cargo
-    // rather than the noise it is on a long-lived branch.
-    let mode = if review.is_some() { Mode::Review } else { Mode::Commits };
-    let mut args = parse_commits_args_with(rest, mode)?;
     // Ten rows unless told otherwise: --all and --union both name "give me
     // everything" outright, so a silent cap under either would contradict the
     // flag just asked for. Named otherwise, `-n` already won this fight above.
@@ -444,16 +429,16 @@ fn commits_view(
         let cmd = match &review {
             Some(r) => format!(
                 "git-wt <dest> merge --review{}{}   # {} -> {}",
-                if rest.is_empty() { "" } else { " " },
-                rest.join(" "),
+                if cmd_tail.is_empty() { "" } else { " " },
+                cmd_tail,
                 r.src_label,
                 r.dest_label
             ),
             None => format!(
                 "git-wt {} commits{}{}",
                 idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
-                if rest.is_empty() { "" } else { " " },
-                rest.join(" ")
+                if cmd_tail.is_empty() { "" } else { " " },
+                cmd_tail
             ),
         };
         return write_md(

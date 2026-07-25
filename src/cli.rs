@@ -1,6 +1,7 @@
 use clap::{ArgAction, Parser, Subcommand};
 
 use crate::cmd::add::args::AddArgs;
+use crate::cmd::commits::args::{CommitsFlags, LogFlags};
 use crate::cmd::compare::args::CompareArgs;
 use crate::cmd::diff::args::DiffArgs;
 use crate::cmd::doctor::args::DoctorArgs;
@@ -81,32 +82,11 @@ pub(crate) enum Commands {
 
     /// Commit table across worktrees.
     #[command(alias = "c")]
-    Commits {
-        /// Target list followed by git log options and filters. When the first
-        /// token resolves as a worktree list it is consumed as the target;
-        /// otherwise the current worktree is used and the whole tail is passed
-        /// through.
-        #[arg(allow_hyphen_values = true, num_args = 0.., value_name = "TARGET/OPTIONS")]
-        rest: Vec<String>,
-
-        /// Extra worktree targets, appended to the target list.
-        #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
-        branch: Vec<String>,
-    },
+    Commits(CommitsFlags),
 
     /// File history table across worktrees.
     #[command(alias = "l")]
-    Log {
-        /// Optional target, path, and git log options. When the first token
-        /// resolves as a worktree list it is consumed as the target; otherwise
-        /// it is kept as part of the path/options passed through to git log.
-        #[arg(allow_hyphen_values = true, num_args = 0.., value_name = "TARGET/PATH/OPTIONS")]
-        rest: Vec<String>,
-
-        /// Extra worktree targets, appended to the target list.
-        #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
-        branch: Vec<String>,
-    },
+    Log(LogFlags),
 
     /// Merge a source into a worktree.
     Merge(MergeArgs),
@@ -268,19 +248,6 @@ fn extract_flag(
     Ok((out, val))
 }
 
-/// A `--branch` value, resolved to 0-based worktree indexes the same way any
-/// other comma list is: numbers or branch names, validated the same way.
-pub(crate) fn branch_targets(trees: &[Worktree], val: &str) -> Result<Vec<usize>, String> {
-    let parts: Vec<String> = val.split(',').map(String::from).collect();
-    if parts.iter().any(|p| p.is_empty()) {
-        return Err(format!(
-            "bad worktree list '{val}'; want numbers or branches, e.g. '1,2' or 'main,2'"
-        ));
-    }
-    let ns = resolve_target_list(trees, &parts)?;
-    ns.into_iter().map(|n| check_index(n, trees.len())).collect()
-}
-
 /// The index of the worktree with `branch` checked out, if any.
 pub(crate) fn worktree_on_branch(trees: &[Worktree], branch: &str) -> Option<usize> {
     trees.iter().position(|w| w.branch.as_deref() == Some(branch))
@@ -321,6 +288,19 @@ pub(crate) fn warn_if_alias_shadows_branch(trees: &[Worktree], tok: &str, full_w
 /// simply the first token that isn't one of those; nothing here eats a value.
 pub(crate) fn typed_verb() -> Option<String> {
     typed_verb_from(std::env::args().skip(1))
+}
+
+/// Everything the user typed after the verb, space-joined -- cosmetic only:
+/// `commits --md`/`log --md` echo it into the generated file as a "how to
+/// regenerate this" hint, and a raw echo (target and paths included, not
+/// just the options) is a fine answer to that even though it is not exactly
+/// what the old hand-rolled parser's `rest` (options only) printed.
+pub(crate) fn raw_tail_after_verb() -> String {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    match argv.iter().position(|a| !a.starts_with('-')) {
+        Some(i) => argv[i + 1..].join(" "),
+        None => String::new(),
+    }
 }
 
 fn typed_verb_from(argv: impl IntoIterator<Item = String>) -> Option<String> {

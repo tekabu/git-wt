@@ -383,73 +383,47 @@ fn run() -> Result<(), String> {
             cmd_merged(&root, &src, &dest)
         }
 
-        Commands::Commits { rest, branch: b } => {
-            let (rest, branch, embedded_target) = split_rest_flags(rest, &b)?;
-            let (target_token, commit_rest) = if let Some(first) = rest.first() {
-                if first.starts_with('-') {
-                    (None, rest)
-                } else if gather_targets(Some(first), &[])
-                    .and_then(|p| resolve_target_list(&trees, &p))
-                    .is_ok()
-                {
-                    (Some(first.clone()), rest[1..].to_vec())
-                } else {
-                    (None, rest)
-                }
-            } else {
-                (None, rest)
-            };
-            let target_token = effective_target(target_token, embedded_target.as_ref())?;
-            let idxs = resolve_targets(
-                &trees,
-                target_token.as_ref(),
-                &branch,
-                true,
-                false,
-            )?;
+        Commands::Commits(args) => {
+            let target = effective_target(args.target.clone(), args.common.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.common.branch, true, false)?;
             if idxs.is_empty() {
                 return Err("not inside a worktree; use 'git-wt commits <N>[,...]'".into());
             }
             if typed_alias("c") {
                 warn_if_alias_shadows_branch(&trees, "c", "commits");
             }
-            cmd_commits(&root, &trees, &idxs, &commit_rest)
+            cmd_commits(&root, &trees, &idxs, args)
         }
 
-        Commands::Log { rest, branch: b } => {
-            let (rest, branch, embedded_target) = split_rest_flags(rest, &b)?;
-            // `log` is ambiguous: its first positional may be a target, a path, or
-            // a git option. If it resolves as a worktree list, consume it as the
-            // target; otherwise keep it as part of the path/options passed to git.
-            let (target_token, log_rest) = if let Some(first) = rest.first() {
-                if first.starts_with('-') {
-                    (None, rest)
-                } else if gather_targets(Some(first), &[])
-                    .and_then(|p| resolve_target_list(&trees, &p))
-                    .is_ok()
+        Commands::Log(args) => {
+            // `log` is ambiguous: its leading positional run may open with a
+            // target, or be paths outright. If the first token resolves as a
+            // worktree list, it is consumed as the target; otherwise the whole
+            // run is paths and the current worktree is used.
+            let target_token = match args.leading.first() {
+                Some(first)
+                    if gather_targets(Some(first), &[])
+                        .and_then(|p| resolve_target_list(&trees, &p))
+                        .is_ok() =>
                 {
-                    (Some(first.clone()), rest[1..].to_vec())
-                } else {
-                    (None, rest)
+                    Some(first.clone())
                 }
-            } else {
-                (None, rest)
+                _ => None,
             };
-            let target_token = effective_target(target_token, embedded_target.as_ref())?;
-            let mut idxs = resolve_targets(
-                &trees,
-                target_token.as_ref(),
-                &branch,
-                true,
-                false,
-            )?;
+            let paths: Vec<String> = if target_token.is_some() {
+                args.leading[1..].to_vec()
+            } else {
+                args.leading.clone()
+            };
+            let target_token = effective_target(target_token, args.common.target_flag.as_ref())?;
+            let mut idxs = resolve_targets(&trees, target_token.as_ref(), &args.common.branch, true, false)?;
             if idxs.is_empty() {
                 idxs = current_or_empty(&trees, "log")?;
             }
             if typed_alias("l") {
                 warn_if_alias_shadows_branch(&trees, "l", "log");
             }
-            cmd_log(&root, &trees, &idxs, &log_rest)
+            cmd_log(&root, &trees, &idxs, &paths, args)
         }
 
         Commands::Doctor(args) => {

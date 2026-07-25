@@ -1,3 +1,5 @@
+use clap::{ArgAction, Args};
+
 use crate::ui::{BRANCH_MIN, MIN_TEXTW, PATH_MIN};
 
 
@@ -65,7 +67,7 @@ pub(crate) enum DateOp {
 }
 
 /// One `--date` bound. Several are an AND: `--date '>=A' --date '<B'`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DateFilter {
     pub(crate) op: DateOp,
     pub(crate) date: String,
@@ -231,6 +233,178 @@ pub(crate) struct CommitsArgs {
     /// always take, a single path's history across whatever it used to be
     /// called.
     pub(crate) no_follow: bool,
+}
+
+/// The flags `commits` and `log` share, declared for real: clap knows every
+/// one of these by name and rejects anything else itself, before either verb
+/// ever runs -- the outer catch-all `rest`/`allow_hyphen_values` this used to
+/// require is gone for these two verbs.
+///
+/// Validated values (a date, a width above its floor, a non-zero limit) keep
+/// running through the same parser functions the hand-rolled loop above
+/// uses, wired in as clap `value_parser`s -- one source of truth for what
+/// each value means, whichever verb collected it. What is *not* kept is the
+/// hand-rolled loop's bespoke wording for a missing or empty value (e.g.
+/// "--author needs a name, e.g. '--author alex'"): clap's own message covers
+/// that case now, in exchange for not hand-writing one closure per flag.
+#[derive(Args, Debug, Default)]
+pub(crate) struct CommonCommitsFlags {
+    /// Extra worktree targets, appended to the target list.
+    #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
+    pub(crate) branch: Vec<String>,
+    #[arg(short = 't', long = "target", value_name = "TARGET_LIST")]
+    pub(crate) target_flag: Option<String>,
+
+    #[arg(short = 'n', long, value_parser = parse_limit, value_name = "N")]
+    pub(crate) limit: Option<usize>,
+    #[arg(short = 'd', long = "date", value_parser = parse_date_filter, value_name = "DATE")]
+    pub(crate) date: Vec<DateFilter>,
+    #[arg(long = "date-since", visible_alias = "ds", value_parser = iso_date, value_name = "DATE")]
+    pub(crate) date_since: Option<String>,
+    #[arg(long = "date-until", visible_alias = "du", value_parser = iso_date, value_name = "DATE")]
+    pub(crate) date_until: Option<String>,
+    #[arg(long = "commit-since", visible_alias = "cs", value_name = "COMMIT")]
+    pub(crate) commit_since: Option<String>,
+    #[arg(long = "commit-until", visible_alias = "cu", value_name = "COMMIT")]
+    pub(crate) commit_until: Option<String>,
+    #[arg(short = 'c', long = "commits", value_delimiter = ',', value_name = "IDS")]
+    pub(crate) commits: Vec<String>,
+    #[arg(long = "author", visible_alias = "au", value_name = "NAME")]
+    pub(crate) author: Option<String>,
+    #[arg(short = 'm', long, value_name = "TERM")]
+    pub(crate) message: Option<String>,
+    #[arg(long, value_name = "TERM")]
+    pub(crate) search: Option<String>,
+
+    #[arg(long, visible_alias = "topo-order")]
+    pub(crate) topo: bool,
+    #[arg(long)]
+    pub(crate) merges: bool,
+    #[arg(long, visible_alias = "oldest-first")]
+    pub(crate) reverse: bool,
+    #[arg(long = "no-cherry", visible_alias = "nc")]
+    pub(crate) no_cherry: bool,
+    #[arg(long = "pick-id", visible_alias = "pi")]
+    pub(crate) pick: bool,
+    #[arg(short = 'f', long)]
+    pub(crate) files: bool,
+    #[arg(long)]
+    pub(crate) squash: bool,
+    #[arg(long)]
+    pub(crate) union: bool,
+    #[arg(long)]
+    pub(crate) time: bool,
+    #[arg(long = "date-human", visible_alias = "dh")]
+    pub(crate) date_human: bool,
+
+    /// The count is optional -- a bare `--wrap` means "the whole subject".
+    #[arg(short = 'w', long, value_parser = parse_wrap, num_args = 0..=1, default_missing_value = "full", value_name = "N")]
+    pub(crate) wrap: Option<Wrap>,
+    #[arg(long = "subject-width", visible_alias = "subjw", value_parser = parse_subjectw, value_name = "COLS")]
+    pub(crate) subjectw: Option<SubjectWidth>,
+    #[arg(long = "branch-width", visible_alias = "branchw", value_parser = parse_branchw, value_name = "COLS")]
+    pub(crate) branchw: Option<BranchWidth>,
+    /// The path is optional -- a bare `--md` means the timestamped default name.
+    #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PATH")]
+    pub(crate) md: Option<String>,
+}
+
+/// `commits`' own flags, on top of what it shares with `log`.
+#[derive(Args, Debug)]
+pub(crate) struct CommitsFlags {
+    #[arg(value_name = "TARGET")]
+    pub(crate) target: Option<String>,
+    #[command(flatten)]
+    pub(crate) common: CommonCommitsFlags,
+
+    #[arg(short = 'a', long)]
+    pub(crate) all: bool,
+    #[arg(long = "all-files", visible_alias = "af")]
+    pub(crate) all_files: bool,
+    #[arg(long = "filename", visible_alias = "fn", value_name = "TERM")]
+    pub(crate) filename: Option<String>,
+}
+
+/// `log`'s own flags, on top of what it shares with `commits`.
+///
+/// `leading` is the run of non-flag tokens before the first `-`: an optional
+/// target followed by any number of paths, or paths alone. Which is which
+/// still needs the live worktree list to answer -- the same ambiguity
+/// `main.rs` already resolves for every other raw-target verb -- so it stays
+/// one positional `Vec<String>` rather than a `target` field of its own.
+#[derive(Args, Debug)]
+pub(crate) struct LogFlags {
+    #[arg(value_name = "TARGET/PATH", num_args = 0..)]
+    pub(crate) leading: Vec<String>,
+    #[command(flatten)]
+    pub(crate) common: CommonCommitsFlags,
+
+    #[arg(long = "no-follow")]
+    pub(crate) no_follow: bool,
+    #[arg(long = "path-width", visible_alias = "pathw", value_parser = parse_pathw, value_name = "COLS")]
+    pub(crate) pathw: Option<PathWidth>,
+}
+
+impl CommonCommitsFlags {
+    /// Fold the shared fields into a `RawCommitsArgs`, leaving the
+    /// verb-specific ones (`all`, `all_files`, `filename`, `no_follow`,
+    /// `pathw`) for the caller to fill in.
+    fn into_raw(self, mode: Mode) -> RawCommitsArgs {
+        let mut dates = self.date;
+        if let Some(d) = self.date_since {
+            dates.push(DateFilter { op: DateOp::Ge, date: d });
+        }
+        if let Some(d) = self.date_until {
+            dates.push(DateFilter { op: DateOp::Le, date: d });
+        }
+        RawCommitsArgs {
+            limit: self.limit,
+            dates,
+            commit_since: self.commit_since,
+            commit_until: self.commit_until,
+            commits: self.commits,
+            author: self.author,
+            message: self.message,
+            search: self.search,
+            filename: None,
+            all_files: false,
+            topo: self.topo,
+            merges: self.merges,
+            fmt: DateFmt { human: self.date_human, time: self.time },
+            md: self.md.map(|s| if s.is_empty() { None } else { Some(s) }),
+            reverse: self.reverse,
+            no_cherry: self.no_cherry,
+            pick: self.pick,
+            union: self.union,
+            all: mode == Mode::Review, // filled in by the caller for `commits`
+            files: self.files,
+            squash: self.squash,
+            wrap: self.wrap,
+            subjectw: self.subjectw,
+            branchw: self.branchw,
+            pathw: None,
+            no_follow: false,
+        }
+    }
+}
+
+impl CommitsFlags {
+    pub(crate) fn into_args(self) -> Result<CommitsArgs, String> {
+        let mut raw = self.common.into_raw(Mode::Commits);
+        raw.all = self.all;
+        raw.all_files = self.all_files;
+        raw.filename = self.filename;
+        finalize_commits_args(Mode::Commits, raw)
+    }
+}
+
+impl LogFlags {
+    pub(crate) fn into_args(self) -> Result<CommitsArgs, String> {
+        let mut raw = self.common.into_raw(Mode::Log);
+        raw.no_follow = self.no_follow;
+        raw.pathw = self.pathw;
+        finalize_commits_args(Mode::Log, raw)
+    }
 }
 
 /// The message for a token that reached the `commits` parser under `--review`
@@ -576,18 +750,68 @@ pub(crate) fn parse_commits_args_with(
             }
         }
     }
-    // Both name a row *source*, and --review has already fixed one: the range
-    // 'dest..src'. There is no wider log to widen to and no second branch to
-    // union in, so honoring either is impossible -- and a flag that changes
-    // nothing is worse than one that is refused, because the table looks like
-    // an answer to the question that was asked.
-    //
-    // Checked on what was typed, before the implied --all below folds in: a
-    // '--review --commits <sha>' asks for no source it could contradict.
-    //
-    // Named by the canonical spelling, not the one typed: a reader who reached
-    // for '-a' is better served by the flag's full name than by having their
-    // own keystroke read back.
+    finalize_commits_args(mode, RawCommitsArgs {
+        limit, dates, commit_since, commit_until, commits, author, message, search, filename,
+        all_files, topo, merges, fmt, md, reverse, no_cherry, pick, union, all, files, squash,
+        wrap, subjectw, branchw, pathw, no_follow,
+    })
+}
+
+/// `CommitsArgs`, before the cross-field rules below have run: `wrap` still
+/// unresolved to its mode default, `all`/`files`/`all_files` not yet folded
+/// against the flags that imply or forbid them.
+///
+/// The declaratively-parsed `commits`/`log` paths (`CommitsFlags`/`LogFlags`)
+/// build one of these directly from typed clap fields, same as the
+/// hand-rolled token loop above does field by field; both hand it to
+/// `finalize_commits_args` so the cross-field rules exist in exactly one
+/// place.
+pub(crate) struct RawCommitsArgs {
+    pub(crate) limit: Option<usize>,
+    pub(crate) dates: Vec<DateFilter>,
+    pub(crate) commit_since: Option<String>,
+    pub(crate) commit_until: Option<String>,
+    pub(crate) commits: Vec<String>,
+    pub(crate) author: Option<String>,
+    pub(crate) message: Option<String>,
+    pub(crate) search: Option<String>,
+    pub(crate) filename: Option<String>,
+    pub(crate) all_files: bool,
+    pub(crate) topo: bool,
+    pub(crate) merges: bool,
+    pub(crate) fmt: DateFmt,
+    pub(crate) md: Option<Option<String>>,
+    pub(crate) reverse: bool,
+    pub(crate) no_cherry: bool,
+    pub(crate) pick: bool,
+    pub(crate) union: bool,
+    pub(crate) all: bool,
+    pub(crate) files: bool,
+    pub(crate) squash: bool,
+    pub(crate) wrap: Option<Wrap>,
+    pub(crate) subjectw: Option<SubjectWidth>,
+    pub(crate) branchw: Option<BranchWidth>,
+    pub(crate) pathw: Option<PathWidth>,
+    pub(crate) no_follow: bool,
+}
+
+/// The cross-field rules every `CommitsArgs` source (the hand-rolled token
+/// loop above, and the clap-declared `commits`/`log` structs) has to run
+/// once its own flags are collected: `--review`'s row-source refusal,
+/// `--pick-id`/`--no-cherry`, the implied `--all` a lower bound sets, the
+/// `--message`/`--filename` implications on `wrap`/`files`, and
+/// `--all-files`'s "needs something to widen" check.
+///
+/// Extracted from `parse_commits_args_with` so a struct built straight from
+/// typed clap fields gets the same rules as one built token by token,
+/// without a second copy of them.
+pub(crate) fn finalize_commits_args(mode: Mode, raw: RawCommitsArgs) -> Result<CommitsArgs, String> {
+    let review = mode == Mode::Review;
+    let RawCommitsArgs {
+        limit, dates, commit_since, commit_until, commits, author, message, search, filename,
+        all_files, topo, merges, fmt, md, reverse, no_cherry, pick, union, mut all, mut files,
+        squash, wrap, subjectw, branchw, pathw, no_follow,
+    } = raw;
     if review {
         for (flag, what) in [(all, "--all"), (union, "--union")] {
             if flag {
@@ -598,8 +822,6 @@ pub(crate) fn parse_commits_args_with(
             }
         }
     }
-    // The one asks for exactly what the other switches off: rather than let a
-    // '--pick-id' quietly print nothing, say which flag to drop.
     if pick && no_cherry {
         return Err(
             "--pick-id needs the patch comparison that --no-cherry skips: drop one of them"
@@ -609,39 +831,13 @@ pub(crate) fn parse_commits_args_with(
     if all && union {
         return Err("--all and --union are two different row sources: use one of them".into());
     }
-    // The default rows are a slice with a floor: the first branch's log from its
-    // earliest divergent commit up to its tip. Only the bottom is cut, and that
-    // is what decides which filters have to widen the source.
-    //
-    // A lower bound or a named commit can point BELOW that floor, so on the
-    // default rows they would report "nothing matched" when the truth is "older
-    // than these rows". They widen to the full log on their own.
-    //
-    // An upper bound cannot: the top edge is the tip either way, so --date-until
-    // and --commit-until only ever trim rows the slice already has. They are a
-    // post-filter, and post-filters do not get to redefine the source. A range
-    // still widens, because its lower bound does.
-    //
-    // --author is the same kind of thing: it matches many commits and named none
-    // of them, so "who wrote in this range" stays the question. Say --all when
-    // you mean the whole log.
-    //
-    // Checked after the conflict above, so an implied --all can never collide
-    // with a --union the user actually typed.
     let names_a_floor = !commits.is_empty()
         || commit_since.is_some()
         || dates.iter().any(|d| d.op != DateOp::Le);
-    let all = all || (names_a_floor && !union);
+    all = all || (names_a_floor && !union);
 
-    // A text filter keeps a row for words that have to be *on* that row, or the
-    // table is asserting a match it never shows. The subject is the one cell cut
-    // at the terminal's edge, so searching it means showing all of it. An
-    // explicit --wrap wins: that is an answer already given.
     let wrap = wrap.unwrap_or(if message.is_some() { Wrap::Full } else { Wrap::Lines(1) });
-    // Same rule for a path: a row kept for a file it touched has to name it.
-    let files = files || filename.is_some();
-    // Asking for every file only means anything when something was trimming
-    // them: without --filename the block is already whole.
+    files = files || filename.is_some();
     if all_files && filename.is_none() {
         return Err(ALL_FILES_MSG.into());
     }

@@ -1,4 +1,4 @@
-use clap::Args;
+use clap::{ArgAction, Args};
 
 /// Open meld on 2-3 worktree directories.
 #[derive(Args, Clone, Debug, Default)]
@@ -25,4 +25,10 @@ pub(crate) struct MeldArgs {
     /// Diff only: `..` (tip-vs-tip, default under --diff) or `...` (fork).
     #[arg(value_name = "RANGE")]
     pub range: Option<String>,
+
+    /// Extra worktree targets, appended to this command's target list.
+    /// Repeatable: `-b 2 -b 3` and `-b 2,3` mean the same thing.
+    #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
+    pub branch: Vec<String>,
+
 }

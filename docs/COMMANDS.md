@@ -224,15 +224,15 @@ Options:
 
 ## compare
 
-Compares files in the current worktree against a branch or commit — not two
-worktrees, just files vs. a ref, so `-b/--branch` is reused here for a single
-branch name rather than the usual append-more-targets meaning.
+Compares files in the current worktree against a ref — not two worktrees, just
+files vs. one rev, so it takes its own `-r/--ref` and refuses the global
+`-b/--branch`.
 
-    git-wt compare -f src/main.rs -b main
-    git-wt compare -f src/main.rs,Cargo.toml -c HEAD~3
-    git-wt compare -f src/main.rs -b main -m      open in meld, wait for exit
+    git-wt compare -f src/main.rs -r main
+    git-wt compare -f src/main.rs,Cargo.toml -r HEAD~3
+    git-wt compare -f src/main.rs -r origin/main -m   open in meld, wait for exit
 
-Sample (`git-wt compare -f Cargo.toml -b main`, plain diff to stdout):
+Sample (`git-wt compare -f Cargo.toml -r main`, plain diff to stdout):
 
     diff --git a/Cargo.toml b/Cargo.toml
     index 465958a..66c8ce7 100644
@@ -247,8 +247,7 @@ Sample (`git-wt compare -f Cargo.toml -b main`, plain diff to stdout):
 Options:
 
     -f, --file FILE_LIST         required; comma-separated relative paths to compare
-    -b, --branch NAME            branch to compare against (global flag, single name only here)
-    -c, --commit COMMIT          commit to compare against; alternative to -b/--branch
+    -r, --ref REF                required; anything git resolves to a commit — branch, origin/branch, tag, sha, HEAD~3
     -m, --meld                   extract ref's versions to a temp dir and open meld, waiting for exit
 
 ## merge

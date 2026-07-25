@@ -3,6 +3,7 @@ pub(crate) mod args;
 use std::io::IsTerminal;
 use std::path::Path;
 
+use crate::cmd::sync::args::{FetchArgs, PullArgs, PushArgs};
 use crate::git::{git_quiet, git_run, git_stdout};
 use crate::ui::{color_enabled, paint, DIM, GREEN, RED};
 use crate::worktree::{label, Worktree};
@@ -23,24 +24,6 @@ impl SyncOp {
             SyncOp::Push => "push",
         }
     }
-
-    #[allow(dead_code)]
-    fn from_word(tok: &str) -> Option<SyncOp> {
-        match tok {
-            "fetch" => Some(SyncOp::Fetch),
-            "pull" => Some(SyncOp::Pull),
-            "push" => Some(SyncOp::Push),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn flags(self) -> &'static [&'static str] {
-        match self {
-            SyncOp::Fetch => &["--prune", "--tags", "--no-tags", "--force"],
-            SyncOp::Pull => &["--rebase", "--no-rebase", "--ff-only", "--prune", "--autostash"],
-            SyncOp::Push => &["--set-upstream", "--force-with-lease", "--tags", "--dry-run"],
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -50,55 +33,72 @@ pub(crate) struct SyncParsedArgs {
     pub(crate) flags: Vec<String>,
 }
 
-pub(crate) fn parse_sync_args(op: SyncOp, args: &[String]) -> Result<SyncParsedArgs, String> {
-    let mut all = false;
-    let mut flags: Vec<String> = Vec::new();
-    let word = op.word();
-
-    for a in args {
-        let canon = match a.as_str() {
-            "--all" | "-a" => {
-                all = true;
-                continue;
-            }
-            "-u" if op == SyncOp::Push => "--set-upstream",
-            "-p" if op != SyncOp::Push => "--prune",
-            "-n" if op == SyncOp::Push => "--dry-run",
-            "--rb" if op == SyncOp::Pull => "--rebase",
-            "--nr" if op == SyncOp::Pull => "--no-rebase",
-            "--as" if op == SyncOp::Pull => "--autostash",
-            "--nt" if op == SyncOp::Fetch => "--no-tags",
-            "--fl" if op == SyncOp::Push => "--force-with-lease",
-            "-f" | "--force" if op == SyncOp::Push => {
-                return Err("no '--force' for push: it overwrites a remote branch without \
-                     checking what is on it"
-                    .into());
-            }
-            s => s,
-        };
-        if !op.flags().contains(&canon) {
-            return Err(format!(
-                "unknown option '{a}' for {word}\n\
-                 {word} takes {}",
-                op.flags().join(", ")
-            ));
-        }
-        let canon = canon.to_string();
-        if !flags.contains(&canon) {
-            flags.push(canon);
-        }
+/// Each verb's own struct is already clap-validated (unknown flags, `-a`
+/// position, and every hand-rolled contradiction check below are gone: clap's
+/// `conflicts_with`/`conflicts_with_all` on the struct fields refuse them at
+/// parse time). What's left here is just reading the typed bools into the
+/// canonical flag strings `sync_argv`/`cmd_sync` already work with.
+pub(crate) fn fetch_parsed(a: &FetchArgs) -> SyncParsedArgs {
+    let mut flags = Vec::new();
+    if a.prune {
+        flags.push("--prune".to_string());
     }
-
-    for (a, b) in [("--rebase", "--no-rebase"), ("--tags", "--no-tags")] {
-        if flags.iter().any(|f| f == a) && flags.iter().any(|f| f == b) {
-            return Err(format!("'{a}' and '{b}' contradict each other"));
-        }
+    if a.tags {
+        flags.push("--tags".to_string());
     }
-    if op == SyncOp::Pull && flags.iter().any(|f| f == "--rebase") && flags.iter().any(|f| f == "--ff-only") {
-        return Err("'--rebase' and '--ff-only' contradict each other".into());
+    if a.no_tags {
+        flags.push("--no-tags".to_string());
     }
+    if a.force {
+        flags.push("--force".to_string());
+    }
+    SyncParsedArgs { op: SyncOp::Fetch, all: a.common.all, flags }
+}
 
-    Ok(SyncParsedArgs { op, all, flags })
+pub(crate) fn pull_parsed(a: &PullArgs) -> SyncParsedArgs {
+    let mut flags = Vec::new();
+    if a.rebase {
+        flags.push("--rebase".to_string());
+    }
+    if a.no_rebase {
+        flags.push("--no-rebase".to_string());
+    }
+    if a.ff_only {
+        flags.push("--ff-only".to_string());
+    }
+    if a.prune {
+        flags.push("--prune".to_string());
+    }
+    if a.autostash {
+        flags.push("--autostash".to_string());
+    }
+    SyncParsedArgs { op: SyncOp::Pull, all: a.common.all, flags }
+}
+
+/// `-f/--force` is declared on `PushArgs` (see its doc comment) purely so this
+/// can name the danger instead of clap's generic "unexpected argument": it
+/// overwrites a remote branch without checking what is on it, and force is a
+/// real word on the other two verbs, so a typo here is a plausible mistake.
+pub(crate) fn push_parsed(a: &PushArgs) -> Result<SyncParsedArgs, String> {
+    if a.force {
+        return Err("no '--force' for push: it overwrites a remote branch without \
+             checking what is on it"
+            .into());
+    }
+    let mut flags = Vec::new();
+    if a.set_upstream {
+        flags.push("--set-upstream".to_string());
+    }
+    if a.force_with_lease {
+        flags.push("--force-with-lease".to_string());
+    }
+    if a.tags {
+        flags.push("--tags".to_string());
+    }
+    if a.dry_run {
+        flags.push("--dry-run".to_string());
+    }
+    Ok(SyncParsedArgs { op: SyncOp::Push, all: a.common.all, flags })
 }
 
 pub(crate) fn sync_skip(w: &Worktree, op: SyncOp) -> Option<&'static str> {
@@ -218,115 +218,136 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn sync_args(op: SyncOp, args: &[&str]) -> Result<SyncParsedArgs, String> {
-        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_sync_args(op, &v)
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    struct TestFetch {
+        #[command(flatten)]
+        args: FetchArgs,
+    }
+    #[derive(Parser, Debug)]
+    struct TestPull {
+        #[command(flatten)]
+        args: PullArgs,
+    }
+    #[derive(Parser, Debug)]
+    struct TestPush {
+        #[command(flatten)]
+        args: PushArgs,
     }
 
-    #[test]
-    fn sync_words_are_exact() {
-        assert_eq!(SyncOp::from_word("fetch"), Some(SyncOp::Fetch));
-        assert_eq!(SyncOp::from_word("pull"), Some(SyncOp::Pull));
-        assert_eq!(SyncOp::from_word("push"), Some(SyncOp::Push));
-        assert_eq!(SyncOp::from_word("pu"), None);
-        assert_eq!(SyncOp::from_word("--pull"), None);
+    fn fetch(args: &[&str]) -> Result<FetchArgs, String> {
+        TestFetch::try_parse_from(std::iter::once("git-wt").chain(args.iter().copied()))
+            .map(|c| c.args)
+            .map_err(|e| e.to_string())
+    }
+    fn pull(args: &[&str]) -> Result<PullArgs, String> {
+        TestPull::try_parse_from(std::iter::once("git-wt").chain(args.iter().copied()))
+            .map(|c| c.args)
+            .map_err(|e| e.to_string())
+    }
+    fn push(args: &[&str]) -> Result<PushArgs, String> {
+        TestPush::try_parse_from(std::iter::once("git-wt").chain(args.iter().copied()))
+            .map(|c| c.args)
+            .map_err(|e| e.to_string())
     }
 
     #[test]
     fn sync_bare_verb_takes_no_flags() {
-        let a = sync_args(SyncOp::Pull, &[]).unwrap();
-        assert!(!a.all);
-        assert!(a.flags.is_empty());
+        let a = pull(&[]).unwrap();
+        assert!(!a.common.all);
+        assert!(pull_parsed(&a).flags.is_empty());
     }
 
     #[test]
     fn sync_all_is_worktrees_not_remotes() {
-        assert!(sync_args(SyncOp::Fetch, &["--all"]).unwrap().all);
-        assert!(sync_args(SyncOp::Push, &["-a"]).unwrap().all);
-        assert!(sync_args(SyncOp::Fetch, &["--all"]).unwrap().flags.is_empty());
+        assert!(fetch(&["--all"]).unwrap().common.all);
+        assert!(push(&["-a"]).unwrap().common.all);
+        assert!(fetch_parsed(&fetch(&["--all"]).unwrap()).flags.is_empty());
     }
 
     #[test]
-    fn all_is_found_however_late_it_sits_in_the_tail() {
-        // Only when nothing precedes it does `--all` reach clap's own field;
-        // behind another flag it lands here instead, and the caller merges the
-        // two before deciding targets. Both spellings mean every worktree.
-        let a = sync_args(SyncOp::Fetch, &["--prune", "--all"]).unwrap();
-        assert!(a.all);
-        assert_eq!(a.flags, ["--prune"]);
+    fn all_is_found_wherever_it_sits() {
+        // Unlike the old catch-all tail, `--all` is a plain declared bool now:
+        // clap catches it regardless of what else came first.
+        let a = fetch(&["--prune", "--all"]).unwrap();
+        assert!(a.common.all);
+        assert_eq!(fetch_parsed(&a).flags, ["--prune"]);
+        let a = fetch(&["--all", "--prune"]).unwrap();
+        assert!(a.common.all);
+        assert_eq!(fetch_parsed(&a).flags, ["--prune"]);
     }
 
     #[test]
     fn sync_shorts_canonicalize() {
-        assert_eq!(sync_args(SyncOp::Push, &["-u"]).unwrap().flags, ["--set-upstream"]);
-        assert_eq!(sync_args(SyncOp::Push, &["-n"]).unwrap().flags, ["--dry-run"]);
-        assert_eq!(sync_args(SyncOp::Fetch, &["-p"]).unwrap().flags, ["--prune"]);
-        assert_eq!(sync_args(SyncOp::Pull, &["-p"]).unwrap().flags, ["--prune"]);
+        assert_eq!(push_parsed(&push(&["-u"]).unwrap()).unwrap().flags, ["--set-upstream"]);
+        assert_eq!(push_parsed(&push(&["-n"]).unwrap()).unwrap().flags, ["--dry-run"]);
+        assert_eq!(fetch_parsed(&fetch(&["-p"]).unwrap()).flags, ["--prune"]);
+        assert_eq!(pull_parsed(&pull(&["-p"]).unwrap()).flags, ["--prune"]);
     }
 
     #[test]
     fn sync_short_aliases_canonicalize_the_same_as_long_form() {
         assert_eq!(
-            sync_args(SyncOp::Pull, &["--rb"]).unwrap().flags,
-            sync_args(SyncOp::Pull, &["--rebase"]).unwrap().flags
+            pull_parsed(&pull(&["--rb"]).unwrap()).flags,
+            pull_parsed(&pull(&["--rebase"]).unwrap()).flags
         );
         assert_eq!(
-            sync_args(SyncOp::Pull, &["--nr"]).unwrap().flags,
-            sync_args(SyncOp::Pull, &["--no-rebase"]).unwrap().flags
+            pull_parsed(&pull(&["--nr"]).unwrap()).flags,
+            pull_parsed(&pull(&["--no-rebase"]).unwrap()).flags
         );
         assert_eq!(
-            sync_args(SyncOp::Pull, &["--as"]).unwrap().flags,
-            sync_args(SyncOp::Pull, &["--autostash"]).unwrap().flags
+            pull_parsed(&pull(&["--as"]).unwrap()).flags,
+            pull_parsed(&pull(&["--autostash"]).unwrap()).flags
         );
         assert_eq!(
-            sync_args(SyncOp::Fetch, &["--nt"]).unwrap().flags,
-            sync_args(SyncOp::Fetch, &["--no-tags"]).unwrap().flags
+            fetch_parsed(&fetch(&["--nt"]).unwrap()).flags,
+            fetch_parsed(&fetch(&["--no-tags"]).unwrap()).flags
         );
         assert_eq!(
-            sync_args(SyncOp::Push, &["--fl"]).unwrap().flags,
-            sync_args(SyncOp::Push, &["--force-with-lease"]).unwrap().flags
+            push_parsed(&push(&["--fl"]).unwrap()).unwrap().flags,
+            push_parsed(&push(&["--force-with-lease"]).unwrap()).unwrap().flags
         );
     }
 
     #[test]
     fn sync_flags_are_per_verb() {
-        assert!(sync_args(SyncOp::Pull, &["--rebase"]).is_ok());
-        assert!(sync_args(SyncOp::Push, &["--rebase"]).is_err());
-        assert!(sync_args(SyncOp::Fetch, &["--rebase"]).is_err());
-        assert!(sync_args(SyncOp::Push, &["--set-upstream"]).is_ok());
-        assert!(sync_args(SyncOp::Pull, &["--set-upstream"]).is_err());
-        assert!(sync_args(SyncOp::Push, &["-p"]).is_err());
+        // Each verb only declares its own flags, so clap itself refuses the
+        // others -- there is no shared vocabulary left to check by hand.
+        assert!(pull(&["--rebase"]).is_ok());
+        assert!(push(&["--rebase"]).is_err());
+        assert!(fetch(&["--rebase"]).is_err());
+        assert!(push(&["--set-upstream"]).is_ok());
+        assert!(pull(&["--set-upstream"]).is_err());
+        assert!(push(&["-p"]).is_err());
     }
 
     #[test]
     fn sync_unknown_flag_is_not_a_passthrough() {
-        let e = sync_args(SyncOp::Pull, &["--depth=1"]).unwrap_err();
-        assert!(e.contains("unknown option '--depth=1' for pull"));
-        assert!(e.contains("pull takes"));
+        assert!(pull(&["--depth=1"]).is_err());
     }
 
     #[test]
     fn sync_push_force_is_refused() {
         for f in ["--force", "-f"] {
-            let e = sync_args(SyncOp::Push, &[f]).unwrap_err();
+            let a = push(&[f]).unwrap();
+            let e = push_parsed(&a).unwrap_err();
             assert!(e.contains("no '--force' for push"));
         }
-        assert!(sync_args(SyncOp::Push, &["--force-with-lease"]).is_ok());
-        assert!(sync_args(SyncOp::Fetch, &["--force"]).is_ok());
+        assert!(push_parsed(&push(&["--force-with-lease"]).unwrap()).is_ok());
+        // fetch's own '--force' means something else entirely and is fine.
+        assert!(fetch(&["--force"]).unwrap().force);
     }
 
     #[test]
     fn sync_contradictions_are_typos() {
-        assert!(sync_args(SyncOp::Pull, &["--rebase", "--no-rebase"]).is_err());
-        assert!(sync_args(SyncOp::Pull, &["--rebase", "--ff-only"]).is_err());
-        assert!(sync_args(SyncOp::Fetch, &["--tags", "--no-tags"]).is_err());
-        assert!(sync_args(SyncOp::Pull, &["--rebase", "--autostash"]).is_ok());
-    }
-
-    #[test]
-    fn sync_repeated_flag_is_passed_once() {
-        let a = sync_args(SyncOp::Fetch, &["--prune", "-p", "--prune"]).unwrap();
-        assert_eq!(a.flags, ["--prune"]);
+        // clap's own `conflicts_with`/`conflicts_with_all` refuse these at
+        // parse time now; there is nothing left for `push`/`fetch_parsed` etc.
+        // to check by hand.
+        assert!(pull(&["--rebase", "--no-rebase"]).is_err());
+        assert!(pull(&["--rebase", "--ff-only"]).is_err());
+        assert!(fetch(&["--tags", "--no-tags"]).is_err());
+        assert!(pull(&["--rebase", "--autostash"]).is_ok());
     }
 
     #[test]

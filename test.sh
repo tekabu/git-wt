@@ -410,7 +410,10 @@ else
   report FAIL HAPPY "diff -p limits to the path" "$pcmd" "wanted exactly 'onlylogin.txt', got '$pspec'"
 fi
 # git's trailing spelling is gone; it errors, with no hint offered.
-check "diff -- is retired"           exit=1 err="'--' is retired for diff" -- diff "1,$didx" --name-only -- onlylogin.txt
+# clap eats the literal '--' itself (its own end-of-options marker); the path
+# after it lands as diff's one stray 'range' token, and cmd_diff recognizes it
+# as a real file and gives the same '-p' hint a bare path gets.
+check "diff -- is retired"           exit=1 err="paths go in '-p/--path'" -- diff "1,$didx" --name-only -- onlylogin.txt
 check "bare path points at -p"       exit=1 err="paths go in '-p/--path'" -- diff "1,$didx" onlylogin.txt
 # -A/-B keep the files one side has and the other lacks. Under the default
 # '...' range main's side does not exist at all, so 'onlymain.txt' needs '..'
@@ -440,10 +443,9 @@ check "diff bad index errors"        exit=1 err="no worktree #99" -- diff "1,99"
 check "diff against itself errors"   exit=1 err="worktree #1 listed twice" -- diff "1,1"
 # meld takes 3; diff cannot, since 'git diff' compares exactly two things.
 check "diff rejects three targets"   exit=1 err="worktree #1 listed twice" -- diff "1,$didx,1"
-check "diff rejects other git flags" exit=1 err="unexpected argument '-w' for diff" -- diff "1,$didx" -w
-# The hint must name the real branches, not echo the offending flag back as a
-# ref: 'git diff -w..feat -w' is what a shadowed loop variable looks like.
-check "diff flag error lists flags"  exit=1 err="diff takes --target TARGET_LIST" -- diff "1,$didx" -w
+# -w is a real git flag but not one of diff's own; clap rejects it directly
+# now that diff has no catch-all tail to swallow it into.
+check "diff rejects other git flags" exit=2 err="unexpected argument '-w' found" -- diff "1,$didx" -w
 
 # Uncommitted work is invisible to a ref diff, so it must be called out.
 echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"
@@ -1007,15 +1009,17 @@ printf 'one\nTWO\nthree\nfour\n' > "$LIVE/shared.txt"
 check "live identical is empty out"  exit=0 out="" err="no differences" -- diff "1,$lidx" --live -p .gitignore
 
 check "live identical says so once"  exit=0 err="no differences" -- diff "1,$lidx" --live -p .gitignore --name-only
-check "live bad flag rejected"       exit=1 err="unexpected argument '-w' for diff" -- diff "1,$lidx" --live -w
-# 'live' is a plain word again now that the bare mode word is gone, and it
-# names no file, so it is not read as a path either.
-check "bare 'live' word rejected"    exit=1 err="unexpected argument 'live' for diff" -- diff "1,$lidx" live --name-only
-check "bare 'hunks' word rejected"   exit=1 err="unexpected argument 'hunks' for diff" -- diff "1,$didx" hunks
+# -w is not one of diff's own flags; clap rejects it directly.
+check "live bad flag rejected"       exit=2 err="unexpected argument '-w' found" -- diff "1,$lidx" --live -w
+# 'live' and 'hunks' are plain words that name no file, so diff's one 'range'
+# positional catches them and rejects them as neither a range nor a path.
+check "bare 'live' word rejected"    exit=1 err="range must be '..' or '...'" -- diff "1,$lidx" live --name-only
+check "bare 'hunks' word rejected"   exit=1 err="range must be '..' or '...'" -- diff "1,$didx" hunks
 
-# Both shapes of git's retired trailing form are errors. Which one the parser
-# sees depends on whether a flag of diff's own came first: it eats the '--' in
-# that case, so only the bare path survives.
+# git's trailing '-- PATH...' has no catch-all to land in anymore: clap eats
+# the literal '--' as its own end-of-options marker, and the path after it
+# becomes diff's one 'range' token, same as a bare path with no '--' at all --
+# so both spellings get the same '-p' hint now.
 check "live -- is retired"           exit=1 err="paths go in '-p/--path'" -- diff "1,$lidx" --live --name-only -- shared.txt
 check "bare path after --live"       exit=1 err="paths go in '-p/--path'" -- diff "1,$lidx" --live --name-only shared.txt
 # '-p/--path' is that limit in plain words: a flag, so it can sit anywhere a
@@ -1025,7 +1029,7 @@ check "--path long form"             exit=0 out="shared.txt" -- diff "1,$lidx" -
 check "-p takes a comma list"        exit=0 out="untracked.txt" -- diff "1,$lidx" --live -p shared.txt,untracked.txt --name-only
 check "-p checks the path too"       exit=1 err="no file matches 'nope/'" -- diff "1,$lidx" --live -p nope/ --name-only
 check "-p empty element errors"      exit=1 err="bad path list" -- diff "1,$lidx" --live -p "shared.txt," --name-only
-check "-p with a retired -- too"     exit=1 err="'--' is retired for diff" -- diff "1,$lidx" --live -p shared.txt --name-only -- shared.txt
+check "-p with a retired -- too"     exit=1 err="paths go in '-p/--path'" -- diff "1,$lidx" --live -p shared.txt --name-only -- shared.txt
 # A glob is git's own matching, and one that hits nothing is still a mistake.
 check "glob path matches"            exit=0 out="shared.txt" -- diff "1,$lidx" --live -p "*.txt" --name-only
 check "glob with no hit errors"      exit=1 err="no file matches '*.zzz'" -- diff "1,$lidx" --live -p "*.zzz" --name-only
@@ -1121,6 +1125,75 @@ case "$meld_err" in
     report FAIL UNHAPPY "meld missing gives install hint" "$mcmd" "got '$meld_err'" ;;
 esac
 
+# --- compare ----------------------------------------------------------------
+# compare works on cwd alone -- the suite's cwd is the main worktree -- so the
+# cases below need no target list, only a ref. They reuse 'onlymain.txt', which
+# the diff section committed on main, and everything they dirty is restored at
+# the end of the section so the later suites still see a clean tree.
+#
+# The meld stub installed above is still on PATH, which is what '-m' asserts on.
+cmp_sha="$(git rev-parse --short HEAD~1)"
+git tag cmptag HEAD~1
+# The binary reports its cwd resolved (/tmp is a symlink to /private/tmp on
+# macOS), so the '-m' assertions below must compare against the resolved form.
+cmp_cwd="$(pwd -P)"
+
+# An uncommitted edit is what every ref shape below has to show: the file is
+# committed on main, so without this the diff would be empty at all of them and
+# the assertions would prove nothing. It also proves compare reads the file on
+# disk rather than HEAD.
+echo edited >> onlymain.txt
+
+# '-r' takes every ref shape, which is the whole point of it not being a
+# branch-only flag.
+check "compare -r branch"            exit=0 out="+edited" -- compare -f onlymain.txt -r main
+check "compare -r HEAD~1"            exit=0 out="+edited" -- compare -f onlymain.txt -r HEAD~1
+check "compare -r sha"               exit=0 out="+edited" -- compare -f onlymain.txt -r "$cmp_sha"
+check "compare -r tag"               exit=0 out="+edited" -- compare -f onlymain.txt -r cmptag
+check "compare -r remote ref"        exit=0 out="+edited" -- compare -f onlymain.txt -r origin/remote-only
+check "compare --ref long form"      exit=0 out="+edited" -- compare --file onlymain.txt --ref main
+check "compare names the file"       exit=0 out="onlymain.txt" -- compare -f onlymain.txt -r main
+
+# A comma list is many files, one invocation. cmp2.txt is staged rather than
+# committed so main's history stays exactly as the merge/merged suites expect;
+# staging is enough for 'git diff <ref>' to see it.
+echo two > cmp2.txt && git add cmp2.txt
+check "compare -f takes a file list" exit=0 out="cmp2.txt" -- compare -f onlymain.txt,cmp2.txt -r main
+check "compare file list keeps both" exit=0 out="onlymain.txt" -- compare -f onlymain.txt,cmp2.txt -r main
+
+# -m hands meld one '--diff local ref-copy' pair per file, local side first.
+check "compare -m pairs local first" exit=0 out="ARGV: --diff $cmp_cwd/onlymain.txt" -- compare -f onlymain.txt -r main -m
+check "compare -m pairs every file"  exit=0 out="--diff $cmp_cwd/cmp2.txt" -- compare -f onlymain.txt,cmp2.txt -r main -m
+check "compare -m names the ref"     exit=0 err="compare main" -- compare -f onlymain.txt -r main -m
+
+git rm -q --cached cmp2.txt && rm -f cmp2.txt
+git checkout -q -- onlymain.txt
+
+# Back to a clean tree: comparing against HEAD is no diff at all, and still a
+# success. Exact, not a substring -- 'out=' with an empty value asserts nothing.
+cmp_same="$("$BIN" compare -f onlymain.txt -r HEAD 2>/dev/null)"
+cmp_cmd="$(fmt_cmd compare -f onlymain.txt -r HEAD)"
+if [ -z "$cmp_same" ]; then
+  report PASS HAPPY "compare at HEAD prints nothing" "$cmp_cmd"
+else
+  report FAIL HAPPY "compare at HEAD prints nothing" "$cmp_cmd" "wanted no output, got '$cmp_same'"
+fi
+
+check "compare bad ref errors"       exit=1 err="no such ref 'nope'" -- compare -f onlymain.txt -r nope
+check "compare bad file errors"      exit=1 err="no such file 'nope.txt'" -- compare -f nope.txt -r main
+check "compare empty list part"      exit=1 err="bad file list" -- compare -f "onlymain.txt,,cmp2.txt" -r main
+check "compare needs a ref"          exit=2 err="--ref <REF>" -- compare -f onlymain.txt
+check "compare needs a file"         exit=2 err="--file <FILE_LIST>" -- compare -r main
+# -c/--commit is retired: -r is the only ref flag.
+check "compare -c is retired"        exit=2 err="unexpected argument '-c'" -- compare -f onlymain.txt -c main
+check "compare --commit is retired"  exit=2 err="unexpected argument '--commit'" -- compare -f onlymain.txt --commit main
+# compare declares no -b/--branch at all now, so clap itself rejects it --
+# pre-verb (no longer a global) or post-verb (not one of compare's own flags).
+check "compare rejects pre-verb -b"  exit=2 err="unexpected argument '-b' found" -- -b main compare -f onlymain.txt -r main
+check "compare rejects post-verb -b" exit=2 err="unexpected argument '-b' found" -- compare -f onlymain.txt -r main -b main
+
+git tag -d cmptag >/dev/null 2>&1
+
 # --- remove -----------------------------------------------------------------
 check "remove main refused"          exit=1 err="refusing to remove the main worktree" -- remove 1 -y
 # Removing a tree you are NOT standing in prints nothing (wrapper stays put).
@@ -1191,16 +1264,26 @@ check "merge one target needs source" exit=1 err="merge needs a source" -- merge
 check "merge old target-first order rejected" exit=2 err="unexpected argument 'merge' found" -- switch 1 merge 2
 check "merge unknown source"         exit=1 err="no worktree or branch 'zzz'" -- merge 1 -b zzz
 check "merge self refused"           exit=1 err="worktree #1 listed twice" -- merge "1,1"
-check "merge too many args"          exit=1 err="too many arguments" -- merge "1,$A" "$C1"
-check "merge unknown option"         exit=1 err="unknown option '--rebase'" -- merge "1,$A" --rebase
-check "merge ours+theirs conflict"   exit=1 err="ours and theirs conflict" -- merge "1,$A" --ours --theirs
+# merge's option tail re-parses through a real clap-derived struct now
+# (MergeOptions), not a hand-written token loop, so an extra positional or an
+# unrecognized flag is clap's own rejection, and every pairwise/start-only
+# conflict (ours/theirs, continue/abort, a source or option alongside
+# continue/abort) is clap's declarative conflicts_with -- not our wording, but
+# still a single bare line (clap_err_line strips the doubled "error:" and the
+# Usage block a nested try_parse_from would otherwise add).
+check "merge too many args"          exit=1 err="unexpected argument" -- merge "1,$A" "$C1"
+check "merge unknown option"         exit=1 err="unexpected argument '--rebase'" -- merge "1,$A" --rebase
+check "merge ours+theirs conflict"   exit=1 err="'--ours' cannot be used with '--theirs'" -- merge "1,$A" --ours --theirs
+# '--dry-run' is compatible with ours/theirs (unlike the other start-only
+# flags), so its "takes no merge options" check is still the hand-written
+# accumulator this list feeds -- unchanged, same wording as before.
 check "merge dry-run + --no-ff"      exit=1 err="dry-run takes no merge options (got --no-ff)" -- merge "1,$A" --dry-run --no-ff
 # The resume words keep the single-target form, so their parse errors are
 # reachable only there.
-check "merge continue takes no arg"  exit=1 err="continue takes no argument" -- merge 1 --continue 2
-check "merge continue with a side"   exit=1 err="continue takes no merge options" -- merge 1 --theirs --continue
-check "merge continue+abort"         exit=1 err="continue and abort conflict" -- merge 1 --continue --abort
-check "rejection names the flag"     exit=1 err="(got -m, --squash)" -- merge 1 --abort -m x --squash
+check "merge continue takes no arg"  exit=1 err="'--continue' cannot be used with '[SOURCE]'" -- merge 1 --continue 2
+check "merge continue with a side"   exit=1 err="'--theirs' cannot be used with '--continue'" -- merge 1 --theirs --continue
+check "merge continue+abort"         exit=1 err="'--continue' cannot be used with '--abort'" -- merge 1 --continue --abort
+check "rejection names the flag"     exit=1 err="'--abort' cannot be used with" -- merge 1 --abort -m x --squash
 check "merge continue w/o merge"     exit=1 err="no merge in progress" -- merge 1 --continue
 check "merge abort w/o merge"        exit=1 err="no merge in progress" -- merge 1 --abort
 
@@ -1479,15 +1562,23 @@ check "sync fetch bare verb defaults to current" exit=0 err="fetch main" -- fetc
 check "sync target + --all"          exit=1 err="'--all' is every worktree, so a target list has nothing to add" -- pull 1 --all
 check "sync list + --all"            exit=1 err="'--all' is every worktree, so a target list has nothing to add" -- push "1,$SF" --all
 check "sync list dup"                exit=1 err="worktree #1 listed twice" -- fetch "1,1"
-check "sync unknown flag"            exit=1 err="unknown option '--depth=1' for pull" -- pull 1 --depth=1
-check "sync flag error lists flags"  exit=1 err="pull takes --rebase" -- pull 1 --depth=1
-check "sync flags are per verb"      exit=1 err="unknown option '--rebase' for fetch" -- fetch 1 --rebase
-check "sync push has no --rebase"    exit=1 err="unknown option '--rebase' for push" -- push 1 --rebase
-check "sync pull has no -u"          exit=1 err="unknown option '-u' for pull" -- pull 1 -u
+# fetch/pull/push are now three separate clap-declared structs (not a shared
+# catch-all tail), so a flag foreign to the verb is clap's own rejection, not
+# a hand-written "unknown option for X" -- and per-verb vocabularies (and the
+# rebase/no-rebase, rebase/ff-only contradictions) are enforced by
+# conflicts_with at parse time instead of a manual check afterward.
+check "sync unknown flag"            exit=2 err="unexpected argument '--depth' found" -- pull 1 --depth=1
+check "sync flags are per verb"      exit=2 err="unexpected argument '--rebase' found" -- fetch 1 --rebase
+check "sync push has no --rebase"    exit=2 err="unexpected argument '--rebase' found" -- push 1 --rebase
+check "sync pull has no -u"          exit=2 err="unexpected argument '-u' found" -- pull 1 -u
+# push's own '-f/--force' stays a declared flag purely so this keeps its
+# explanatory rejection instead of becoming clap's generic "unexpected
+# argument" -- it is a real word on the other two verbs, so a safety note
+# beats silence.
 check "sync push --force refused"    exit=1 err="no '--force' for push" -- push 1 --force
 check "sync push -f refused"         exit=1 err="no '--force' for push" -- push 1 -f
-check "sync contradiction"           exit=1 err="'--rebase' and '--no-rebase' contradict" -- pull 1 --rebase --no-rebase
-check "sync rebase vs ff-only"       exit=1 err="'--rebase' and '--ff-only' contradict" -- pull 1 --rebase --ff-only
+check "sync contradiction"           exit=2 err="'--rebase' cannot be used with '--no-rebase'" -- pull 1 --rebase --no-rebase
+check "sync rebase vs ff-only"       exit=2 err="'--rebase' cannot be used with '--ff-only'" -- pull 1 --rebase --ff-only
 
 # fetch works everywhere: it moves remote-tracking refs, so even a detached
 # HEAD has something to do.

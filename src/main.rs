@@ -27,7 +27,7 @@ use crate::cmd::merge::{cmd_merge, parse_merge_args};
 use crate::cmd::merged::{cmd_merged, cmd_merged_others};
 use crate::cmd::remove::cmd_remove;
 use crate::cmd::switch::{cmd_path, cmd_switch};
-use crate::cmd::sync::{cmd_sync, parse_sync_args, SyncOp};
+use crate::cmd::sync::{cmd_sync, fetch_parsed, pull_parsed, push_parsed};
 use crate::worktree::{current_worktree_index, ref_of, repo_root, worktrees};
 use crate::git::git_stdout;
 
@@ -85,7 +85,11 @@ fn run() -> Result<(), String> {
             if let Some(t) = cli.targets {
                 return cmd_switch(
                     &root,
-                    crate::cmd::switch::args::SwitchArgs { target: Some(t), target_flag: None },
+                    crate::cmd::switch::args::SwitchArgs {
+                        target: Some(t),
+                        target_flag: None,
+                        branch: Vec::new(),
+                    },
                 );
             }
             return cmd_list(&root, crate::cmd::list::args::ListArgs::default());
@@ -107,9 +111,6 @@ fn run() -> Result<(), String> {
 
     match cmd {
         Commands::Add(args) => {
-            if !cli.branch.is_empty() {
-                return Err("'add' does not take '-b/--branch'".into());
-            }
             if typed_alias("a") {
                 warn_if_alias_shadows_branch(&trees, "a", "add");
             }
@@ -117,15 +118,16 @@ fn run() -> Result<(), String> {
         }
 
         Commands::List(args) => {
-            if cli.targets.is_some() || !cli.branch.is_empty() {
+            if cli.targets.is_some() {
                 return Err("'list' does not take worktree targets".into());
             }
             cmd_list(&root, args)
         }
 
         Commands::Switch(args) => {
+            let branch = args.branch.clone();
             let target = effective_target(args.target, args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, false, false)?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &branch, false, false)?;
             if idxs.len() > 1 {
                 return Err(format!(
                     "switch takes one worktree, got {}",
@@ -135,75 +137,59 @@ fn run() -> Result<(), String> {
             if typed_alias("s") {
                 warn_if_alias_shadows_branch(&trees, "s", "switch");
             }
-            let mut args = crate::cmd::switch::args::SwitchArgs { target, target_flag: None };
-            if args.target.is_none() && !cli.branch.is_empty() {
-                args.target = Some(cli.branch.join(","));
+            let mut args = crate::cmd::switch::args::SwitchArgs {
+                target,
+                target_flag: None,
+                branch: Vec::new(),
+            };
+            if args.target.is_none() && !branch.is_empty() {
+                args.target = Some(branch.join(","));
             }
             cmd_switch(&root, args)
         }
 
         Commands::Path(args) => {
-            if !cli.branch.is_empty() {
-                return Err("'path' does not combine with '-b/--branch'".into());
-            }
             let target = effective_target(args.target, args.target_flag.as_ref())?;
             cmd_path(&root, crate::cmd::switch::args::PathArgs { target, target_flag: None })
         }
 
         Commands::Remove(args) => {
             let target = effective_target(args.target.clone(), args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch, true, false)?;
             if idxs.len() > 1 {
                 return Err(format!("remove takes one worktree, got {}", idxs.len()));
             }
             let idx = idxs.into_iter().next().expect("len 1");
-            let args = crate::cmd::remove::args::RemoveArgs { target, target_flag: None, ..args };
+            let args = crate::cmd::remove::args::RemoveArgs {
+                target,
+                target_flag: None,
+                branch: Vec::new(),
+                ..args
+            };
             cmd_remove(&root, &trees, idx, args)
         }
 
-        Commands::Fetch(ref args) | Commands::Pull(ref args) | Commands::Push(ref args) => {
-            let op = match &cmd {
-                Commands::Fetch(_) => SyncOp::Fetch,
-                Commands::Pull(_) => {
-                    if typed_alias("p") {
-                        warn_if_alias_shadows_branch(&trees, "p", "pull");
-                    }
-                    SyncOp::Pull
-                }
-                Commands::Push(_) => SyncOp::Push,
-                _ => unreachable!(),
-            };
-            // Parsed first, and `--all` merged before anything reads it: the
-            // flag reaches clap's own field only while nothing has started
-            // filling the `flags` catch-all, so `fetch 1 --prune --all` hands
-            // it to `parse_sync_args` instead. Deciding the targets off
-            // `args.all` alone made that spelling sweep one worktree while
-            // `fetch 1 --all` errored -- same request, two answers.
-            let mut parsed = parse_sync_args(op, &args.flags)?;
-            parsed.all = parsed.all || args.all;
-            let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
-            if parsed.all && (target.is_some() || !cli.branch.is_empty()) {
-                return Err(format!(
-                    "'--all' is every worktree, so a target list has nothing to add"
-                ));
+        Commands::Fetch(args) => {
+            let common = args.common.clone();
+            run_sync(&trees, common, fetch_parsed(&args))
+        }
+
+        Commands::Pull(args) => {
+            if typed_alias("p") {
+                warn_if_alias_shadows_branch(&trees, "p", "pull");
             }
-            let idxs = if parsed.all {
-                (0..trees.len()).collect()
-            } else {
-                let mut idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
-                if idxs.is_empty() {
-                    let cur = current_worktree_index(&trees)
-                        .ok_or_else(|| format!("not inside a worktree; use 'git-wt <N> {}'", op.word()))?;
-                    idxs.push(cur);
-                }
-                idxs
-            };
-            cmd_sync(&trees, &idxs, &parsed)
+            let common = args.common.clone();
+            run_sync(&trees, common, pull_parsed(&args))
+        }
+
+        Commands::Push(args) => {
+            let common = args.common.clone();
+            run_sync(&trees, common, push_parsed(&args)?)
         }
 
         Commands::Diff(args) => {
             let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, false)?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch, true, false)?;
             if idxs.len() != 2 {
                 return Err(format!(
                     "diff takes exactly two worktrees, got {}",
@@ -215,7 +201,7 @@ fn run() -> Result<(), String> {
 
         Commands::Meld(args) => {
             let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, true, true)?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch, true, true)?;
             if idxs.len() < 2 {
                 return Err(format!(
                     "meld needs 2 or 3 worktrees, got {}",
@@ -232,22 +218,12 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Compare(args) => {
-            if cli.branch.len() > 1 {
-                return Err("'compare' takes at most one '-b/--branch'".into());
-            }
-            let branch = match cli.branch.first() {
-                Some(b) if b.contains(',') => {
-                    return Err(format!("'compare' takes exactly one branch, got list '{b}'"));
-                }
-                Some(b) => Some(b.as_str()),
-                None => None,
-            };
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-            cmd_compare(&cwd, &args, branch)
+            cmd_compare(&cwd, &args)
         }
 
         Commands::Merge(args) => {
-            let (rest, branch, embedded_target) = split_rest_flags(args.rest, &cli.branch)?;
+            let (rest, branch, embedded_target) = split_rest_flags(args.rest, &args.branch)?;
             let (target_token, merge_rest) = if let Some(first) = rest.first() {
                 if first.starts_with('-') {
                     (None, rest)
@@ -352,7 +328,7 @@ fn run() -> Result<(), String> {
                 warn_if_alias_shadows_branch(&trees, "m", "merged");
             }
             let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &cli.branch, false, false)?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch, false, false)?;
             if args.others {
                 let idx = if idxs.len() == 1 {
                     idxs[0]
@@ -407,8 +383,8 @@ fn run() -> Result<(), String> {
             cmd_merged(&root, &src, &dest)
         }
 
-        Commands::Commits { rest } => {
-            let (rest, branch, embedded_target) = split_rest_flags(rest, &cli.branch)?;
+        Commands::Commits { rest, branch: b } => {
+            let (rest, branch, embedded_target) = split_rest_flags(rest, &b)?;
             let (target_token, commit_rest) = if let Some(first) = rest.first() {
                 if first.starts_with('-') {
                     (None, rest)
@@ -440,8 +416,8 @@ fn run() -> Result<(), String> {
             cmd_commits(&root, &trees, &idxs, &commit_rest)
         }
 
-        Commands::Log { rest } => {
-            let (rest, branch, embedded_target) = split_rest_flags(rest, &cli.branch)?;
+        Commands::Log { rest, branch: b } => {
+            let (rest, branch, embedded_target) = split_rest_flags(rest, &b)?;
             // `log` is ambiguous: its first positional may be a target, a path, or
             // a git option. If it resolves as a worktree list, consume it as the
             // target; otherwise keep it as part of the path/options passed to git.
@@ -477,9 +453,6 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Doctor(args) => {
-            if !cli.branch.is_empty() {
-                return Err("'doctor' does not take '-b/--branch'".into());
-            }
             cmd_doctor(&root, &trees, args)
         }
 
@@ -489,18 +462,46 @@ fn run() -> Result<(), String> {
 
 /// Recover `-b`/`--branch` and `-t`/`--target` from a raw catch-all `rest`
 /// (see `extract_branch_flag`'s doc comment for why they can end up there),
-/// and fold them into whatever the global flags already caught.
+/// and fold them into whatever the command's own declared `-b` already caught.
 fn split_rest_flags(
     rest: Vec<String>,
-    cli_branch: &[String],
+    declared_branch: &[String],
 ) -> Result<(Vec<String>, Vec<String>, Option<String>), String> {
     let (rest, embedded_branch) = extract_branch_flag(&rest)?;
     let (rest, embedded_target) = extract_target_flag(&rest)?;
-    let mut branch = cli_branch.to_vec();
+    let mut branch = declared_branch.to_vec();
     if let Some(b) = embedded_branch {
         branch.push(b);
     }
     Ok((rest, branch, embedded_target))
+}
+
+/// Shared body of the fetch/pull/push arms: `--all` is now a plain declared
+/// bool on each verb's own struct, so unlike the old catch-all it is always
+/// caught by clap regardless of where it sits -- no more merging two sources
+/// of "all" to cover the position it could hide in.
+fn run_sync(
+    trees: &[crate::worktree::Worktree],
+    common: crate::cmd::sync::args::SyncCommon,
+    parsed: crate::cmd::sync::SyncParsedArgs,
+) -> Result<(), String> {
+    let target = effective_target(common.targets, common.target_flag.as_ref())?;
+    if parsed.all && (target.is_some() || !common.branch.is_empty()) {
+        return Err("'--all' is every worktree, so a target list has nothing to add".into());
+    }
+    let idxs = if parsed.all {
+        (0..trees.len()).collect()
+    } else {
+        let mut idxs = resolve_targets(trees, target.as_ref(), &common.branch, true, false)?;
+        if idxs.is_empty() {
+            let cur = current_worktree_index(trees).ok_or_else(|| {
+                format!("not inside a worktree; use 'git-wt <N> {}'", parsed.op.word())
+            })?;
+            idxs.push(cur);
+        }
+        idxs
+    };
+    cmd_sync(trees, &idxs, &parsed)
 }
 
 /// Resolve a positional target list plus any `-b` values to 0-based worktree

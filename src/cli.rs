@@ -10,7 +10,7 @@ use crate::cmd::merge::args::MergeArgs;
 use crate::cmd::merged::args::MergedArgs;
 use crate::cmd::remove::args::RemoveArgs;
 use crate::cmd::switch::args::{PathArgs, SwitchArgs};
-use crate::cmd::sync::args::SyncArgs;
+use crate::cmd::sync::args::{FetchArgs, PullArgs, PushArgs};
 use crate::worktree::{Worktree};
 
 /// git-wt — create and manage git worktrees in sibling directories.
@@ -29,15 +29,6 @@ pub(crate) struct Cli {
     /// Print the full manual instead of the flag summary; alone or with -h.
     #[arg(short = 'f', long = "full", action = ArgAction::SetTrue)]
     pub(crate) full: bool,
-
-    /// Add a comma-separated worktree list of *other* branches to bring into
-    /// the command, alongside the target. Can be given multiple times.
-    ///
-    /// Not `-t/--target`: that flag exists per-command instead (see each
-    /// command's own `*Args`), since not every command takes a target the
-    /// same way.
-    #[arg(short, long, action = ArgAction::Append, global = true, value_name = "TARGET_LIST")]
-    pub(crate) branch: Vec<String>,
 
     /// When no verb is given, the target list selects a worktree to switch to
     /// (shows the worktree list when omitted).
@@ -70,14 +61,14 @@ pub(crate) enum Commands {
     Remove(RemoveArgs),
 
     /// Fetch across worktrees.
-    Fetch(SyncArgs),
+    Fetch(FetchArgs),
 
     /// Pull across worktrees.
     #[command(alias = "p")]
-    Pull(SyncArgs),
+    Pull(PullArgs),
 
     /// Push across worktrees.
-    Push(SyncArgs),
+    Push(PushArgs),
 
     /// Diff two worktrees.
     Diff(DiffArgs),
@@ -97,6 +88,10 @@ pub(crate) enum Commands {
         /// through.
         #[arg(allow_hyphen_values = true, num_args = 0.., value_name = "TARGET/OPTIONS")]
         rest: Vec<String>,
+
+        /// Extra worktree targets, appended to the target list.
+        #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
+        branch: Vec<String>,
     },
 
     /// File history table across worktrees.
@@ -107,6 +102,10 @@ pub(crate) enum Commands {
         /// it is kept as part of the path/options passed through to git log.
         #[arg(allow_hyphen_values = true, num_args = 0.., value_name = "TARGET/PATH/OPTIONS")]
         rest: Vec<String>,
+
+        /// Extra worktree targets, appended to the target list.
+        #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
+        branch: Vec<String>,
     },
 
     /// Merge a source into a worktree.
@@ -318,55 +317,14 @@ pub(crate) fn warn_if_alias_shadows_branch(trees: &[Worktree], tok: &str, full_w
 /// from "typed `s`". `warn_if_alias_shadows_branch` needs exactly that
 /// distinction: the warning only makes sense when the alias itself was typed.
 ///
-/// Skips any top-level flag that can precede the verb, consuming the value of
-/// the ones that take one (`-b 2`) so `git-wt -b 2 pull` still finds `pull`.
-/// Which flags those are is read off `Cli`'s own clap definition rather than
-/// listed here, so adding a value-taking global can't leave this scan behind
-/// reading that flag's value as the verb. Anything else unrecognized before
-/// the verb is skipped rather than mistaken for it, since it is the parser's
-/// job (already run) to reject it.
+/// Every top-level `Cli` flag (`-h`/`-f`) is a bare bool, so the verb is
+/// simply the first token that isn't one of those; nothing here eats a value.
 pub(crate) fn typed_verb() -> Option<String> {
     typed_verb_from(std::env::args().skip(1))
 }
 
 fn typed_verb_from(argv: impl IntoIterator<Item = String>) -> Option<String> {
-    let args: Vec<String> = argv.into_iter().collect();
-    let valued = valued_top_level_flags();
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        if !a.starts_with('-') {
-            return Some(a.clone());
-        }
-        // `--flag=VALUE` carries its value in the same token; a bare
-        // value-taking flag eats the next one.
-        let split = a.split_once('=').is_some();
-        i += if !split && valued.iter().any(|f| f == a) { 2 } else { 1 };
-    }
-    None
-}
-
-/// The spellings (`-b`, `--branch`, ...) of every top-level `Cli` flag that
-/// takes a value, straight from the derive.
-fn valued_top_level_flags() -> Vec<String> {
-    use clap::CommandFactory;
-    let mut out = Vec::new();
-    for arg in Cli::command().get_arguments() {
-        if !arg.get_action().takes_values() {
-            continue;
-        }
-        if let Some(s) = arg.get_short() {
-            out.push(format!("-{s}"));
-        }
-        if let Some(l) = arg.get_long() {
-            out.push(format!("--{l}"));
-        }
-        out.extend(arg.get_all_aliases().into_iter().flatten().map(|l| format!("--{l}")));
-        out.extend(
-            arg.get_all_short_aliases().into_iter().flatten().map(|s| format!("-{s}")),
-        );
-    }
-    out
+    argv.into_iter().find(|a| !a.starts_with('-'))
 }
 
 /// Map a 1-based index to a 0-based one, or an error.
@@ -502,30 +460,12 @@ mod tests {
     }
 
     #[test]
-    fn the_typed_verb_is_the_first_token_that_is_not_a_flag_or_its_value() {
+    fn the_typed_verb_is_the_first_token_that_is_not_a_flag() {
         assert_eq!(typed_verb_from(argv("s 1")), Some("s".into()));
-        assert_eq!(typed_verb_from(argv("-b 2 pull")), Some("pull".into()));
-        assert_eq!(typed_verb_from(argv("--branch 2 pull")), Some("pull".into()));
-        assert_eq!(typed_verb_from(argv("--branch=2 pull")), Some("pull".into()));
+        assert_eq!(typed_verb_from(argv("-f pull")), Some("pull".into()));
+        assert_eq!(typed_verb_from(argv("--full pull")), Some("pull".into()));
         assert_eq!(typed_verb_from(argv("-hf")), None);
         assert_eq!(typed_verb_from(argv("")), None);
-    }
-
-    #[test]
-    fn a_flag_value_that_looks_like_a_verb_is_not_read_as_one() {
-        // The reason the skip table is derived rather than hand-written: a
-        // `-b` value spelled like a verb must not become the verb.
-        assert_eq!(typed_verb_from(argv("-b merge switch")), Some("switch".into()));
-    }
-
-    #[test]
-    fn every_value_taking_global_is_in_the_skip_table() {
-        let flags = valued_top_level_flags();
-        assert!(flags.contains(&"-b".to_string()));
-        assert!(flags.contains(&"--branch".to_string()));
-        // -h/-f are SetTrue, so they must not eat the next token.
-        assert!(!flags.contains(&"-h".to_string()));
-        assert!(!flags.contains(&"-f".to_string()));
     }
 
     #[test]

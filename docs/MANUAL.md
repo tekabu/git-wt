@@ -43,11 +43,11 @@ action, then the worktrees or branches it acts on.
     git-wt log <N>[,<M>...] [PATH...] [flags]
                                  Same table, narrowed to one file's history
     git-wt meld <N>,<M>[,<N>]   Diff 2-3 worktrees side by side in meld
-    git-wt compare -f <FILES> -b <BRANCH> | -c <COMMIT> [-m]
+    git-wt compare -f <FILES> -r <REF> [-m]
                                  Diff file(s) in the current worktree against a
-                                 branch or commit (not two worktrees); -b here
-                                 is that one branch, not "extra targets";
-                                 -m opens meld instead of printing to stdout
+                                 ref -- branch, remote branch, tag or sha (not
+                                 two worktrees); -m opens meld instead of
+                                 printing to stdout
     git-wt <VERB> [TARGET_LIST] -b/--branch LIST
                                  Append LIST to the command's target list:
                                  'git-wt commits 1 -b 2,3' == 'git-wt commits 1,2,3'
@@ -209,12 +209,11 @@ They are checked before the diff runs: a path matching nothing on either
 side is an error naming it, not an empty "no differences" that reads like
 an answer.
 
-git's trailing '-- PATH...' is retired here, and so is a bare path with no
-'--' at all -- the argument parser eats that first '--' whenever a flag of
-diff's own came earlier, leaving the path bare. Both are errors:
+'-p' is the only way in. A trailing '-- PATH...' and a bare path with no '--'
+at all are both errors naming the path and pointing at '-p':
 
-    git-wt diff 1,2 -- src/         -> error: '--' is retired for diff
-    git-wt diff 1,2 --live src/     -> error: paths go in '-p/--path'
+    git-wt diff 1,2 -- src/         -> error: unexpected argument 'src/' for diff: paths go in '-p/--path'
+    git-wt diff 1,2 --live src/     -> error: unexpected argument 'src/' for diff: paths go in '-p/--path'
 
 '-m/--meld' skips the text output: each changed file's two sides are
 extracted (via 'git show') into a temp dir apiece, then meld opens on
@@ -673,18 +672,18 @@ include the merge-base as a third pane.
 
 # COMPARE
 
-Diffs file(s) in the current worktree against a branch or commit -- one
-worktree, not two, so this is not diff/meld's target-list grammar. '-f' takes
-a comma-separated list of paths relative to cwd; give exactly one of
-'-b/--branch' or '-c/--commit' as the ref to compare against.
+Diffs file(s) in the current worktree against a ref -- one worktree, not two,
+so this is not diff/meld's target-list grammar. '-f' takes a comma-separated
+list of paths relative to cwd; '-r/--ref' names the single thing to diff
+against, and both are required.
 
-    git-wt compare -f src/main.rs -b main
-    git-wt compare -f src/main.rs,Cargo.toml -c HEAD~3
+    git-wt compare -f src/main.rs -r main
+    git-wt compare -f src/main.rs,Cargo.toml -r HEAD~3
+    git-wt compare -f src/main.rs -r origin/main
 
-'-b' here reuses the global flag but means something different from every
-other verb: a single branch name, the thing to diff against, not "extra
-targets to append" -- a list ('-b main,2') is refused. '-c/--commit' is the
-plain alternative when the ref isn't a checked-out branch.
+'-r' takes anything 'git rev-parse' resolves to a commit: a local branch, a
+remote-tracking branch, a tag, a sha, 'HEAD~3'. The global '-b/--branch' is
+refused here.
 
 Without '-m/--meld', the diff prints to stdout via plain 'git diff <ref> --
 <files>'. With '-m', each file's version at the ref is extracted into a temp
@@ -692,7 +691,7 @@ dir and meld opens on the pairs (one '--diff local ref-copy' tab per file),
 blocking until you close it; the temp dir is removed on exit either way.
 Requires meld on PATH.
 
-    git-wt compare -f src/main.rs -b main -m
+    git-wt compare -f src/main.rs -r main -m
 
 # MERGE WORDS            (short or long only -- bare words are not accepted)
 

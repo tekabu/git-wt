@@ -10,35 +10,6 @@ use crate::git::{git_cmd, git_stdout};
 use crate::ui::{color_enabled, paint, DIM, GREEN, RED, RESET, YELLOW};
 use crate::worktree::{is_dirty, label, ref_of, Worktree};
 
-/// The words the argument loop in `cmd_diff` matches itself, in the order the
-/// unknown-argument error lists them. Spelled out here rather than derived
-/// because the loop is their only definition; they stay in this file, next to
-/// the match that reads them.
-const DIFF_WORDS: [&str; 5] =
-    ["..", "...", "--name-only", "--name-status", "--stat"];
-
-/// Everything `diff` accepts, for the unknown-argument error: the flags read
-/// straight off `DiffArgs` -- they are declared in another file, so a
-/// hand-written list is what let `--meld` go unmentioned -- followed by the
-/// words above. Value-taking flags carry their value name, so `--path` reads
-/// as something to fill in rather than a switch.
-fn accepted_args() -> String {
-    use clap::Args as _;
-    let cmd = DiffArgs::augment_args(clap::Command::new("diff"));
-    let mut parts: Vec<String> = cmd
-        .get_arguments()
-        .filter_map(|a| {
-            let long = a.get_long()?;
-            Some(match (a.get_action().takes_values(), a.get_value_names()) {
-                (true, Some([v, ..])) => format!("--{long} {v}"),
-                _ => format!("--{long}"),
-            })
-        })
-        .collect();
-    parts.extend(DIFF_WORDS.iter().map(|w| (*w).to_string()));
-    parts.join(", ")
-}
-
 pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &DiffArgs) -> Result<(), String> {
     let (idx, other) = match idxs {
         [a, b] => (*a, *b),
@@ -55,45 +26,37 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
 
     let a = ref_of(&trees[idx])?;
     let b = ref_of(&trees[other])?;
-    let rest = &args.rest;
-
     let live = args.live;
-
-    let mut dots: Option<&str> = None;
     let hunks = args.hunks;
-    let mut listing: Option<String> = None;
-    let mut it = rest.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            ".." => dots = Some(".."),
-            "..." => dots = Some("..."),
-            // Retired: paths are '-p/--path' now. The word rarely survives
-            // this far -- the argument parser eats the first '--' whenever a
-            // flag of its own came earlier -- so the bare-word arm below
-            // answers for the tokens that follow it.
-            "--" => {
-                return Err("'--' is retired for diff: paths go in '-p/--path'".into());
-            }
-            "--name-only" | "--name-status" | "--stat" => listing = Some(arg.clone()),
-            // A bare word naming a real file is a path someone spelled the git
-            // way; the '--' before it was eaten before we ever saw it. Naming
-            // that beats the flag-list error below, which would talk past it.
-            word if !word.starts_with('-')
-                && path_matches(root, (&trees[idx].path, &trees[other].path), &a, &b, live, word) =>
-            {
-                return Err(format!(
-                    "unexpected argument '{word}' for diff: paths go in '-p/--path'"
-                ));
-            }
-            unknown => {
-                return Err(format!(
-                    "unexpected argument '{unknown}' for diff\n\
-                     diff takes {}",
-                    accepted_args()
-                ));
-            }
+
+    let listing = match (args.name_only, args.name_status, args.stat) {
+        (true, false, false) => Some("--name-only"),
+        (false, true, false) => Some("--name-status"),
+        (false, false, true) => Some("--stat"),
+        (false, false, false) => None,
+        _ => return Err("'--name-only', '--name-status' and '--stat' are alternatives; use one".into()),
+    };
+
+    // `range` is one stray token: a real range word, a path someone spelled
+    // the git way (bare, or after a trailing '--' -- clap eats the literal
+    // '--' itself as its own end-of-options marker, so only the path after it
+    // ever reaches here), or garbage. Which one it is decides the message, so
+    // it's judged here rather than left to clap's own "invalid value" wording.
+    let dots = match args.range.as_deref() {
+        None => "...",
+        Some("..") => "..",
+        Some("...") => "...",
+        Some(word) if path_matches(root, (&trees[idx].path, &trees[other].path), &a, &b, live, word) => {
+            return Err(format!(
+                "unexpected argument '{word}' for diff: paths go in '-p/--path'"
+            ));
         }
-    }
+        Some(word) => {
+            return Err(format!(
+                "unexpected argument '{word}' for diff: range must be '..' or '...'"
+            ));
+        }
+    };
 
     let paths = match &args.path {
         Some(list) => split_paths(list)?,
@@ -113,13 +76,11 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         }
     }
 
-    if live {
-        if let Some(d) = dots {
-            return Err(format!(
-                "'--live' and '{d}' cannot combine: a range compares commits, \
-                 --live compares the files on disk"
-            ));
-        }
+    if live && args.range.is_some() {
+        return Err(format!(
+            "'--live' and '{dots}' cannot combine: a range compares commits, \
+             --live compares the files on disk"
+        ));
     }
     if let (true, Some(l)) = (hunks, listing.as_deref()) {
         return Err(format!(
@@ -174,7 +135,6 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         }
     }
 
-    let dots = dots.unwrap_or("...");
     if live {
         let files = live_diff(
             root,
@@ -227,7 +187,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
 
     let mut argv: Vec<String> = Vec::new();
     if let Some(l) = &listing {
-        argv.push(l.clone());
+        argv.push(l.to_string());
     }
     if let Some(s) = only {
         // A rename reads as one 'R' rather than an add plus a delete, which
@@ -759,29 +719,6 @@ pub(crate) fn summary(files: &[FileDiff]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_unknown_argument_error_lists_every_flag_diff_declares() {
-        // The guard the hand-written list didn't have: `--meld` was a real
-        // flag the error never mentioned. Anything added to `DiffArgs` shows
-        // up here without a second edit.
-        use clap::Args as _;
-        let listed = accepted_args();
-        let cmd = DiffArgs::augment_args(clap::Command::new("diff"));
-        for arg in cmd.get_arguments() {
-            if arg.get_action().takes_values() {
-                continue;
-            }
-            if let Some(long) = arg.get_long() {
-                assert!(listed.contains(&format!("--{long}")), "'--{long}' missing from '{listed}'");
-            }
-        }
-        assert!(listed.contains("--meld"));
-        // Value-taking flags earn their value name, so '--path' reads as
-        // something to fill in; git's retired '-- PATH...' is not offered.
-        assert!(listed.contains("--path PATH_LIST"));
-        assert!(!listed.contains("-- PATH..."));
-    }
 
     fn hunk(line: &str) -> (usize, &'static str, usize) {
         let h = parse_hunk_header(line).expect("header should parse");

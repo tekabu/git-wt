@@ -8,13 +8,13 @@ use crate::cmd::meld::{require_meld, temp_meld_dir};
 use crate::git::{git_bytes, git_cmd, git_quiet};
 use crate::ui::{color_enabled, paint, GREEN};
 
-/// Compare one or more files in `cwd` against `branch` or `args.commit`.
+/// Compare one or more files in `cwd` against `args.ref`.
 ///
-/// `branch` comes from the global `-b/--branch`, reused here (rather than a
-/// compare-local `-b`) since a subcommand can't redefine a short flag the top
-/// level already claims globally; the caller has already checked it holds at
-/// most one plain branch name.
-pub(crate) fn cmd_compare(cwd: &Path, args: &CompareArgs, branch: Option<&str>) -> Result<(), String> {
+/// The ref is compare's own `-r/--ref`, not the global `-b/--branch`: it is a
+/// single rev, and one that need not be a branch at all, so it shares nothing
+/// with the worktree list `-b` names everywhere else. The caller rejects a
+/// global `-b` here rather than letting it pass unused.
+pub(crate) fn cmd_compare(cwd: &Path, args: &CompareArgs) -> Result<(), String> {
     let files: Vec<String> = args.files.split(',').map(str::to_string).collect();
     if files.iter().any(|f| f.is_empty()) {
         return Err(format!(
@@ -23,19 +23,9 @@ pub(crate) fn cmd_compare(cwd: &Path, args: &CompareArgs, branch: Option<&str>) 
         ));
     }
 
-    let r#ref = match (branch, &args.commit) {
-        (Some(b), None) => b.to_string(),
-        (None, Some(c)) => c.clone(),
-        (Some(_), Some(_)) => {
-            return Err("'-b/--branch' and '-c/--commit' are alternatives; use one or the other".into());
-        }
-        (None, None) => {
-            return Err("compare needs a ref: '-b/--branch NAME' or '-c/--commit SHA'".into());
-        }
-    };
-
+    let r#ref = args.r#ref.as_str();
     if !git_quiet(cwd, &["rev-parse", "--verify", "-q", &format!("{ref}^{{commit}}")]) {
-        return Err(format!("no such branch or commit '{ref}'"));
+        return Err(format!("no such ref '{ref}'"));
     }
 
     for f in &files {

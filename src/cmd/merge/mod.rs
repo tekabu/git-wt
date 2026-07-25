@@ -3,9 +3,12 @@ pub(crate) mod args;
 use std::io::IsTerminal;
 use std::path::Path;
 
+use clap::Parser;
+
 use crate::cmd::commits::rows::commit_files;
 use crate::cmd::commits::{cmd_commits_review, ReviewCtx};
 use crate::cmd::meld::{extract_files, require_meld, temp_meld_dir};
+use crate::cmd::merge::args::MergeOptions;
 use crate::git::{git_cmd, git_quiet, git_run, git_run_no_editor, git_stdout};
 use crate::ui::{color_enabled, confirm, paint, GREEN};
 use crate::worktree::{label, leaf_of, ref_of, Worktree};
@@ -56,28 +59,6 @@ pub(crate) struct MergeParsedArgs {
     pub(crate) review: Option<Vec<String>>,
 }
 
-pub(crate) fn set_side(slot: &mut Option<Side>, side: Side) -> Result<(), String> {
-    match slot {
-        Some(s) if *s == side => Ok(()),
-        Some(_) => Err("ours and theirs conflict".into()),
-        None => {
-            *slot = Some(side);
-            Ok(())
-        }
-    }
-}
-
-pub(crate) fn set_merge_op(slot: &mut Option<MergeOp>, op: MergeOp) -> Result<(), String> {
-    match slot {
-        Some(cur) if *cur == op => Ok(()),
-        Some(_) => Err("continue and abort conflict".into()),
-        None => {
-            *slot = Some(op);
-            Ok(())
-        }
-    }
-}
-
 pub(crate) fn start_only_flags(
     message: Option<&String>,
     no_ff: bool,
@@ -104,93 +85,95 @@ pub(crate) fn start_only_flags(
     v
 }
 
-pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, String> {
-    let mut source: Option<String> = None;
-    let mut op: Option<MergeOp> = None;
-    let mut message = None;
-    let mut side: Option<Side> = None;
-    let (mut no_ff, mut ff_only, mut squash, mut force, mut dry_run) =
-        (false, false, false, false, false);
-    let mut review: Option<Vec<String>> = None;
+const NEEDS_SOURCE: &str = "merge needs a source: 'git-wt <N>,<M> merge' \
+     (or 'git-wt <N> merge <BRANCH>', or --continue/--abort)";
 
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "review" | "--review" => {
-                review = Some(it.by_ref().cloned().collect());
-                break;
-            }
-            "--continue" | "-c" => set_merge_op(&mut op, MergeOp::Continue)?,
-            "--abort" | "-a" => set_merge_op(&mut op, MergeOp::Abort)?,
-            "--ours" | "-o" => set_side(&mut side, Side::Ours)?,
-            "--theirs" => set_side(&mut side, Side::Theirs)?,
-            "--dry-run" | "-d" => dry_run = true,
-            "-m" | "--message" => {
-                message = Some(it.next().ok_or("--message needs a message")?.clone());
-            }
-            s if s.starts_with("--message=") => {
-                message = Some(s["--message=".len()..].to_string())
-            }
-            "--no-ff" | "--nf" => no_ff = true,
-            "--ff-only" | "--fo" => ff_only = true,
-            "--squash" => squash = true,
-            "-f" | "--force" => force = true,
-            s if s.starts_with('-') && s != "-" => {
-                return Err(format!("unknown option '{s}' for merge\nTry 'git-wt --help'"));
-            }
-            s => {
-                if source.is_some() {
-                    return Err("too many arguments\nTry 'git-wt --help'".into());
-                }
-                source = Some(s.to_string());
-            }
-        }
-    }
+/// `main`'s top-level error path prints its own leading `error: `, unlike
+/// clap's own `Cli::parse()`, which prints the full render itself and exits
+/// before that ever runs. A nested `try_parse_from` like this one instead
+/// flows its result through the same `Result<_, String>` pipe as everything
+/// else, so its error needs the same bare-one-liner shape: just clap's
+/// reason, not its own repeated `error: ` prefix or the multi-line Usage
+/// block underneath it.
+fn clap_err_line(e: clap::error::Error) -> String {
+    let s = e.to_string();
+    s.lines()
+        .next()
+        .unwrap_or(&s)
+        .trim_start_matches("error: ")
+        .to_string()
+}
+
+#[derive(Parser)]
+struct MergeOptionsWrap {
+    #[command(flatten)]
+    o: MergeOptions,
+}
+
+/// Re-parse `rest` (a raw `Vec<String>`, since the target/dest split ahead of
+/// it in `main.rs` genuinely needs untyped tokens -- which one resolves as a
+/// worktree can only be judged at runtime) through `MergeOptions`: clap owns
+/// unknown-flag rejection and every pairwise/start-only conflict now (see
+/// that struct's doc comment), so what's left here is `--review`'s hand-off
+/// (its tail is a different vocabulary entirely, sliced off untouched before
+/// clap ever sees it) and turning the typed struct into `MergeParsedArgs`.
+pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, String> {
+    let review_at = args.iter().position(|a| a == "review" || a == "--review");
+    let (head, review) = match review_at {
+        Some(i) => (&args[..i], Some(args[i + 1..].to_vec())),
+        None => (&args[..], None),
+    };
+
+    let o = MergeOptionsWrap::try_parse_from(std::iter::once("merge".to_string()).chain(head.iter().cloned()))
+        .map_err(clap_err_line)?
+        .o;
+
+    let side = match (o.ours, o.theirs) {
+        (true, false) => Some(Side::Ours),
+        (false, true) => Some(Side::Theirs),
+        _ => None,
+    };
 
     if review.is_some() {
-        let mut bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
-        if dry_run {
+        // Every other start-only flag already conflicts with `--continue`/
+        // `--abort` declaratively; `review` isn't a field on `MergeOptions`
+        // (its tail is sliced off before clap sees it), so its "forbids
+        // everything" rule is the one accumulator left.
+        let mut bad = start_only_flags(o.message.as_ref(), o.no_ff, o.ff_only, o.squash, o.force);
+        if o.dry_run {
             bad.push("--dry-run");
         }
         if let Some(sd) = side {
             bad.push(sd.flag());
         }
-        if let Some(o) = &op {
-            bad.push(if *o == MergeOp::Continue { "--continue" } else { "--abort" });
+        if o.r#continue {
+            bad.push("--continue");
+        }
+        if o.abort {
+            bad.push("--abort");
         }
         if !bad.is_empty() {
-            return Err(format!(
-                "review takes no merge options (got {})",
-                bad.join(", ")
-            ));
+            return Err(format!("review takes no merge options (got {})", bad.join(", ")));
         }
+        let source = o.source.ok_or(NEEDS_SOURCE)?;
+        return Ok(MergeParsedArgs {
+            op: MergeOp::Start(source),
+            message: o.message,
+            no_ff: o.no_ff,
+            ff_only: o.ff_only,
+            squash: o.squash,
+            force: o.force,
+            side,
+            dry_run: o.dry_run,
+            review,
+        });
     }
 
-    if no_ff && ff_only {
-        return Err("--no-ff and --ff-only conflict".into());
-    }
-    if squash && no_ff {
-        return Err("--squash and --no-ff conflict".into());
-    }
-
-    if let Some(op) = op {
-        let word = if op == MergeOp::Continue { "continue" } else { "abort" };
-        if let Some(s) = source {
-            return Err(format!("{word} takes no argument (got '{s}')"));
-        }
-        if let Some(sd) = side {
-            return Err(format!(
-                "{word} takes no merge options (got {})",
-                sd.flag()
-            ));
-        }
-        let mut bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
-        if dry_run {
-            bad.push("--dry-run");
-        }
-        if !bad.is_empty() {
-            return Err(format!("{word} takes no merge options (got {})", bad.join(", ")));
-        }
+    if o.r#continue || o.abort {
+        // clap's own `conflicts_with_all` on every start-only field already
+        // refused a source or any merge option alongside these; nothing here
+        // can be true at this point.
+        let op = if o.r#continue { MergeOp::Continue } else { MergeOp::Abort };
         return Ok(MergeParsedArgs {
             op,
             message: None,
@@ -204,27 +187,24 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
         });
     }
 
-    if dry_run {
-        let bad = start_only_flags(message.as_ref(), no_ff, ff_only, squash, force);
+    if o.dry_run {
+        let bad = start_only_flags(o.message.as_ref(), o.no_ff, o.ff_only, o.squash, o.force);
         if !bad.is_empty() {
             return Err(format!("--dry-run takes no merge options (got {})", bad.join(", ")));
         }
     }
 
-    let source = source.ok_or(
-        "merge needs a source: 'git-wt <N>,<M> merge' \
-         (or 'git-wt <N> merge <BRANCH>', or --continue/--abort)",
-    )?;
+    let source = o.source.ok_or(NEEDS_SOURCE)?;
     Ok(MergeParsedArgs {
         op: MergeOp::Start(source),
-        message,
-        no_ff,
-        ff_only,
-        squash,
-        force,
+        message: o.message,
+        no_ff: o.no_ff,
+        ff_only: o.ff_only,
+        squash: o.squash,
+        force: o.force,
         side,
-        dry_run,
-        review,
+        dry_run: o.dry_run,
+        review: None,
     })
 }
 
@@ -700,16 +680,24 @@ mod tests {
 
     #[test]
     fn merge_rejects_both_ops_but_allows_repeats() {
+        // clap's own `conflicts_with_all` on `--continue`/`--abort` now
+        // enforces this at parse time; the message is clap's, not ours.
         let e = merge_args(&["--continue", "--abort"]).unwrap_err();
-        assert_eq!(e, "continue and abort conflict");
+        assert!(e.contains("--continue") && e.contains("--abort"), "{e}");
         assert!(merge_args(&["-c", "--abort"]).is_err());
         assert_eq!(merge_args(&["--continue", "-c"]).unwrap().op, MergeOp::Continue);
     }
 
     #[test]
     fn merge_rejections_name_the_offending_flag() {
+        // `conflicts_with_all` reports every conflicting flag actually given,
+        // same as the accumulator it replaced -- just in clap's own wording.
         let e = merge_args(&["--abort", "-m", "x", "--squash"]).unwrap_err();
-        assert!(e.contains("got -m, --squash"), "{e}");
+        assert!(e.contains("--message") && e.contains("--squash"), "{e}");
+        // '--dry-run' isn't in that declarative set (it's compatible with
+        // ours/theirs, unlike message/no-ff/ff-only/squash/force), so its
+        // "takes no merge options" check is still the hand-written
+        // accumulator, unchanged.
         let e = merge_args(&["2", "--dry-run", "--no-ff", "-f"]).unwrap_err();
         assert!(e.contains("got --no-ff, -f"), "{e}");
     }
@@ -724,8 +712,7 @@ mod tests {
     #[test]
     fn merge_resume_rejects_a_side() {
         let e = merge_args(&["--theirs", "--continue"]).unwrap_err();
-        assert!(e.contains("continue takes no merge options"), "{e}");
-        assert!(e.contains("--theirs"), "{e}");
+        assert!(e.contains("--theirs") && e.contains("--continue"), "{e}");
     }
 
     #[test]
@@ -754,10 +741,10 @@ mod tests {
         let a = merge_args(&["feat/x", "--review", "-f"]).unwrap();
         assert_eq!(a.op, MergeOp::Start("feat/x".into()));
         assert_eq!(a.review.unwrap(), ["-f"]);
-        assert_eq!(
-            merge_args(&["1", "2", "--review"]).unwrap_err(),
-            "too many arguments\nTry 'git-wt --help'"
-        );
+        // A second bare word for the one `source` positional is now clap's
+        // own rejection -- it was custom before ("too many arguments") --
+        // once `--review` and its tail are sliced off first.
+        assert!(merge_args(&["1", "2", "--review"]).unwrap_err().contains("unexpected argument '2'"));
     }
 
     #[test]

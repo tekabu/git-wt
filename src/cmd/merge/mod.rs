@@ -147,7 +147,7 @@ pub(crate) fn build_merge_parsed_args(o: MergeOptions) -> Result<MergeParsedArgs
         });
     }
 
-    if o.dry_run {
+    if o.dry_run.dry_run {
         let bad = start_only_flags(o.message.as_ref(), o.no_ff, o.ff_only, o.squash.squash, o.force.force);
         if !bad.is_empty() {
             return Err(format!("--dry-run takes no merge options (got {})", bad.join(", ")));
@@ -163,7 +163,7 @@ pub(crate) fn build_merge_parsed_args(o: MergeOptions) -> Result<MergeParsedArgs
         squash: o.squash.squash,
         force: o.force.force,
         side,
-        dry_run: o.dry_run,
+        dry_run: o.dry_run.dry_run,
     })
 }
 

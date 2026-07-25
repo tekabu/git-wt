@@ -354,7 +354,7 @@ pub(crate) fn cmd_log(
             author: args.author.is_some(),
             shas: anchors,
             message: msg.clone(),
-            file: None,
+            file: Vec::new(),
             search: args.search.as_deref().map(search_terms).unwrap_or_default(),
         },
     );

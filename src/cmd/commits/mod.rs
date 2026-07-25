@@ -178,7 +178,7 @@ fn commits_view(
         || !args.commits.is_empty()
         || args.author.is_some()
         || args.message.is_some()
-        || args.filename.is_some();
+        || !args.filename.is_empty();
     let git_limit = if filtered || divergent.is_some() { None } else { args.limit };
     let order = if args.topo { Order::Topo } else { Order::Date };
     let all_rows = commit_rows(
@@ -249,11 +249,11 @@ fn commits_view(
     // nearly all of it.
     let msg = args.message.as_ref().map(|s| s.to_lowercase());
     // A pathspec, so git does the walk once instead of a diff per commit.
-    let paths = args
-        .filename
-        .as_ref()
-        .map(|t| path_shas(root, row_refs, t))
-        .transpose()?;
+    let paths = if args.filename.is_empty() {
+        None
+    } else {
+        Some(path_shas(root, row_refs, &args.filename)?)
+    };
 
     let mut rows: Vec<CommitRow> = all_rows
         .into_iter()
@@ -297,11 +297,13 @@ fn commits_view(
     // hundred files and match on three, and the whole list buries the answer.
     // --all-files widens it back to everything the commit touched, which is the
     // only way the counts sum to the commit again.
-    if !args.all_files {
-        if let Some(t) = &args.filename.as_ref().map(|s| s.to_lowercase()) {
-            for files in &mut row_files {
-                files.retain(|f| f.path.to_lowercase().contains(t));
-            }
+    if !args.all_files && !args.filename.is_empty() {
+        let terms: Vec<String> = args.filename.iter().map(|s| s.to_lowercase()).collect();
+        for files in &mut row_files {
+            files.retain(|f| {
+                let p = f.path.to_lowercase();
+                terms.iter().any(|t| p.contains(t.as_str()))
+            });
         }
     }
 
@@ -492,7 +494,7 @@ fn commits_view(
             // The term itself, so the match is lit where it sits rather than
             // the whole cell holding it.
             message: msg.clone(),
-            file: args.filename.as_ref().map(|s| s.to_lowercase()),
+            file: args.filename.iter().map(|s| s.to_lowercase()).collect(),
             search: args.search.as_deref().map(search_terms).unwrap_or_default(),
         },
     );

@@ -20,7 +20,7 @@ pub(crate) fn cmd_remove(
         return Err("refusing to remove the main worktree".into());
     }
 
-    if args.delete_branch && wanted.branch.is_none() {
+    if args.delete_branch.delete_branch && wanted.branch.is_none() {
         return Err("worktree has no branch to delete".into());
     }
 
@@ -30,8 +30,8 @@ pub(crate) fn cmd_remove(
     };
 
     let path_s = wanted.path.to_string_lossy().to_string();
-    if !args.yes {
-        let prompt = match (&wanted.branch, args.delete_branch) {
+    if !args.yes.yes {
+        let prompt = match (&wanted.branch, args.delete_branch.delete_branch) {
             (Some(b), true) => format!(
                 "Remove worktree '{}' at {path_s} and delete branch '{b}'? [y/N] ",
                 label(wanted)
@@ -45,7 +45,7 @@ pub(crate) fn cmd_remove(
     }
 
     let mut argv = vec!["worktree", "remove"];
-    if args.force {
+    if args.force.force {
         argv.push("--force");
     }
     argv.push(&path_s);
@@ -58,8 +58,8 @@ pub(crate) fn cmd_remove(
 
     let leaf = leaf_of(&wanted.path);
     let branch_note = match &wanted.branch {
-        Some(b) if args.delete_branch => {
-            let flag = if args.force { "-D" } else { "-d" };
+        Some(b) if args.delete_branch.delete_branch => {
+            let flag = if args.force.force { "-D" } else { "-d" };
             git_run(root, &["branch", flag, b])?;
             format!("branch {b} deleted")
         }

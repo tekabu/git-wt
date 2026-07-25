@@ -26,10 +26,10 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
 
     let a = ref_of(&trees[idx])?;
     let b = ref_of(&trees[other])?;
-    let live = args.live;
-    let hunks = args.hunks;
+    let live = args.live.live;
+    let hunks = args.hunks.hunks;
 
-    let listing = match (args.name_only, args.name_status, args.stat) {
+    let listing = match (args.name_only.name_only, args.name_status.name_status, args.stat.stat) {
         (true, false, false) => Some("--name-only"),
         (false, true, false) => Some("--name-status"),
         (false, false, true) => Some("--stat"),
@@ -58,10 +58,15 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         }
     };
 
-    let paths = match &args.path {
-        Some(list) => split_paths(list)?,
-        None => Vec::new(),
-    };
+    // An empty element is a typo (a trailing/doubled comma), and an empty
+    // pathspec matches everything, so it would quietly undo the limit.
+    if args.path.filename.iter().any(|p| p.trim().is_empty()) {
+        return Err(format!(
+            "bad path list '{}'; want paths, e.g. 'src/,docs/'",
+            args.path.filename.join(",")
+        ));
+    }
+    let paths = args.path.filename.clone();
 
     // A pathspec that matches nothing is always a mistake -- a typo, or a
     // directory that only exists in the branch the user forgot to name -- and
@@ -88,14 +93,14 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
              {l} prints a listing"
         ));
     }
-    if args.meld && hunks {
+    if args.meld.meld && hunks {
         return Err(
             "'--meld' and '--hunks' cannot combine: --hunks prints line numbers per file, \
              --meld opens a diff viewer"
                 .into(),
         );
     }
-    if let (true, Some(l)) = (args.meld, listing.as_deref()) {
+    if let (true, Some(l)) = (args.meld.meld, listing.as_deref()) {
         return Err(format!(
             "'--meld' and '{l}' cannot combine: {l} prints a listing, --meld opens a diff viewer"
         ));
@@ -104,7 +109,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
     // Which single status survives, if either side-only flag was given. 'D' is
     // a file the range deletes going A -> B, i.e. one only A has; 'A' is the
     // mirror. Both flags at once asks for two disjoint sets.
-    let only = match (args.a_only, args.b_only) {
+    let only = match (args.a_only.a_only, args.b_only.b_only) {
         (true, true) => {
             return Err(
                 "'-A/--a-only' and '-B/--b-only' cannot combine: no file is missing from \
@@ -150,7 +155,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
                 return Ok(());
             }
         }
-        if args.meld {
+        if args.meld.meld {
             return open_meld_live(&trees[idx].path, &trees[other].path, &files);
         }
         let head = format!(
@@ -159,7 +164,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         );
         return render(&files, &head, listing.as_deref(), hunks);
     }
-    if args.meld {
+    if args.meld.meld {
         let files = keep_only(ref_diff(root, &format!("{a}{dots}{b}"), &paths)?, only);
         if let Some(side) = &only_side {
             if files.is_empty() {
@@ -251,22 +256,6 @@ pub(crate) fn same_bytes(a: &Path, b: &Path) -> bool {
         (Ok(x), Ok(y)) => x == y,
         _ => false,
     }
-}
-
-/// Split a `-p/--path` value on commas. An empty element is a typo, and an
-/// empty pathspec matches everything, so it would quietly undo the limit.
-fn split_paths(list: &str) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    for part in list.split(',') {
-        let p = part.trim();
-        if p.is_empty() {
-            return Err(format!(
-                "bad path list '{list}'; want paths, e.g. 'src/,docs/'"
-            ));
-        }
-        out.push(p.to_string());
-    }
-    Ok(out)
 }
 
 /// Whether a pathspec matches anything either side of the diff. Both working

@@ -25,7 +25,8 @@ pub(crate) struct Highlight {
     pub(crate) shas: HashSet<String>,
     /// Lowercased terms, or None when the filter was not asked for.
     pub(crate) message: Option<String>,
-    pub(crate) file: Option<String>,
+    /// Lowercased `--filename` terms, empty when the filter was not asked for.
+    pub(crate) file: Vec<String>,
     /// `--search`'s `|`-split terms, lowercased, each its own `SEARCH_COLORS`
     /// hue in order. Highlight only -- unlike every other field here it names
     /// nothing a row was kept or dropped for, so it is lit wherever it sits:
@@ -380,7 +381,7 @@ pub(crate) fn render_commits(
             if !file_stats.is_empty() {
                 println!();
                 let mut layers: Vec<(&str, &str)> =
-                    hl.file.as_deref().map(|t| (t, MATCH)).into_iter().collect();
+                    hl.file.iter().map(|t| (t.as_str(), MATCH)).collect();
                 layers.extend(search_layers(hl));
                 for file_line in file_stat_lines(file_stats) {
                     // Every file the commit touched, even under --filename: the
@@ -403,7 +404,7 @@ pub(crate) fn render_commits(
             println!();
             println!("{}", paint("consolidated files", DIM, color));
             let mut layers: Vec<(&str, &str)> =
-                hl.file.as_deref().map(|t| (t, MATCH)).into_iter().collect();
+                hl.file.iter().map(|t| (t.as_str(), MATCH)).collect();
             layers.extend(search_layers(hl));
             for file_line in file_stat_lines(&consolidated) {
                 println!("{}", paint_layers(&file_line, &layers, DIM, color));

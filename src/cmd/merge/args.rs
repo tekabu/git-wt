@@ -1,6 +1,6 @@
 use clap::Args;
 
-use crate::cmd::args::{ConflictSide, Force, ResumeOp, SourceDest, Squash};
+use crate::cmd::args::{ConflictSide, DryRun, Force, ResumeOp, SourceDest, Squash};
 
 /// Merge a source branch into a worktree.
 ///
@@ -41,9 +41,11 @@ pub(crate) struct MergeOptions {
     #[command(flatten)]
     pub side: ConflictSide,
 
-    /// Preview the merge without committing it.
-    #[arg(long = "dry-run", overrides_with = "dry_run")]
-    pub dry_run: bool,
+    /// Preview the merge without committing it. Shared `DryRun` (`-n`, also
+    /// `push`'s) -- gives merge a short spelling it didn't have before (its
+    /// old `-d` moved to `-d/--destination`, see `SourceDest`).
+    #[command(flatten)]
+    pub dry_run: DryRun,
 
     /// Commit message for the merge.
     #[arg(short = 'm', long, overrides_with = "message")]

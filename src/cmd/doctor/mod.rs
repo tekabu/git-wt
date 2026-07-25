@@ -131,7 +131,7 @@ pub(crate) fn cmd_doctor(root: &Path, trees: &[Worktree], args: DoctorArgs) -> R
         return Ok(());
     }
 
-    if !args.repair {
+    if !args.repair.repair {
         println!();
         println!("{total} issue(s) found (see above)");
         println!("'git-wt doctor --repair' attempts to fix them");

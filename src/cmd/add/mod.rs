@@ -11,15 +11,15 @@ use crate::worktree::{current_ref, leaf_of, sanitize, sh_quote, worktrees};
 
 /// Create a new worktree in a sibling directory.
 pub(crate) fn cmd_add(root: &Path, args: AddArgs) -> Result<(), String> {
-    if args.name.is_some() && args.dirname.is_some() {
+    if args.name.name.is_some() && args.dirname.dirname.is_some() {
         return Err("--name and --dirname conflict".into());
     }
-    if let Some(n) = &args.name {
+    if let Some(n) = &args.name.name {
         if n.is_empty() {
             return Err("--name cannot be empty".into());
         }
     }
-    if let Some(d) = &args.dirname {
+    if let Some(d) = &args.dirname.dirname {
         if d.is_empty() {
             return Err("--dirname cannot be empty".into());
         }
@@ -33,9 +33,9 @@ pub(crate) fn cmd_add(root: &Path, args: AddArgs) -> Result<(), String> {
     let dir = match resolve_add_path(
         root,
         &branch,
-        args.name.as_deref(),
-        args.dirname.as_deref(),
-        args.parentdir.as_deref(),
+        args.name.name.as_deref(),
+        args.dirname.dirname.as_deref(),
+        args.parentdir.parentdir.as_deref(),
     )? {
         Some(d) => d,
         None => {
@@ -61,7 +61,7 @@ pub(crate) fn cmd_add(root: &Path, args: AddArgs) -> Result<(), String> {
     let has_local = git_quiet(root, &["show-ref", "--verify", &format!("refs/heads/{branch}")]);
     let remote = find_remote_branch(root, &branch);
 
-    if args.from.is_some()
+    if args.from.from.is_some()
         && (has_local || remote.is_some())
         && !confirm(&format!(
             "branch '{branch}' already exists; --from ignored. Continue? [y/N] "
@@ -72,7 +72,7 @@ pub(crate) fn cmd_add(root: &Path, args: AddArgs) -> Result<(), String> {
     }
 
     let default_from = current_ref();
-    let from_ref = args.from.as_deref().unwrap_or(&default_from);
+    let from_ref = args.from.from.as_deref().unwrap_or(&default_from);
     let dir_s = dir.to_string_lossy().to_string();
     let mut argv: Vec<String> = vec!["worktree".into(), "add".into()];
 

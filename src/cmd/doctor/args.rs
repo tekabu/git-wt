@@ -1,9 +1,10 @@
 use clap::Args;
 
+use crate::cmd::args::Repair;
+
 /// Report worktree issues.
 #[derive(Args, Debug)]
 pub(crate) struct DoctorArgs {
-    /// Attempt to fix what is found.
-    #[arg(short, long)]
-    pub repair: bool,
+    #[command(flatten)]
+    pub repair: Repair,
 }

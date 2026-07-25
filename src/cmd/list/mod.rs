@@ -390,15 +390,24 @@ pub(crate) fn push_pull_text(w: &Worktree) -> (String, String) {
 
 /// Run `list` from parsed `ListArgs`.
 pub(crate) fn cmd_list_from_args(root: &Path, args: ListArgs) -> Result<(), String> {
-    let mode = if args.long {
+    let mode = if args.long.long {
         ListMode::Long
-    } else if args.short {
+    } else if args.short.short {
         ListMode::Short
     } else {
         ListMode::Normal
     };
-    let cols = args.col.as_deref().map(parse_cols).transpose()?;
-    cmd_list_impl(root, args.search.as_deref(), cols, mode, args.show_path, args.files, None, args.less)
+    let cols = args.col.col.as_deref().map(parse_cols).transpose()?;
+    cmd_list_impl(
+        root,
+        args.search.as_deref(),
+        cols,
+        mode,
+        args.show_path.show_path,
+        args.files.files,
+        None,
+        args.less.less,
+    )
 }
 
 #[cfg(test)]

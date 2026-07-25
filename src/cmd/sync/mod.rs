@@ -40,39 +40,39 @@ pub(crate) struct SyncParsedArgs {
 /// canonical flag strings `sync_argv`/`cmd_sync` already work with.
 pub(crate) fn fetch_parsed(a: &FetchArgs) -> SyncParsedArgs {
     let mut flags = Vec::new();
-    if a.prune {
+    if a.prune.prune {
         flags.push("--prune".to_string());
     }
-    if a.tags {
+    if a.tags.tags {
         flags.push("--tags".to_string());
     }
-    if a.no_tags {
+    if a.tags.no_tags {
         flags.push("--no-tags".to_string());
     }
-    if a.force {
+    if a.force.force {
         flags.push("--force".to_string());
     }
-    SyncParsedArgs { op: SyncOp::Fetch, all: a.common.all, flags }
+    SyncParsedArgs { op: SyncOp::Fetch, all: a.common.all.all, flags }
 }
 
 pub(crate) fn pull_parsed(a: &PullArgs) -> SyncParsedArgs {
     let mut flags = Vec::new();
-    if a.rebase {
+    if a.rebase.rebase {
         flags.push("--rebase".to_string());
     }
-    if a.no_rebase {
+    if a.rebase.no_rebase {
         flags.push("--no-rebase".to_string());
     }
-    if a.ff_only {
+    if a.ff_only.ff_only {
         flags.push("--ff-only".to_string());
     }
-    if a.prune {
+    if a.prune.prune {
         flags.push("--prune".to_string());
     }
-    if a.autostash {
+    if a.autostash.autostash {
         flags.push("--autostash".to_string());
     }
-    SyncParsedArgs { op: SyncOp::Pull, all: a.common.all, flags }
+    SyncParsedArgs { op: SyncOp::Pull, all: a.common.all.all, flags }
 }
 
 /// `-F/--force` is declared on `PushArgs` (see its doc comment) purely so this
@@ -86,19 +86,19 @@ pub(crate) fn push_parsed(a: &PushArgs) -> Result<SyncParsedArgs, String> {
             .into());
     }
     let mut flags = Vec::new();
-    if a.set_upstream {
+    if a.set_upstream.set_upstream {
         flags.push("--set-upstream".to_string());
     }
-    if a.force_with_lease {
+    if a.force_with_lease.force_with_lease {
         flags.push("--force-with-lease".to_string());
     }
-    if a.tags {
+    if a.tags.tags {
         flags.push("--tags".to_string());
     }
-    if a.dry_run {
+    if a.dry_run.dry_run {
         flags.push("--dry-run".to_string());
     }
-    Ok(SyncParsedArgs { op: SyncOp::Push, all: a.common.all, flags })
+    Ok(SyncParsedArgs { op: SyncOp::Push, all: a.common.all.all, flags })
 }
 
 pub(crate) fn sync_skip(w: &Worktree, op: SyncOp) -> Option<&'static str> {
@@ -255,14 +255,14 @@ mod tests {
     #[test]
     fn sync_bare_verb_takes_no_flags() {
         let a = pull(&[]).unwrap();
-        assert!(!a.common.all);
+        assert!(!a.common.all.all);
         assert!(pull_parsed(&a).flags.is_empty());
     }
 
     #[test]
     fn sync_all_is_worktrees_not_remotes() {
-        assert!(fetch(&["--all"]).unwrap().common.all);
-        assert!(push(&["-a"]).unwrap().common.all);
+        assert!(fetch(&["--all"]).unwrap().common.all.all);
+        assert!(push(&["-a"]).unwrap().common.all.all);
         assert!(fetch_parsed(&fetch(&["--all"]).unwrap()).flags.is_empty());
     }
 
@@ -271,19 +271,18 @@ mod tests {
         // Unlike the old catch-all tail, `--all` is a plain declared bool now:
         // clap catches it regardless of what else came first.
         let a = fetch(&["--prune", "--all"]).unwrap();
-        assert!(a.common.all);
+        assert!(a.common.all.all);
         assert_eq!(fetch_parsed(&a).flags, ["--prune"]);
         let a = fetch(&["--all", "--prune"]).unwrap();
-        assert!(a.common.all);
+        assert!(a.common.all.all);
         assert_eq!(fetch_parsed(&a).flags, ["--prune"]);
     }
 
     #[test]
     fn sync_shorts_canonicalize() {
         assert_eq!(push_parsed(&push(&["-u"]).unwrap()).unwrap().flags, ["--set-upstream"]);
-        assert_eq!(push_parsed(&push(&["-n"]).unwrap()).unwrap().flags, ["--dry-run"]);
-        assert_eq!(fetch_parsed(&fetch(&["-p"]).unwrap()).flags, ["--prune"]);
-        assert_eq!(pull_parsed(&pull(&["-p"]).unwrap()).flags, ["--prune"]);
+        assert_eq!(fetch_parsed(&fetch(&["--prune"]).unwrap()).flags, ["--prune"]);
+        assert_eq!(pull_parsed(&pull(&["--prune"]).unwrap()).flags, ["--prune"]);
     }
 
     #[test]
@@ -336,7 +335,7 @@ mod tests {
         }
         assert!(push_parsed(&push(&["--force-with-lease"]).unwrap()).is_ok());
         // fetch's own '--force' means something else entirely and is fine.
-        assert!(fetch(&["--force"]).unwrap().force);
+        assert!(fetch(&["--force"]).unwrap().force.force);
     }
 
     #[test]

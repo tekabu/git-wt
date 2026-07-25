@@ -17,17 +17,17 @@ pub(crate) fn cmd_meld(root: &Path, trees: &[Worktree], idxs: &[usize], args: &M
         n => return Err(format!("meld takes at most 3 worktrees, got {n}")),
     }
 
-    if !args.diff {
+    if !args.diff.diff {
         for (i, a) in idxs.iter().enumerate() {
             if idxs[i + 1..].contains(a) {
                 return Err(format!("worktree #{} listed twice", a + 1));
             }
         }
         let mut bad = Vec::new();
-        if args.three_way {
+        if args.three_way.three_way {
             bad.push("--3way");
         }
-        if args.base.is_some() {
+        if args.base.base.is_some() {
             bad.push("--base");
         }
         if args.range.is_some() {
@@ -41,7 +41,7 @@ pub(crate) fn cmd_meld(root: &Path, trees: &[Worktree], idxs: &[usize], args: &M
         }
     }
 
-    if args.three_way && args.base.is_some() {
+    if args.three_way.three_way && args.base.base.is_some() {
         return Err("--3way and --base are alternatives; use one or the other".into());
     }
     if let Some(r) = &args.range {
@@ -55,7 +55,7 @@ pub(crate) fn cmd_meld(root: &Path, trees: &[Worktree], idxs: &[usize], args: &M
 
     require_meld()?;
 
-    if args.diff {
+    if args.diff.diff {
         if idxs.len() != 2 {
             return Err("'--diff' takes exactly 2 worktrees; use meld without --diff for 3-way".into());
         }
@@ -91,10 +91,10 @@ pub(crate) fn cmd_meld_filtered(
     let left = ref_of(&trees[left_idx])?;
     let right = ref_of(&trees[right_idx])?;
 
-    let base = if args.three_way {
+    let base = if args.three_way.three_way {
         Some(merge_base(root, &left, &right)?)
     } else {
-        args.base.clone()
+        args.base.base.clone()
     };
 
     let mut paths = if let Some(b) = &base {
@@ -265,11 +265,11 @@ mod tests {
         let mut it = args.iter();
         while let Some(tok) = it.next() {
             match tok.as_ref() {
-                "--diff" => a.diff = true,
+                "--diff" => a.diff.diff = true,
                 "..." => a.range = Some("...".into()),
                 ".." => a.range = Some("..".into()),
-                "--3way" => a.three_way = true,
-                "--base" => a.base = Some(it.next().unwrap().to_string()),
+                "--3way" => a.three_way.three_way = true,
+                "--base" => a.base.base = Some(it.next().unwrap().to_string()),
                 _ => {}
             }
         }
@@ -281,10 +281,10 @@ mod tests {
         for args in [vec!["--3way"], vec!["--base", "main"], vec!["..."]] {
             let mut a = MeldArgs::default();
             for tok in &args {
-                if *tok == "--3way" { a.three_way = true; }
+                if *tok == "--3way" { a.three_way.three_way = true; }
                 if *tok == "..." { a.range = Some("...".into()); }
             }
-            if args[0] == "--base" { a.base = Some(args[1].into()); }
+            if args[0] == "--base" { a.base.base = Some(args[1].into()); }
             let err = cmd_meld(
                 std::path::Path::new("."),
                 &[

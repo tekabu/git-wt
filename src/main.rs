@@ -87,8 +87,8 @@ fn run() -> Result<(), String> {
                     &root,
                     crate::cmd::switch::args::SwitchArgs {
                         target: Some(t),
-                        target_flag: None,
-                        branch: Vec::new(),
+                        target_flag: Default::default(),
+                        branch: Default::default(),
                     },
                 );
             }
@@ -125,8 +125,8 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Switch(args) => {
-            let branch = args.branch.clone();
-            let target = effective_target(args.target, args.target_flag.as_ref())?;
+            let branch = args.branch.branch.clone();
+            let target = effective_target(args.target, args.target_flag.target_flag.as_ref())?;
             let idxs = resolve_targets(&trees, target.as_ref(), &branch, false, false)?;
             if idxs.len() > 1 {
                 return Err(format!(
@@ -139,8 +139,8 @@ fn run() -> Result<(), String> {
             }
             let mut args = crate::cmd::switch::args::SwitchArgs {
                 target,
-                target_flag: None,
-                branch: Vec::new(),
+                target_flag: Default::default(),
+                branch: Default::default(),
             };
             if args.target.is_none() && !branch.is_empty() {
                 args.target = Some(branch.join(","));
@@ -149,21 +149,24 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Path(args) => {
-            let target = effective_target(args.target, args.target_flag.as_ref())?;
-            cmd_path(&root, crate::cmd::switch::args::PathArgs { target, target_flag: None })
+            let target = effective_target(args.target, args.target_flag.target_flag.as_ref())?;
+            cmd_path(
+                &root,
+                crate::cmd::switch::args::PathArgs { target, target_flag: Default::default() },
+            )
         }
 
         Commands::Remove(args) => {
-            let target = effective_target(args.target.clone(), args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch, true, false)?;
+            let target = effective_target(args.target.clone(), args.target_flag.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch.branch, true, false)?;
             if idxs.len() > 1 {
                 return Err(format!("remove takes one worktree, got {}", idxs.len()));
             }
             let idx = idxs.into_iter().next().expect("len 1");
             let args = crate::cmd::remove::args::RemoveArgs {
                 target,
-                target_flag: None,
-                branch: Vec::new(),
+                target_flag: Default::default(),
+                branch: Default::default(),
                 ..args
             };
             cmd_remove(&root, &trees, idx, args)
@@ -188,8 +191,8 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Diff(args) => {
-            let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch, true, false)?;
+            let target = effective_target(args.targets.clone(), args.target_flag.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch.branch, true, false)?;
             if idxs.len() != 2 {
                 return Err(format!(
                     "diff takes exactly two worktrees, got {}",
@@ -200,8 +203,8 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Meld(args) => {
-            let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch, true, true)?;
+            let target = effective_target(args.targets.clone(), args.target_flag.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch.branch, true, true)?;
             if idxs.len() < 2 {
                 return Err(format!(
                     "meld needs 2 or 3 worktrees, got {}",
@@ -302,12 +305,12 @@ fn run() -> Result<(), String> {
             // vocabulary (`--date` already sits on that letter there);
             // `-s/--source` is review's own field too, the same letter
             // merge's own second source spelling uses.
-            if !args.flags.common.branch.is_empty() {
+            if !args.flags.common.branch.extra_ref.is_empty() {
                 return Err(
-                    "review has no '-b/--branch'; name the source with '-s/--source' or the positional".into(),
+                    "review has no '-x/--reference'; name the source with '-s/--source' or the positional".into(),
                 );
             }
-            if args.destination_flag.as_deref().is_some_and(|t| t.contains(',')) {
+            if args.sd.destination_flag.as_deref().is_some_and(|t| t.contains(',')) {
                 return Err("review's '-d/--destination' takes exactly one target".into());
             }
             if let Some(t) = args.source.as_deref().filter(|t| t.contains(',')) {
@@ -315,17 +318,17 @@ fn run() -> Result<(), String> {
                     "review takes one source, got the list '{t}'; the destination is '-d/--destination'"
                 ));
             }
-            if let Some(s) = args.source_flag.as_deref().filter(|s| s.contains(',')) {
+            if let Some(s) = args.sd.source_flag.as_deref().filter(|s| s.contains(',')) {
                 return Err(format!(
                     "review's '-s/--source' takes exactly one source branch, got the list '{s}'"
                 ));
             }
-            if let (Some(w), Some(s)) = (args.source.as_deref(), args.source_flag.as_deref()) {
+            if let (Some(w), Some(s)) = (args.source.as_deref(), args.sd.source_flag.as_deref()) {
                 return Err(format!(
                     "source given twice: '{w}' and '-s/--source {s}'; use one or the other"
                 ));
             }
-            let dest_idx = match args.destination_flag.take().as_deref() {
+            let dest_idx = match args.sd.destination_flag.take().as_deref() {
                 Some(t) => {
                     let ns = resolve_target_list(&trees, &[t.to_string()])?;
                     check_index(ns[0], trees.len())?
@@ -334,6 +337,7 @@ fn run() -> Result<(), String> {
                     .ok_or("not inside a worktree; use 'git-wt review <SOURCE> -d <DEST>'")?,
             };
             let tok = args
+                .sd
                 .source_flag
                 .take()
                 .or(args.source)
@@ -355,7 +359,7 @@ fn run() -> Result<(), String> {
                 None => tok,
             };
             let src = resolve_merge_source(&root, &trees, &src)?;
-            cmd_review(&root, &trees, dest_idx, &src, args.meld, args.flags)
+            cmd_review(&root, &trees, dest_idx, &src, args.meld.meld, args.flags)
         }
 
         Commands::Merged(args) => {
@@ -419,8 +423,8 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Commits(args) => {
-            let target = effective_target(args.target.clone(), args.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &args.common.branch, true, false)?;
+            let target = effective_target(args.target.clone(), args.target_flag.target_flag.as_ref())?;
+            let idxs = resolve_targets(&trees, target.as_ref(), &args.common.branch.extra_ref, true, false)?;
             if idxs.is_empty() {
                 return Err("not inside a worktree; use 'git-wt commits <N>[,...]'".into());
             }
@@ -450,8 +454,8 @@ fn run() -> Result<(), String> {
             } else {
                 args.leading.clone()
             };
-            let target_token = effective_target(target_token, args.target_flag.as_ref())?;
-            let mut idxs = resolve_targets(&trees, target_token.as_ref(), &args.common.branch, true, false)?;
+            let target_token = effective_target(target_token, args.target_flag.target_flag.as_ref())?;
+            let mut idxs = resolve_targets(&trees, target_token.as_ref(), &args.common.branch.extra_ref, true, false)?;
             if idxs.is_empty() {
                 idxs = current_or_empty(&trees, "log")?;
             }
@@ -478,14 +482,14 @@ fn run_sync(
     common: crate::cmd::sync::args::SyncCommon,
     parsed: crate::cmd::sync::SyncParsedArgs,
 ) -> Result<(), String> {
-    let target = effective_target(common.targets, common.target_flag.as_ref())?;
-    if parsed.all && (target.is_some() || !common.branch.is_empty()) {
+    let target = effective_target(common.targets, common.target_flag.target_flag.as_ref())?;
+    if parsed.all && (target.is_some() || !common.branch.branch.is_empty()) {
         return Err("'--all' is every worktree, so a target list has nothing to add".into());
     }
     let idxs = if parsed.all {
         (0..trees.len()).collect()
     } else {
-        let mut idxs = resolve_targets(trees, target.as_ref(), &common.branch, true, false)?;
+        let mut idxs = resolve_targets(trees, target.as_ref(), &common.branch.branch, true, false)?;
         if idxs.is_empty() {
             let cur = current_worktree_index(trees).ok_or_else(|| {
                 format!("not inside a worktree; use 'git-wt <N> {}'", parsed.op.word())

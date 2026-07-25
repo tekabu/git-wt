@@ -1,5 +1,6 @@
 use clap::Args;
 
+use crate::cmd::args::{Meld, SourceDest};
 use crate::cmd::commits::args::ReviewFlags;
 
 /// `git-wt review <SOURCE> [-d <DEST>]`: what would merging SOURCE into DEST
@@ -28,18 +29,12 @@ pub(crate) struct ReviewArgs {
     #[arg(value_name = "SOURCE")]
     pub(crate) source: Option<String>,
 
-    /// Second spelling of the source, same as merge's own `-s/--source`.
-    #[arg(short = 's', long = "source", value_name = "SOURCE")]
-    pub(crate) source_flag: Option<String>,
-
-    /// Dest, defaulting to the current worktree. One target only (# or
-    /// branch), same shape as merge's own `-d/--destination`.
-    #[arg(short = 'd', long = "destination", alias = "dest", value_name = "DEST")]
-    pub(crate) destination_flag: Option<String>,
+    #[command(flatten)]
+    pub(crate) sd: SourceDest,
 
     /// Open meld on the files the range touches instead of printing the table.
-    #[arg(long)]
-    pub(crate) meld: bool,
+    #[command(flatten)]
+    pub(crate) meld: Meld,
 
     #[command(flatten)]
     pub(crate) flags: ReviewFlags,

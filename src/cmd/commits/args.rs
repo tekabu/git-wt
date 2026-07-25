@@ -1,4 +1,4 @@
-use clap::{ArgAction, Args};
+use clap::Args;
 
 use crate::ui::{BRANCH_MIN, MIN_TEXTW, PATH_MIN};
 
@@ -187,8 +187,8 @@ pub(crate) struct CommitsArgs {
     /// author, date, subject, file paths. Unlike `--message` it names nothing
     /// to filter on, so a row with no match still prints, plain.
     pub(crate) search: Option<String>,
-    /// Only commits touching a path containing this, case-folded.
-    pub(crate) filename: Option<String>,
+    /// Only commits touching a path containing any of these terms, case-folded.
+    pub(crate) filename: Vec<String>,
     /// Show every file a commit touched, not only the paths --filename
     /// matched. Off by default: the filter named a path, so the block answers
     /// with that path.
@@ -249,85 +249,71 @@ pub(crate) struct CommitsArgs {
 /// that case now, in exchange for not hand-writing one closure per flag.
 #[derive(Args, Debug, Default)]
 pub(crate) struct CommonCommitsFlags {
-    /// Extra worktree targets, appended to the target list.
-    #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
-    pub(crate) branch: Vec<String>,
+    #[command(flatten)]
+    pub(crate) branch: crate::cmd::args::ExtraRef,
 
-    #[arg(short = 'n', long, value_parser = parse_limit, value_name = "LIMIT")]
-    pub(crate) limit: Option<usize>,
-    
-    #[arg(long = "date", value_parser = parse_date_filter, value_name = "DATE")]
-    pub(crate) date: Vec<DateFilter>,
-    
-    #[arg(long = "date-since", visible_alias = "ds", value_parser = iso_date, value_name = "DATE")]
-    pub(crate) date_since: Option<String>,
-    
-    #[arg(long = "date-until", visible_alias = "du", value_parser = iso_date, value_name = "DATE")]
-    pub(crate) date_until: Option<String>,
-    
-    #[arg(long = "commit-since", visible_alias = "cs", value_name = "COMMIT")]
-    pub(crate) commit_since: Option<String>,
-    
-    #[arg(long = "commit-until", visible_alias = "cu", value_name = "COMMIT")]
-    pub(crate) commit_until: Option<String>,
-    
-    #[arg(short = 'c', long = "commits", value_delimiter = ',', value_name = "SHA_LIST")]
-    pub(crate) commits: Vec<String>,
-    
-    #[arg(long = "author", visible_alias = "au", value_name = "NAME")]
-    pub(crate) author: Option<String>,
-    
-    #[arg(short = 'm', long, value_name = "MESSAGE")]
-    pub(crate) message: Option<String>,
-    
-    /// Highlight only -- never drops a row. Lit wherever it appears: sha,
-    /// author, date, subject, file paths.
-    #[arg(long = "search", value_name = "SEARCH")]
-    pub(crate) search: Option<String>,
+    #[command(flatten)]
+    pub(crate) limit: crate::cmd::args::Limit,
 
-    #[arg(long, visible_aliases = ["topo", "to"])]
-    pub(crate) topo_order: bool,
-    
-    #[arg(long)]
-    pub(crate) merges: bool,
-    
-    #[arg(long, visible_aliases = ["oldest-first", "of", "rev"])]
-    pub(crate) reverse: bool,
-    
-    #[arg(long = "no-cherry", visible_alias = "nc")]
-    pub(crate) no_cherry: bool,
-    
-    #[arg(long = "pick-id", visible_alias = "pi")]
-    pub(crate) pick: bool,
-    
-    #[arg(short = 'f', long)]
-    pub(crate) files: bool,
-    
-    #[arg(long, visible_alias = "sq")]
-    pub(crate) squash: bool,
-    
-    #[arg(long, visible_alias = "un")]
-    pub(crate) union: bool,
-    
-    #[arg(long)]
-    pub(crate) time: bool,
-    
-    #[arg(long = "date-human", visible_alias = "dh")]
-    pub(crate) date_human: bool,
+    #[command(flatten)]
+    pub(crate) date: crate::cmd::args::DateExact,
 
-    /// The count is optional -- a bare `--wrap` means "the whole subject".
-    #[arg(short = 'w', long, visible_alias = "ws", value_parser = parse_wrap, num_args = 0..=1, default_missing_value = "full", value_name = "N")]
-    pub(crate) wrap_subject: Option<Wrap>,
-    
-    #[arg(long = "subject-width", visible_aliases = ["subjw", "sw"], value_parser = parse_subjectw, value_name = "COLS")]
-    pub(crate) subject_width: Option<SubjectWidth>,
+    #[command(flatten)]
+    pub(crate) date_bounds: crate::cmd::args::DateBounds,
 
-    #[arg(long = "branch-width", visible_aliases = ["branchw", "bw"], value_parser = parse_branchw, value_name = "COLS")]
-    pub(crate) branch_width: Option<BranchWidth>,
-    
-    /// The path is optional -- a bare `--md` means the timestamped default name.
-    #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PATH")]
-    pub(crate) md: Option<String>,
+    #[command(flatten)]
+    pub(crate) commit_bounds: crate::cmd::args::CommitBounds,
+
+    #[command(flatten)]
+    pub(crate) commits: crate::cmd::args::CommitsShaFilter,
+
+    #[command(flatten)]
+    pub(crate) author: crate::cmd::args::Author,
+
+    #[command(flatten)]
+    pub(crate) message: crate::cmd::args::MessageFilter,
+
+    #[command(flatten)]
+    pub(crate) search: crate::cmd::args::SearchFilter,
+
+    #[command(flatten)]
+    pub(crate) topo_order: crate::cmd::args::TopoOrder,
+
+    #[command(flatten)]
+    pub(crate) merges: crate::cmd::args::KeepMerges,
+
+    #[command(flatten)]
+    pub(crate) reverse: crate::cmd::args::Reverse,
+
+    #[command(flatten)]
+    pub(crate) no_cherry: crate::cmd::args::NoCherry,
+
+    #[command(flatten)]
+    pub(crate) pick: crate::cmd::args::PickId,
+
+    #[command(flatten)]
+    pub(crate) squash: crate::cmd::args::Squash,
+
+    #[command(flatten)]
+    pub(crate) union: crate::cmd::args::UnionRows,
+
+    #[command(flatten)]
+    pub(crate) time: crate::cmd::args::ShowTime,
+
+    #[command(flatten)]
+    pub(crate) date_human: crate::cmd::args::DateHuman,
+
+    #[command(flatten)]
+    pub(crate) wrap_subject: crate::cmd::args::SubjectWrap,
+
+    #[command(flatten)]
+    pub(crate) subject_width: crate::cmd::args::SubjectWidthArg,
+
+    #[command(flatten)]
+    pub(crate) branch_width: crate::cmd::args::BranchWidthArg,
+
+    #[command(flatten)]
+    pub(crate) md: crate::cmd::args::MdExport,
 }
 
 /// `commits`' own flags, on top of what it shares with `log`.
@@ -336,23 +322,20 @@ pub(crate) struct CommitsFlags {
     #[arg(value_name = "TARGET")]
     pub(crate) target: Option<String>,
 
-    #[arg(short = 't', long = "target", value_name = "TARGET")]
-    pub(crate) target_flag: Option<String>,
+    #[command(flatten)]
+    pub(crate) target_flag: crate::cmd::args::WorktreeFlag,
 
     #[command(flatten)]
     pub(crate) common: CommonCommitsFlags,
 
-    #[arg(short = 'a', long)]
-    pub(crate) all: bool,
+    #[command(flatten)]
+    pub(crate) all: crate::cmd::args::AllRows,
 
-    /// Show every file a commit touched, not only the paths --filename
-    /// matched. Off by default: the filter named a path, so the block answers
-    /// with that path.
-    #[arg(long = "all-files", visible_alias = "af")]
-    pub(crate) all_files: bool,
-    
-    #[arg(long = "filename", visible_alias = "fn", value_name = "FILENAME")]
-    pub(crate) filename: Option<String>,
+    #[command(flatten)]
+    pub(crate) all_files: crate::cmd::args::AllFiles,
+
+    #[command(flatten)]
+    pub(crate) filename: crate::cmd::args::PathFilter,
 }
 
 /// `log`'s own flags, on top of what it shares with `commits`.
@@ -367,16 +350,23 @@ pub(crate) struct LogFlags {
     #[arg(value_name = "TARGET/PATH", num_args = 0..)]
     pub(crate) leading: Vec<String>,
 
-    #[arg(short = 't', long = "target", value_name = "TARGET")]
-    pub(crate) target_flag: Option<String>,
+    #[command(flatten)]
+    pub(crate) target_flag: crate::cmd::args::WorktreeFlag,
 
     #[command(flatten)]
     pub(crate) common: CommonCommitsFlags,
 
-    #[arg(long = "no-follow")]
-    pub(crate) no_follow: bool,
-    #[arg(long = "path-width", visible_alias = "pathw", value_parser = parse_pathw, value_name = "COLS")]
-    pub(crate) pathw: Option<PathWidth>,
+    #[command(flatten)]
+    pub(crate) no_follow: crate::cmd::args::NoFollow,
+
+    #[command(flatten)]
+    pub(crate) pathw: crate::cmd::args::PathWidthArg,
+
+    /// `log` has no `--filename`/`--all` to widen past (the path positional
+    /// already answers that), so this only ever means "show the files
+    /// block" here -- the same job `ShowFiles`' retired bare `-f` did.
+    #[command(flatten)]
+    pub(crate) all_files: crate::cmd::args::AllFiles,
 }
 
 impl CommonCommitsFlags {
@@ -384,38 +374,37 @@ impl CommonCommitsFlags {
     /// verb-specific ones (`all`, `all_files`, `filename`, `no_follow`,
     /// `pathw`, and the merges default) for the caller to fill in.
     fn into_raw(self) -> RawCommitsArgs {
-        let mut dates = self.date;
-        if let Some(d) = self.date_since {
+        let mut dates = self.date.date;
+        if let Some(d) = self.date_bounds.date_since {
             dates.push(DateFilter { op: DateOp::Ge, date: d });
         }
-        if let Some(d) = self.date_until {
+        if let Some(d) = self.date_bounds.date_until {
             dates.push(DateFilter { op: DateOp::Le, date: d });
         }
         RawCommitsArgs {
-            limit: self.limit,
+            limit: self.limit.limit,
             dates,
-            commit_since: self.commit_since,
-            commit_until: self.commit_until,
-            commits: self.commits,
-            author: self.author,
-            message: self.message,
-            search: self.search,
-            filename: None,
+            commit_since: self.commit_bounds.commit_since,
+            commit_until: self.commit_bounds.commit_until,
+            commits: self.commits.commits,
+            author: self.author.author,
+            message: self.message.message,
+            search: self.search.search,
+            filename: Vec::new(),
             all_files: false,
-            topo: self.topo_order,
-            merges: self.merges,
-            fmt: DateFmt { human: self.date_human, time: self.time },
-            md: self.md.map(|s| if s.is_empty() { None } else { Some(s) }),
-            reverse: self.reverse,
-            no_cherry: self.no_cherry,
-            pick: self.pick,
-            union: self.union,
+            topo: self.topo_order.topo_order,
+            merges: self.merges.merges,
+            fmt: DateFmt { human: self.date_human.date_human, time: self.time.time },
+            md: self.md.md.map(|s| if s.is_empty() { None } else { Some(s) }),
+            reverse: self.reverse.reverse,
+            no_cherry: self.no_cherry.no_cherry,
+            pick: self.pick.pick,
+            union: self.union.union,
             all: false,
-            files: self.files,
-            squash: self.squash,
-            wrap: self.wrap_subject,
-            subjectw: self.subject_width,
-            branchw: self.branch_width,
+            squash: self.squash.squash,
+            wrap: self.wrap_subject.wrap_subject,
+            subjectw: self.subject_width.subject_width,
+            branchw: self.branch_width.branch_width,
             pathw: None,
             no_follow: false,
         }
@@ -425,9 +414,9 @@ impl CommonCommitsFlags {
 impl CommitsFlags {
     pub(crate) fn into_args(self) -> Result<CommitsArgs, String> {
         let mut raw = self.common.into_raw();
-        raw.all = self.all;
-        raw.all_files = self.all_files;
-        raw.filename = self.filename;
+        raw.all = self.all.show_all_rows;
+        raw.all_files = self.all_files.all_files;
+        raw.filename = self.filename.filename;
         finalize_commits_args(Mode::Commits, raw)
     }
 }
@@ -435,8 +424,9 @@ impl CommitsFlags {
 impl LogFlags {
     pub(crate) fn into_args(self) -> Result<CommitsArgs, String> {
         let mut raw = self.common.into_raw();
-        raw.no_follow = self.no_follow;
-        raw.pathw = self.pathw;
+        raw.no_follow = self.no_follow.no_follow;
+        raw.pathw = self.pathw.pathw;
+        raw.all_files = self.all_files.all_files;
         finalize_commits_args(Mode::Log, raw)
     }
 }
@@ -464,23 +454,23 @@ pub(crate) struct ReviewFlags {
     #[command(flatten)]
     pub(crate) common: CommonCommitsFlags,
 
-    #[arg(long = "no-merges")]
-    pub(crate) no_merges: bool,
-    #[arg(short = 'a', long)]
-    pub(crate) all: bool,
-    #[arg(long = "all-files", visible_alias = "af")]
-    pub(crate) all_files: bool,
-    #[arg(long = "filename", visible_alias = "fn", value_name = "TERM")]
-    pub(crate) filename: Option<String>,
+    #[command(flatten)]
+    pub(crate) no_merges: crate::cmd::args::NoMerges,
+    #[command(flatten)]
+    pub(crate) all: crate::cmd::args::AllRows,
+    #[command(flatten)]
+    pub(crate) all_files: crate::cmd::args::AllFiles,
+    #[command(flatten)]
+    pub(crate) filename: crate::cmd::args::PathFilter,
 }
 
 impl ReviewFlags {
     pub(crate) fn into_args(self) -> Result<CommitsArgs, String> {
         let mut raw = self.common.into_raw();
-        raw.merges = !self.no_merges;
-        raw.all = self.all;
-        raw.all_files = self.all_files;
-        raw.filename = self.filename;
+        raw.merges = !self.no_merges.no_merges;
+        raw.all = self.all.show_all_rows;
+        raw.all_files = self.all_files.all_files;
+        raw.filename = self.filename.filename;
         finalize_commits_args(Mode::Review, raw)
     }
 }
@@ -503,7 +493,7 @@ pub(crate) struct RawCommitsArgs {
     pub(crate) author: Option<String>,
     pub(crate) message: Option<String>,
     pub(crate) search: Option<String>,
-    pub(crate) filename: Option<String>,
+    pub(crate) filename: Vec<String>,
     pub(crate) all_files: bool,
     pub(crate) topo: bool,
     pub(crate) merges: bool,
@@ -514,7 +504,6 @@ pub(crate) struct RawCommitsArgs {
     pub(crate) pick: bool,
     pub(crate) union: bool,
     pub(crate) all: bool,
-    pub(crate) files: bool,
     pub(crate) squash: bool,
     pub(crate) wrap: Option<Wrap>,
     pub(crate) subjectw: Option<SubjectWidth>,
@@ -527,8 +516,8 @@ pub(crate) struct RawCommitsArgs {
 /// loop above, and the clap-declared `commits`/`log` structs) has to run
 /// once its own flags are collected: `--review`'s row-source refusal,
 /// `--pick-id`/`--no-cherry`, the implied `--all` a lower bound sets, the
-/// `--message`/`--filename` implications on `wrap`/`files`, and
-/// `--all-files`'s "needs something to widen" check.
+/// `--message` implication on `wrap`, and `files`/`all_files` both derived
+/// from the one `--all-files` flag (see `AllFiles`'s doc comment).
 ///
 /// Extracted from `parse_commits_args_with` so a struct built straight from
 /// typed clap fields gets the same rules as one built token by token,
@@ -537,7 +526,7 @@ pub(crate) fn finalize_commits_args(mode: Mode, raw: RawCommitsArgs) -> Result<C
     let review = mode == Mode::Review;
     let RawCommitsArgs {
         limit, dates, commit_since, commit_until, commits, author, message, search, filename,
-        all_files, topo, merges, fmt, md, reverse, no_cherry, pick, union, mut all, mut files,
+        all_files, topo, merges, fmt, md, reverse, no_cherry, pick, union, mut all,
         squash, wrap, subjectw, branchw, pathw, no_follow,
     } = raw;
     if review {
@@ -565,10 +554,10 @@ pub(crate) fn finalize_commits_args(mode: Mode, raw: RawCommitsArgs) -> Result<C
     all = all || (names_a_floor && !union);
 
     let wrap = wrap.unwrap_or(if message.is_some() { Wrap::Full } else { Wrap::Lines(1) });
-    files = files || filename.is_some();
-    if all_files && filename.is_none() {
-        return Err(ALL_FILES_MSG.into());
-    }
+    // `all_files` alone (no filter) is "show the block, unfiltered" -- what
+    // bare `-f/--files` used to mean before `ShowFiles` retired into this
+    // one flag. With a filter, it means "show it, but widen past the match."
+    let files = all_files || !filename.is_empty();
 
     Ok(CommitsArgs {
         limit, dates, commit_since, commit_until, commits, author, message, search, filename, all_files,
@@ -641,8 +630,6 @@ pub(crate) const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'f
 pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
 pub(crate) const BRANCHW_BAD: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'";
 pub(crate) const PATHW_BAD: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'";
-pub(crate) const ALL_FILES_MSG: &str =
-    "--all-files needs a '--filename TERM' to widen: on its own the file block is already whole";
 
 /// Parse `>=2026-01-01`, `<=2026-06-30`, `=2026-01-01`, or a bare date (`=`).
 pub(crate) fn parse_date_filter(s: &str) -> Result<DateFilter, String> {
@@ -812,16 +799,19 @@ mod tests {
     fn commits_knows_its_own_flags() {
         assert_eq!(commits(&["--limit", "5"]).unwrap().limit, Some(5));
         assert!(commits(&["--all"]).unwrap().all);
-        assert!(commits(&["--filename", "ui.rs"]).unwrap().filename.is_some());
-        assert!(commits(&["--filename", "ui.rs", "--all-files"]).unwrap().all_files);
-        assert!(commits(&["--all-files"]).unwrap_err().contains("--filename"));
+        assert!(!commits(&["--path", "ui.rs"]).unwrap().filename.is_empty());
+        assert!(commits(&["--path", "ui.rs", "--all-files"]).unwrap().all_files);
+        // Bare `--all-files` (no filter) is "show the block, unfiltered" now
+        // -- what `ShowFiles`' retired bare `-f` used to mean -- so it's a
+        // valid, non-erroring call on its own.
+        assert!(commits(&["--all-files"]).unwrap().files);
         assert!(commits(&["--pick-id", "--no-cherry"]).unwrap_err().contains("drop one of them"));
         assert!(commits(&["--all", "--union"]).unwrap_err().contains("--union"));
     }
 
     #[test]
     fn commits_bundles_short_flags() {
-        let a = commits(&["-af"]).unwrap();
+        let a = commits(&["-a", "--sf"]).unwrap();
         assert!(a.all && a.files);
     }
 
@@ -836,12 +826,15 @@ mod tests {
 
     #[test]
     fn log_does_not_know_the_flags_the_path_already_answers() {
-        for w in ["--filename", "--all", "-a", "--all-files"] {
+        for w in ["--path", "--all", "-a"] {
             assert!(log(&[w]).is_err(), "{w}");
         }
         assert!(commits(&["--all"]).unwrap().all);
         assert!(log(&["--union"]).unwrap().union);
-        assert!(log(&["-f"]).unwrap().files);
+        // `log` has no filter to widen past, so `--all-files` (aliased
+        // `--sf`/`--show-files`) only ever means "show the block" here --
+        // the job `ShowFiles`' retired bare `-f` used to do.
+        assert!(log(&["--all-files"]).unwrap().files);
     }
 
     #[test]
@@ -857,7 +850,7 @@ mod tests {
     fn log_leading_run_is_the_positional() {
         let a = LogWrap::try_parse_from(["log", "src/a.rs", "src/b.rs", "--union"]).unwrap();
         assert_eq!(a.o.leading, vec!["src/a.rs".to_string(), "src/b.rs".to_string()]);
-        assert!(a.o.common.union);
+        assert!(a.o.common.union.union);
     }
 
     #[test]
@@ -872,7 +865,7 @@ mod tests {
         let e = review(&["--all"]).unwrap_err();
         assert!(e.contains("no '--all' under 'review'"), "{e}");
         assert!(e.contains("dest..src"), "{e}");
-        assert!(review(&["-f"]).unwrap().files);
+        assert!(review(&["--sf"]).unwrap().files);
     }
 
     #[test]

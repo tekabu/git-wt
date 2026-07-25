@@ -1,5 +1,7 @@
 use clap::Args;
 
+use crate::cmd::args::{AddDirname, AddFromRef, AddName, AddParentdir, AddStayHidden};
+
 /// Create a new worktree from a branch.
 #[derive(Args, Debug)]
 pub(crate) struct AddArgs {
@@ -7,26 +9,20 @@ pub(crate) struct AddArgs {
     #[arg(value_name = "BRANCH")]
     pub branch_name: Option<String>,
 
-    /// Suffix only: leaf becomes `<repo>-NAME`.
-    #[arg(short, long)]
-    pub name: Option<String>,
+    #[command(flatten)]
+    pub name: AddName,
 
-    /// Whole leaf, verbatim (sanitized); with '/' it is a path.
-    #[arg(long)]
-    pub dirname: Option<String>,
+    #[command(flatten)]
+    pub dirname: AddDirname,
 
-    /// Parent directory (default: primary worktree's parent).
-    #[arg(short, long)]
-    pub parentdir: Option<String>,
+    #[command(flatten)]
+    pub parentdir: AddParentdir,
 
-    /// Base ref for a new branch.
-    #[arg(long)]
-    pub from: Option<String>,
+    #[command(flatten)]
+    pub from: AddFromRef,
 
-    /// Hint for the shell wrapper: do not cd into the new worktree.
-    /// The binary itself never changes directory, so this is accepted and ignored.
-    #[arg(short, long, hide = true)]
-    pub stay: bool,
+    #[command(flatten)]
+    pub stay: AddStayHidden,
 }
 
 #[cfg(test)]
@@ -50,14 +46,14 @@ mod tests {
     fn add_args_take_branch_and_flags() {
         let a = parse(&["feature/login"]);
         assert_eq!(a.branch_name.as_deref(), Some("feature/login"));
-        assert!(a.name.is_none());
+        assert!(a.name.name.is_none());
 
         let a = parse(&["feature/login", "--name", "review"]);
-        assert_eq!(a.name.as_deref(), Some("review"));
+        assert_eq!(a.name.name.as_deref(), Some("review"));
 
-        let a = parse(&["feature/login", "-p", "/work", "--from", "develop"]);
-        assert_eq!(a.parentdir.as_deref(), Some("/work"));
-        assert_eq!(a.from.as_deref(), Some("develop"));
+        let a = parse(&["feature/login", "--parentdir", "/work", "--from", "develop"]);
+        assert_eq!(a.parentdir.parentdir.as_deref(), Some("/work"));
+        assert_eq!(a.from.from.as_deref(), Some("develop"));
     }
 
     #[test]

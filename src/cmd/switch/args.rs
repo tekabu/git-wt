@@ -1,4 +1,6 @@
-use clap::{ArgAction, Args};
+use clap::Args;
+
+use crate::cmd::args::{BranchTargets, WorktreeFlag};
 
 /// Switch to a worktree.
 #[derive(Args, Debug)]
@@ -6,15 +8,11 @@ pub(crate) struct SwitchArgs {
     /// Worktree number or branch name; see 'git-wt list' to pick one.
     pub target: Option<String>,
 
-    /// Alternative spelling of the positional target; errors if both given.
-    #[arg(short = 't', long = "target", value_name = "TARGET")]
-    pub target_flag: Option<String>,
+    #[command(flatten)]
+    pub target_flag: WorktreeFlag,
 
-    /// Extra worktree targets, appended to this command's target list.
-    /// Repeatable: `-b 2 -b 3` and `-b 2,3` mean the same thing.
-    #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
-    pub branch: Vec<String>,
-
+    #[command(flatten)]
+    pub branch: BranchTargets,
 }
 
 /// Print a worktree's path.
@@ -23,7 +21,6 @@ pub(crate) struct PathArgs {
     /// Worktree number or branch name; omit for the current worktree.
     pub target: Option<String>,
 
-    /// Alternative spelling of the positional target; errors if both given.
-    #[arg(short = 't', long = "target", value_name = "TARGET")]
-    pub target_flag: Option<String>,
+    #[command(flatten)]
+    pub target_flag: WorktreeFlag,
 }

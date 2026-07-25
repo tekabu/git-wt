@@ -505,8 +505,10 @@ fn escape_pathspec(term: &str) -> String {
 /// `--diff-merges=first-parent` then makes a merge's listed files the same
 /// files its block will show. A commit git kept but listed nothing for touched
 /// no matching path, and is dropped here.
-pub(crate) fn path_shas(root: &Path, refs: &[String], term: &str) -> Result<HashSet<String>, String> {
-    let spec = format!(":(icase)*{}*", escape_pathspec(term));
+pub(crate) fn path_shas(root: &Path, refs: &[String], terms: &[String]) -> Result<HashSet<String>, String> {
+    // One pathspec per term; git ORs multiple pathspecs after '--' together,
+    // which is exactly "touched any of these" -- no OR logic needed here.
+    let specs: Vec<String> = terms.iter().map(|t| format!(":(icase)*{}*", escape_pathspec(t))).collect();
     let mut args = vec![
         "log",
         "--format=%x00%H",
@@ -516,7 +518,7 @@ pub(crate) fn path_shas(root: &Path, refs: &[String], term: &str) -> Result<Hash
     ];
     args.extend(refs.iter().map(String::as_str));
     args.push("--");
-    args.push(&spec);
+    args.extend(specs.iter().map(String::as_str));
     // A git too old for --diff-merges (2.31) would fail the whole command, so
     // fall back to the walk without it: merges lose their file lists and drop
     // out, which is the old behavior rather than no answer at all.
@@ -2013,7 +2015,7 @@ mod tests {
         git(&tmp, &["merge", "--no-ff", "-m", "merge-other", "other"]);
 
         let refs = vec!["main".to_string()];
-        let hits = path_shas(&tmp, &refs, "expense").unwrap();
+        let hits = path_shas(&tmp, &refs, &["expense".to_string()]).unwrap();
         let subject = |sha: &str| -> String {
             let out = std::process::Command::new("git")
                 .current_dir(&tmp)
@@ -2034,9 +2036,9 @@ mod tests {
         assert!(!subjects.contains("base"), "{subjects:?}");
 
         // Case-folded, and a substring: the term is the user's, not a glob.
-        assert_eq!(path_shas(&tmp, &refs, "EXPENSE").unwrap(), hits);
-        assert_eq!(path_shas(&tmp, &refs, "app/Expense").unwrap(), hits);
-        assert!(path_shas(&tmp, &refs, "zzz").unwrap().is_empty());
+        assert_eq!(path_shas(&tmp, &refs, &["EXPENSE".to_string()]).unwrap(), hits);
+        assert_eq!(path_shas(&tmp, &refs, &["app/Expense".to_string()]).unwrap(), hits);
+        assert!(path_shas(&tmp, &refs, &["zzz".to_string()]).unwrap().is_empty());
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -2121,7 +2123,7 @@ mod tests {
 
         // The filter, over the rows the range produced: the merge matches
         // because its block will list the file, which is the whole fix.
-        let hits = path_shas(&tmp, &refs, "expense").unwrap();
+        let hits = path_shas(&tmp, &refs, &["expense".to_string()]).unwrap();
         let by_sha: HashMap<String, String> = commit_rows(
             &tmp, &refs, Some("main"), None, Order::Date, ISO, false, false, &[], false,
         )

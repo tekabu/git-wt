@@ -36,14 +36,9 @@ pub(crate) fn cmd_commits(
 }
 
 /// Print the `dest..src` table for `merge --review`. See `commits_view`.
-pub(crate) fn cmd_commits_review(
-    root: &Path,
-    trees: &[Worktree],
-    rest: &[String],
-    ctx: ReviewCtx,
-) -> Result<(), String> {
-    let args = crate::cmd::commits::args::parse_commits_args_with(rest, crate::cmd::commits::args::Mode::Review)?;
-    commits_view(root, trees, &[], args, &rest.join(" "), Some(ctx))
+pub(crate) fn cmd_commits_review(root: &Path, trees: &[Worktree], ctx: ReviewCtx) -> Result<(), String> {
+    let args = crate::cmd::commits::args::ReviewFlags::default().into_args()?;
+    commits_view(root, trees, &[], args, "", Some(ctx))
 }
 
 /// The two refs a `merge --review` table is about.

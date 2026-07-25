@@ -181,73 +181,6 @@ pub(crate) fn gather_targets(
     Ok(parts)
 }
 
-/// Pull a `-b`/`--branch`/`--branch=VALUE` flag out of an argument list,
-/// wherever it sits, and return the args with it removed alongside its value.
-///
-/// `commits`/`log`/`merge` capture their tail as a raw, `allow_hyphen_values`
-/// catch-all positional (`rest: Vec<String>`); once that positional starts
-/// consuming (i.e. a target token precedes the flag), clap's greedy matching
-/// swallows even global options like `-b`/`-t` into it instead of routing
-/// them to the global field. This (and `extract_target_flag`) is the fallback
-/// that recovers them from `rest` in that case; when `-b`/`-t` precede every
-/// positional token, clap's global handling already caught them and this
-/// simply finds nothing.
-pub(crate) fn extract_branch_flag(
-    args: &[String],
-) -> Result<(Vec<String>, Option<String>), String> {
-    extract_flag(args, "-b", "--branch", "1,2")
-}
-
-/// The `-t`/`--target` twin of `extract_branch_flag`: pulls `-t`/`--target`/
-/// `--target=VALUE` out of a raw catch-all `rest`, wherever it sits.
-pub(crate) fn extract_target_flag(
-    args: &[String],
-) -> Result<(Vec<String>, Option<String>), String> {
-    extract_flag(args, "-t", "--target", "1")
-}
-
-/// Shared body of the two extractors above: remove `short VALUE`,
-/// `long VALUE`, or `long=VALUE` from `args` wherever it sits and return the
-/// remainder alongside the value. `example` is the value shown when the
-/// flag is given without one. A new value-taking global needs only one more
-/// call, not another copy of this loop.
-fn extract_flag(
-    args: &[String],
-    short: &str,
-    long: &str,
-    example: &str,
-) -> Result<(Vec<String>, Option<String>), String> {
-    let eq = format!("{long}=");
-    let mut out = Vec::with_capacity(args.len());
-    let mut val: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        if a == short || a == long {
-            if val.is_some() {
-                return Err(format!("'{a}' given twice"));
-            }
-            let v = args
-                .get(i + 1)
-                .ok_or_else(|| format!("'{a}' needs a value, e.g. '{a} {example}'"))?;
-            val = Some(v.clone());
-            i += 2;
-            continue;
-        }
-        if let Some(v) = a.strip_prefix(&eq) {
-            if val.is_some() {
-                return Err(format!("'{long}' given twice"));
-            }
-            val = Some(v.to_string());
-            i += 1;
-            continue;
-        }
-        out.push(a.clone());
-        i += 1;
-    }
-    Ok((out, val))
-}
-
 /// The index of the worktree with `branch` checked out, if any.
 pub(crate) fn worktree_on_branch(trees: &[Worktree], branch: &str) -> Option<usize> {
     trees.iter().position(|w| w.branch.as_deref() == Some(branch))
@@ -446,38 +379,6 @@ mod tests {
         assert_eq!(typed_verb_from(argv("--full pull")), Some("pull".into()));
         assert_eq!(typed_verb_from(argv("-hf")), None);
         assert_eq!(typed_verb_from(argv("")), None);
-    }
-
-    #[test]
-    fn a_flag_is_pulled_out_of_a_catch_all_tail_wherever_it_sits() {
-        let a = argv("1 --oneline -b main HEAD");
-        assert_eq!(
-            extract_branch_flag(&a),
-            Ok((argv("1 --oneline HEAD"), Some("main".into())))
-        );
-        let a = argv("1 --target=2 --stat");
-        assert_eq!(extract_target_flag(&a), Ok((argv("1 --stat"), Some("2".into()))));
-        assert_eq!(extract_branch_flag(&argv("1 --stat")), Ok((argv("1 --stat"), None)));
-    }
-
-    #[test]
-    fn a_repeated_or_valueless_flag_in_the_tail_is_an_error() {
-        assert_eq!(
-            extract_branch_flag(&argv("-b 1 -b 2")),
-            Err("'-b' given twice".into())
-        );
-        assert_eq!(
-            extract_target_flag(&argv("--target=1 --target=2")),
-            Err("'--target' given twice".into())
-        );
-        assert_eq!(
-            extract_branch_flag(&argv("1 -b")),
-            Err("'-b' needs a value, e.g. '-b 1,2'".into())
-        );
-        assert_eq!(
-            extract_target_flag(&argv("1 --target")),
-            Err("'--target' needs a value, e.g. '--target 1'".into())
-        );
     }
 
     #[test]

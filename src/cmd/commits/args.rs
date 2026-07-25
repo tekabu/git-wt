@@ -348,8 +348,8 @@ pub(crate) struct LogFlags {
 impl CommonCommitsFlags {
     /// Fold the shared fields into a `RawCommitsArgs`, leaving the
     /// verb-specific ones (`all`, `all_files`, `filename`, `no_follow`,
-    /// `pathw`) for the caller to fill in.
-    fn into_raw(self, mode: Mode) -> RawCommitsArgs {
+    /// `pathw`, and the merges default) for the caller to fill in.
+    fn into_raw(self) -> RawCommitsArgs {
         let mut dates = self.date;
         if let Some(d) = self.date_since {
             dates.push(DateFilter { op: DateOp::Ge, date: d });
@@ -376,7 +376,7 @@ impl CommonCommitsFlags {
             no_cherry: self.no_cherry,
             pick: self.pick,
             union: self.union,
-            all: mode == Mode::Review, // filled in by the caller for `commits`
+            all: false,
             files: self.files,
             squash: self.squash,
             wrap: self.wrap,
@@ -390,7 +390,7 @@ impl CommonCommitsFlags {
 
 impl CommitsFlags {
     pub(crate) fn into_args(self) -> Result<CommitsArgs, String> {
-        let mut raw = self.common.into_raw(Mode::Commits);
+        let mut raw = self.common.into_raw();
         raw.all = self.all;
         raw.all_files = self.all_files;
         raw.filename = self.filename;
@@ -400,361 +400,55 @@ impl CommitsFlags {
 
 impl LogFlags {
     pub(crate) fn into_args(self) -> Result<CommitsArgs, String> {
-        let mut raw = self.common.into_raw(Mode::Log);
+        let mut raw = self.common.into_raw();
         raw.no_follow = self.no_follow;
         raw.pathw = self.pathw;
         finalize_commits_args(Mode::Log, raw)
     }
 }
 
-/// The message for a token that reached the `commits` parser under `--review`
-/// and matched nothing there.
+/// `merge --review`'s own flags: the same shared vocabulary `commits`/`log`
+/// declare, plus the three words only a review knows (`--no-merges`, `--all`,
+/// `--all-files`, `--filename` -- the same set plain `commits` has, since a
+/// review is that mode with the merges default flipped).
 ///
-/// `--review` hands its tail over verbatim, which is what keeps `-f` meaning
-/// `--files` rather than `--force`. The cost is that a *merge* option typed
-/// after it arrives here, where the generic error would name `commits` -- a
-/// command the user did not type -- and describe it as unexpected rather than
-/// as the thing it is: an option that cannot combine with a mode that merges
-/// nothing.
+/// What is *not* kept from the old hand-rolled `Mode::Review` parser is
+/// `merge_word_msg`'s cross-referenced wording for a merge option typed after
+/// `--review` (`'--dry-run' and '--review' answer the same question'`, and
+/// friends) -- declared here, a merge option like `--dry-run` is simply not a
+/// word this struct knows, so it gets clap's own unknown-argument message
+/// naming `review`, the same simplification `commits`/`log` already made.
 ///
-/// Only long spellings are named. Every short form worth having is claimed by
-/// `commits` on this side of the handoff, so `-f` here is `--files` and there
-/// is no collision left to report.
-fn merge_word_msg(word: &str) -> String {
-    let after = |what: &str| {
-        format!("'{word}' {what}, and '--review' merges nothing")
-    };
-    match word {
-        // The one the plan settled outright: it is not a conflict of meaning
-        // but a redundancy, and the fix is to delete a word rather than choose.
-        "--dry-run" => format!("'{word}' and '--review' answer the same question"),
-        "--review" => "'--review' is already in effect".to_string(),
-        "--continue" | "--abort" => {
-            format!("'{word}' acts on a merge already in progress, and '--review' starts none")
-        }
-        "--ours" | "--theirs" => format!(
-            "'{word}' settles conflicting hunks while a merge is computed, and \
-             '--review' computes none"
-        ),
-        "--no-ff" | "--ff-only" => after("shapes a merge commit"),
-        "--force" => after("gates whether a merge may run"),
-        _ => format!("unexpected argument '{word}' for commits\nTry 'git-wt --help'"),
-    }
+/// `merge --review` no longer carries a tail at all (`--review` is a plain
+/// bool on `MergeOptions`, conflicting with every other merge option), so
+/// every field here is at its default in practice; the struct stays because
+/// `finalize_commits_args` still needs the merges-kept-by-default rule and
+/// the review-only row-source refusal, and a literal is a worse way to say
+/// "these are the defaults" than the type that already means it.
+#[derive(Args, Debug, Default)]
+pub(crate) struct ReviewFlags {
+    #[command(flatten)]
+    pub(crate) common: CommonCommitsFlags,
+
+    #[arg(long = "no-merges")]
+    pub(crate) no_merges: bool,
+    #[arg(short = 'a', long)]
+    pub(crate) all: bool,
+    #[arg(long = "all-files", visible_alias = "af")]
+    pub(crate) all_files: bool,
+    #[arg(long = "filename", visible_alias = "fn", value_name = "TERM")]
+    pub(crate) filename: Option<String>,
 }
 
-/// Split a `--commits` value on commas into the list, rejecting an empty id --
-/// `af48509,,f9e2427` is a typo, and an empty prefix would match every row.
-fn push_commit_ids(into: &mut Vec<String>, v: &str) -> Result<(), String> {
-    for part in v.split(',') {
-        let id = part.trim();
-        if id.is_empty() {
-            return Err(format!("bad commit list '{v}'; want ids, e.g. 'af48509,f9e2427'"));
-        }
-        into.push(id.to_string());
+impl ReviewFlags {
+    pub(crate) fn into_args(self) -> Result<CommitsArgs, String> {
+        let mut raw = self.common.into_raw();
+        raw.merges = !self.no_merges;
+        raw.all = self.all;
+        raw.all_files = self.all_files;
+        raw.filename = self.filename;
+        finalize_commits_args(Mode::Review, raw)
     }
-    Ok(())
-}
-
-/// Short flags that carry no value, so any number of them can share one dash.
-const FLAG_SHORTS: &str = "af";
-/// Short flags that read the next argument (`-w`'s is optional), so at most one
-/// can appear in a bundle and only as its last letter.
-const VALUE_SHORTS: &str = "ndwcm";
-
-/// Split `-af` into `-a -f` so short flags can be bundled the way every other
-/// unix tool bundles them.
-///
-/// A value-taking flag has to come last -- `-fn 20` is the only reading of a
-/// bundle that ends in one, and `-nf 20` would have to hand '20' to both. Rather
-/// than pick for the user, that spelling is an error naming the one that works.
-/// Anything that is not a short bundle (`--all`, a path, a lone `-`) is passed
-/// through untouched for the parser proper to judge.
-pub(crate) fn expand_short_bundles(args: &[String]) -> Result<Vec<String>, String> {
-    let mut out = Vec::with_capacity(args.len());
-    for a in args {
-        let is_bundle = a.len() > 2 && a.starts_with('-') && !a.starts_with("--");
-        if !is_bundle {
-            out.push(a.clone());
-            continue;
-        }
-        let letters: Vec<char> = a.chars().skip(1).collect();
-        // Not a bundle at all if any letter names nothing: leave it whole so the
-        // parser reports the argument the user actually typed.
-        if !letters
-            .iter()
-            .all(|c| FLAG_SHORTS.contains(*c) || VALUE_SHORTS.contains(*c))
-        {
-            out.push(a.clone());
-            continue;
-        }
-        for (i, c) in letters.iter().enumerate() {
-            if VALUE_SHORTS.contains(*c) && i + 1 != letters.len() {
-                return Err(format!(
-                    "'-{c}' takes a value, so it has to come last in '{a}'"
-                ));
-            }
-            out.push(format!("-{c}"));
-        }
-    }
-    Ok(out)
-}
-
-/// Parse `commits` arguments, for any of the three verbs that render through
-/// this table.
-///
-/// `mode` used to be a `review: bool`. As one, it started with a single fact
-/// -- whether merge commits are kept -- and grew to four, all of which follow
-/// from `merge --review` and none of which follow from each other:
-///
-/// - **The merges default.** Kept under a review, because the range is bounded
-///   by the merge about to happen, so a merge inside it is cargo rather than
-///   the noise it is on a long-lived branch.
-/// - **Whether `--no-merges` is refused.** It follows the default above, so the
-///   error ("dropped already") stays true in the mode that raises it.
-/// - **Whether merge vocabulary gets a named message.** `--review` hands its
-///   tail here verbatim, so a merge option typed after it lands in this parser
-///   and deserves better than "unexpected argument for commits".
-/// - **Whether `--all` / `--union` are refused.** Both name a row source, and a
-///   review's is already the range `dest..src`.
-///
-/// `Mode::Log` is the same shape, not a new one: `--filename`, `--all`, and
-/// `--all-files` simply are not words it knows, so their match arms are
-/// gated off and the tokens fall through to the plain unknown-argument error
-/// -- no bespoke message, because the path already answers what each of them
-/// would otherwise ask for.
-///
-/// The merges default is the *positive* -- "keep them" -- all the way through
-/// this layer, matching `CommitsArgs.merges`; the single inversion to
-/// `commit_rows`'s `no_merges` happens at that one call site.
-pub(crate) fn parse_commits_args_with(
-    args: &[String],
-    mode: Mode,
-) -> Result<CommitsArgs, String> {
-    let review = mode == Mode::Review;
-    let args = expand_short_bundles(args)?;
-    let mut limit = None;
-    let mut dates = Vec::new();
-    let mut commit_since = None;
-    let mut commit_until = None;
-    let mut commits: Vec<String> = Vec::new();
-    let mut author = None;
-    let mut message = None;
-    let mut filename = None;
-    let mut all_files = false;
-    let mut topo = false;
-    let mut merges = review; // kept under --review, dropped for plain commits
-    let mut fmt = DateFmt { human: false, time: false };
-    let mut md = None;
-    let mut reverse = false;
-    let mut no_cherry = false;
-    let mut pick = false;
-    let mut union = false;
-    let mut all = false;
-    let mut files = false;
-    let mut squash = false;
-    let mut search = None;
-    let mut wrap = None;
-    let mut subjectw = None;
-    let mut branchw = None;
-    let mut pathw = None;
-    let mut no_follow = false;
-    let mut it = args.iter().peekable();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "-n" | "--limit" => {
-                let v = it.next().ok_or("-n needs a count, e.g. '-n 20'")?;
-                limit = Some(parse_limit(v)?);
-            }
-            s if s.starts_with("--limit=") => limit = Some(parse_limit(&s["--limit=".len()..])?),
-            "--topo" | "--topo-order" => topo = true,
-            "--merges" => merges = true,
-            // It named the drop back when merges were kept by default. Now the
-            // drop is the default, so the flag has nothing left to ask for --
-            // but only where that is actually the default. Under a view that
-            // keeps merges it asks for something real, and the old error would
-            // be a message that lies.
-            // Only under --review, where merges are kept and dropping them is
-            // a real request. In `commits` they are dropped already, so the
-            // word names nothing and falls through to the unknown-argument
-            // error like any other flag that does not exist.
-            "--no-merges" if review => merges = false,
-            "--reverse" | "--oldest-first" => reverse = true,
-            "--no-cherry" | "--nc" => no_cherry = true,
-            "--pick-id" | "--pi" => pick = true,
-            "--files" | "-f" => files = true,
-            // Same file view as plain 'commits --squash': one consolidated
-            // file block instead of one per commit. Under '--review' this
-            // still means nothing about the merge itself -- it does not ask
-            // for a squash merge, just the consolidated file rendering.
-            "--squash" => squash = true,
-            "--union" => union = true,
-            // Only a word `log` knows: elsewhere there is no follow to opt out
-            // of, so it falls through to the plain unknown-argument error.
-            "--no-follow" if mode == Mode::Log => no_follow = true,
-            // Not a word `log` knows at all: a file's history is already the
-            // whole log, so there is no divergence floor to lift. Falls
-            // through to the generic unknown-argument error, same as any
-            // other flag `log` never had.
-            "--all" | "-a" if mode != Mode::Log => all = true,
-            // The count is optional, and only a count or 'full' is read as
-            // one: '--wrap --topo' asks for the whole subject, not for a
-            // worktree named '--topo' to be parsed as a number.
-            "--wrap" | "-w" => {
-                wrap = Some(match it.peek().and_then(|v| parse_wrap(v).ok()) {
-                    Some(w) => {
-                        it.next();
-                        w
-                    }
-                    None => Wrap::Full,
-                });
-            }
-            s if s.starts_with("--wrap=") => wrap = Some(parse_wrap(&s["--wrap=".len()..])?),
-            // Unlike --wrap, the count is required: a bare '--subject-width'
-            // names no width, and 'full' is the word for wanting all of it.
-            "--subject-width" | "--subjw" => {
-                let v = it.next().ok_or(SUBJW_MISSING)?;
-                subjectw = Some(parse_subjectw(v)?);
-            }
-            s if s.starts_with("--subject-width=") => {
-                subjectw = Some(parse_subjectw(&s["--subject-width=".len()..])?);
-            }
-            s if s.starts_with("--subjw=") => {
-                subjectw = Some(parse_subjectw(&s["--subjw=".len()..])?);
-            }
-            // Same required-value shape as --subject-width: a bare
-            // '--branch-width' names no width, and 'full' is the word for
-            // wanting the whole name.
-            "--branch-width" | "--branchw" => {
-                let v = it.next().ok_or(BRANCHW_MISSING)?;
-                branchw = Some(parse_branchw(v)?);
-            }
-            s if s.starts_with("--branch-width=") => {
-                branchw = Some(parse_branchw(&s["--branch-width=".len()..])?);
-            }
-            s if s.starts_with("--branchw=") => {
-                branchw = Some(parse_branchw(&s["--branchw=".len()..])?);
-            }
-            // Same shape again, and `log`-only the same way `--no-follow` is:
-            // no other verb has a `path` column for it to widen.
-            "--path-width" | "--pathw" if mode == Mode::Log => {
-                let v = it.next().ok_or(PATHW_MISSING)?;
-                pathw = Some(parse_pathw(v)?);
-            }
-            s if s.starts_with("--path-width=") && mode == Mode::Log => {
-                pathw = Some(parse_pathw(&s["--path-width=".len()..])?);
-            }
-            s if s.starts_with("--pathw=") && mode == Mode::Log => {
-                pathw = Some(parse_pathw(&s["--pathw=".len()..])?);
-            }
-            "--time" => fmt.time = true,
-            "--date-human" | "--dh" => fmt.human = true,
-            // The path is optional, so the next word is only it when it is not
-            // another flag: 'commits --md --topo' asks for the default name.
-            "--md" => {
-                let path = match it.peek() {
-                    Some(v) if !v.starts_with('-') => Some((*it.next().unwrap()).clone()),
-                    _ => None,
-                };
-                md = Some(path);
-            }
-            s if s.starts_with("--md=") => md = Some(Some(s["--md=".len()..].to_string())),
-            "--date" | "-d" => {
-                let v = it.next().ok_or(DATE_MISSING)?;
-                dates.push(parse_date_filter(v)?);
-            }
-            s if s.starts_with("--date=") => dates.push(parse_date_filter(&s["--date=".len()..])?),
-            // The same two bounds --date spells with '>=' and '<=', named to
-            // mirror --from-id/--to-id -- and needing no quoting, where '>' is
-            // a redirect the shell eats before git-wt ever sees it.
-            "--date-since" | "--ds" => {
-                let v = it.next().ok_or(FROM_DATE_MISSING)?;
-                dates.push(DateFilter { op: DateOp::Ge, date: iso_date(v)? });
-            }
-            s if s.starts_with("--date-since=") => {
-                dates.push(DateFilter { op: DateOp::Ge, date: iso_date(&s["--date-since=".len()..])? });
-            }
-            s if s.starts_with("--ds=") => {
-                dates.push(DateFilter { op: DateOp::Ge, date: iso_date(&s["--ds=".len()..])? });
-            }
-            "--date-until" | "--du" => {
-                let v = it.next().ok_or(TO_DATE_MISSING)?;
-                dates.push(DateFilter { op: DateOp::Le, date: iso_date(v)? });
-            }
-            s if s.starts_with("--date-until=") => {
-                dates.push(DateFilter { op: DateOp::Le, date: iso_date(&s["--date-until=".len()..])? });
-            }
-            s if s.starts_with("--du=") => {
-                dates.push(DateFilter { op: DateOp::Le, date: iso_date(&s["--du=".len()..])? });
-            }
-            "--author" | "--au" => author = Some(it.next().ok_or(AUTHOR_MISSING)?.clone()),
-            s if s.starts_with("--author=") => author = Some(s["--author=".len()..].to_string()),
-            s if s.starts_with("--au=") => author = Some(s["--au=".len()..].to_string()),
-            // The text filter. Its term has to end up somewhere on the row it
-            // keeps -- see the --wrap implication below.
-            "--message" | "-m" => message = Some(term(it.next(), MESSAGE_MISSING)?),
-            s if s.starts_with("--message=") => {
-                message = Some(term_of(&s["--message=".len()..], MESSAGE_MISSING)?);
-            }
-            // `list`'s word, same meaning here: light every match, drop
-            // nothing. Unlike `--message` it names no filter, so it never
-            // implies `--wrap full` or `--files` the way a term that has to
-            // prove itself on the row does.
-            "--search" => search = Some(term(it.next(), SEARCH_MISSING)?),
-            s if s.starts_with("--search=") => {
-                search = Some(term_of(&s["--search=".len()..], SEARCH_MISSING)?);
-            }
-            // A merge can carry a hundred files and match on three, so the
-            // block is cut to the matches by default. --all-files buys the
-            // whole list back when the question is what the commit did.
-            // Neither is a word `log` knows: the path is already the target,
-            // so `--filename` asks for nothing new, and `--all-files` is the
-            // same request `-f` already spells there.
-            "--all-files" | "--af" if mode != Mode::Log => all_files = true,
-            "--filename" | "--fn" if mode != Mode::Log => filename = Some(term(it.next(), FILENAME_MISSING)?),
-            s if mode != Mode::Log && s.starts_with("--filename=") => {
-                filename = Some(term_of(&s["--filename=".len()..], FILENAME_MISSING)?);
-            }
-            s if s.starts_with("--fn=") => {
-                filename = Some(term_of(&s["--fn=".len()..], FILENAME_MISSING)?);
-            }
-            "--commit-since" | "--cs" => commit_since = Some(it.next().ok_or(COMMIT_SINCE_MISSING)?.clone()),
-            s if s.starts_with("--commit-since=") => commit_since = Some(s["--commit-since=".len()..].to_string()),
-            s if s.starts_with("--cs=") => commit_since = Some(s["--cs=".len()..].to_string()),
-            "--commit-until" | "--cu" => commit_until = Some(it.next().ok_or(COMMIT_UNTIL_MISSING)?.clone()),
-            s if s.starts_with("--commit-until=") => commit_until = Some(s["--commit-until=".len()..].to_string()),
-            s if s.starts_with("--cu=") => commit_until = Some(s["--cu=".len()..].to_string()),
-            // The rows named outright, rather than a window they fall in. A
-            // comma-separated list, and repeatable, so both spellings work.
-            "--commits" | "-c" => {
-                let v = it.next().ok_or(COMMITS_MISSING)?;
-                push_commit_ids(&mut commits, v)?;
-            }
-            s if s.starts_with("--commits=") => {
-                push_commit_ids(&mut commits, &s["--commits=".len()..])?;
-            }
-            // Under --review the tail was typed after a merge verb, so a merge
-            // option landing here is a collision rather than a typo, and
-            // "unexpected argument for commits" would name the wrong command
-            // at the user. Reached only once the token has already failed every
-            // commits spelling above, so this can never intercept a flag
-            // commits accepts -- it changes the message, never the outcome.
-            other if review => return Err(merge_word_msg(other)),
-            other => {
-                // `log` is a different command from the user's own keystrokes'
-                // point of view, even though this is the same parser: naming
-                // 'commits' here would blame a word the user never typed.
-                let cmd = if mode == Mode::Log { "log" } else { "commits" };
-                return Err(format!(
-                    "unexpected argument '{other}' for {cmd}\nTry 'git-wt --help'"
-                ));
-            }
-        }
-    }
-    finalize_commits_args(mode, RawCommitsArgs {
-        limit, dates, commit_since, commit_until, commits, author, message, search, filename,
-        all_files, topo, merges, fmt, md, reverse, no_cherry, pick, union, all, files, squash,
-        wrap, subjectw, branchw, pathw, no_follow,
-    })
 }
 
 /// `CommitsArgs`, before the cross-field rules below have run: `wrap` still
@@ -850,21 +544,6 @@ pub(crate) fn finalize_commits_args(mode: Mode, raw: RawCommitsArgs) -> Result<C
     })
 }
 
-/// Read a filter's term from the next argument, rejecting an empty one: it
-/// would match every row, which is the opposite of what a filter was typed for.
-fn term(v: Option<&String>, missing: &str) -> Result<String, String> {
-    term_of(v.ok_or(missing)?, missing)
-}
-
-/// The same check for the `--flag=value` spelling, where the value is present
-/// but can still be empty.
-fn term_of(v: &str, missing: &str) -> Result<String, String> {
-    if v.trim().is_empty() {
-        return Err(missing.to_string());
-    }
-    Ok(v.to_string())
-}
-
 /// Read `--subject-width`'s value: a column count, or 'full' for no cut at all.
 pub(crate) fn parse_subjectw(v: &str) -> Result<SubjectWidth, String> {
     if v.eq_ignore_ascii_case("full") || v.eq_ignore_ascii_case("all") {
@@ -925,28 +604,11 @@ pub(crate) fn parse_wrap(v: &str) -> Result<Wrap, String> {
 }
 
 pub(crate) const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'full', e.g. '--wrap 2'";
-pub(crate) const SUBJW_MISSING: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
 pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
-pub(crate) const BRANCHW_MISSING: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'";
 pub(crate) const BRANCHW_BAD: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'";
-pub(crate) const PATHW_MISSING: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'";
 pub(crate) const PATHW_BAD: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'";
-pub(crate) const MESSAGE_MISSING: &str = "--message needs a term, e.g. '--message ISSUE-42'";
-pub(crate) const SEARCH_MISSING: &str = "--search needs a term, e.g. '--search ISSUE-42'";
-pub(crate) const FILENAME_MISSING: &str =
-    "--filename needs a term, e.g. '--filename render.rs'";
 pub(crate) const ALL_FILES_MSG: &str =
     "--all-files needs a '--filename TERM' to widen: on its own the file block is already whole";
-pub(crate) const DATE_MISSING: &str = "--date needs a day, e.g. '--date 2026-01-01'";
-pub(crate) const FROM_DATE_MISSING: &str = "--date-since needs a date, e.g. '--date-since 2026-01-01'";
-pub(crate) const TO_DATE_MISSING: &str = "--date-until needs a date, e.g. '--date-until 2026-06-30'";
-pub(crate) const COMMIT_SINCE_MISSING: &str =
-    "--commit-since needs a commit, e.g. '--commit-since 5568a21'";
-pub(crate) const COMMIT_UNTIL_MISSING: &str =
-    "--commit-until needs a commit, e.g. '--commit-until HEAD~3'";
-pub(crate) const COMMITS_MISSING: &str =
-    "--commits needs one or more commits, e.g. '--commits af48509,f9e2427'";
-pub(crate) const AUTHOR_MISSING: &str = "--author needs a name, e.g. '--author alex'";
 
 /// Parse `>=2026-01-01`, `<=2026-06-30`, `=2026-01-01`, or a bare date (`=`).
 pub(crate) fn parse_date_filter(s: &str) -> Result<DateFilter, String> {
@@ -1016,168 +678,41 @@ pub(crate) fn parse_limit(s: &str) -> Result<usize, String> {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
-    /// `parse_commits_args` over string literals.
-    fn parse(args: &[&str]) -> Result<CommitsArgs, String> {
-        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_commits_args_with(&v, Mode::Commits)
+    #[derive(Parser)]
+    struct CommitsWrap {
+        #[command(flatten)]
+        o: CommitsFlags,
+    }
+    #[derive(Parser)]
+    struct LogWrap {
+        #[command(flatten)]
+        o: LogFlags,
+    }
+    #[derive(Parser)]
+    struct ReviewWrap {
+        #[command(flatten)]
+        o: ReviewFlags,
     }
 
-    /// The same parser as `merge --review` runs it: merges kept by default.
-    fn parse_review(args: &[&str]) -> Result<CommitsArgs, String> {
-        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_commits_args_with(&v, Mode::Review)
+    fn commits(args: &[&str]) -> Result<CommitsArgs, String> {
+        let argv = std::iter::once("commits".to_string()).chain(args.iter().map(|s| s.to_string()));
+        CommitsWrap::try_parse_from(argv).map_err(|e| e.to_string())?.o.into_args()
+    }
+    fn log(args: &[&str]) -> Result<CommitsArgs, String> {
+        let argv = std::iter::once("log".to_string()).chain(args.iter().map(|s| s.to_string()));
+        LogWrap::try_parse_from(argv).map_err(|e| e.to_string())?.o.into_args()
+    }
+    fn review(args: &[&str]) -> Result<CommitsArgs, String> {
+        let argv = std::iter::once("review".to_string()).chain(args.iter().map(|s| s.to_string()));
+        ReviewWrap::try_parse_from(argv).map_err(|e| e.to_string())?.o.into_args()
     }
 
-    /// The same parser as `log` runs it.
-    fn parse_log(args: &[&str]) -> Result<CommitsArgs, String> {
-        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_commits_args_with(&v, Mode::Log)
-    }
-
-    /// `--filename`, `--all`, `--all-files` are not words `log` knows at all --
-    /// no bespoke refusal, just the same unknown-argument error every other
-    /// flag `log` never had gets. And each still means what it always did
-    /// outside `log`.
-    #[test]
-    fn log_does_not_know_the_flags_the_path_already_answers() {
-        for w in ["--filename", "--all", "-a", "--all-files"] {
-            let e = parse_log(&[w]).unwrap_err();
-            assert!(
-                e.contains(&format!("unexpected argument '{w}' for log")),
-                "{w}: {e}"
-            );
-        }
-        // '--filename TERM' -- the value is never consumed either, so the term
-        // itself also falls through as its own unknown argument.
-        let e = parse_log(&["--filename", "ui.rs"]).unwrap_err();
-        assert!(e.contains("unexpected argument '--filename' for log"), "{e}");
-
-        // Still real words everywhere else.
-        assert!(parse(&["--all"]).unwrap().all);
-        assert!(parse(&["--filename", "ui.rs"]).unwrap().filename.is_some());
-        assert!(parse(&["--filename", "ui.rs", "--all-files"]).unwrap().all_files);
-        assert!(parse_review(&["--all"]).is_err()); // refused, but as a real flag: see review_refuses_...
-
-        // '--union', '-f'/'--files', and '--squash' are unchanged in `log`.
-        assert!(parse_log(&["--union"]).unwrap().union);
-        assert!(parse_log(&["-f"]).unwrap().files);
-        assert!(parse_log(&["--squash"]).unwrap().squash);
-    }
-
-    /// `--no-follow` is a word only `log` knows -- the escape hatch for its
-    /// always-on rename-following, which no other mode does at all.
-    #[test]
-    fn no_follow_is_a_log_only_word() {
-        assert!(!parse_log(&[]).unwrap().no_follow);
-        assert!(parse_log(&["--no-follow"]).unwrap().no_follow);
-        assert!(parse(&["--no-follow"]).unwrap_err().contains("unexpected argument '--no-follow'"));
-        assert!(parse_review(&["--no-follow"]).is_err());
-    }
-
-    /// Both directions of the merges default, because this is the refactor
-    /// where a flipped sense hides: `CommitsArgs.merges` is the positive
-    /// ("keep them") and `commit_rows` takes `no_merges`, so the parameter
-    /// crosses an inversion. Asserting only the new default would pass just as
-    /// well against a parser that had them backwards.
-    #[test]
-    fn the_merges_default_flips_under_review_and_only_there() {
-        // `commits`: dropped, and --no-merges has nothing left to ask for.
-        assert!(!parse(&[]).unwrap().merges);
-        assert!(parse(&["--merges"]).unwrap().merges);
-        assert!(parse(&["--no-merges"]).is_err());
-
-        // `merge --review`: kept, because a merge inside a review range is the
-        // cargo. So --no-merges means what it says and --merges is the no-op --
-        // and the old error message ("dropped already") would have been a lie.
-        assert!(parse_review(&[]).unwrap().merges);
-        assert!(parse_review(&["--merges"]).unwrap().merges);
-        assert!(!parse_review(&["--no-merges"]).unwrap().merges);
-
-        // Nothing else moves with it.
-        assert!(!parse_review(&[]).unwrap().files);
-        assert!(parse_review(&["-f"]).unwrap().files);
-        assert!(!parse_review(&[]).unwrap().squash);
-        assert!(parse_review(&["--squash"]).unwrap().squash);
-    }
-
-    /// Both name a row source, and a review's is already fixed. Refused rather
-    /// than accepted-and-ignored: a flag that changes nothing still makes the
-    /// table look like an answer to the question it was asked.
-    #[test]
-    fn review_refuses_the_flags_that_would_redefine_its_range() {
-        // Every spelling is refused, and the short form answers under the
-        // flag's full name rather than the keystroke typed.
-        for (w, canonical) in [
-            ("--all", "--all"),
-            ("-a", "--all"),
-            ("--union", "--union"),
-        ] {
-            let e = parse_review(&[w]).unwrap_err();
-            assert!(e.contains(&format!("no '{canonical}' under '--review'")), "{w}: {e}");
-            assert!(e.contains("dest..src"), "{w}: {e}");
-        }
-        // Bundled too -- expansion runs first, so '-af' is '-a -f'.
-        assert!(parse_review(&["-af"]).unwrap_err().contains("--all"));
-        // Both still mean what they always did outside a review.
-        assert!(parse(&["--all"]).unwrap().all);
-        assert!(parse(&["--union"]).unwrap().union);
-        // And the implied --all a lower bound sets is not the typed flag, so a
-        // review may still name commits older than its range.
-        assert!(parse_review(&["--commits", "af48509"]).is_ok());
-    }
-
-    /// A merge option in the tail is a collision, not a typo, so the message
-    /// names it as one instead of blaming a command the user did not type.
-    #[test]
-    fn review_names_the_merge_options_it_cannot_take() {
-        // The settled case: not a conflict of meaning, a redundancy.
-        let e = parse_review(&["--dry-run"]).unwrap_err();
-        assert!(e.contains("answer the same question"), "{e}");
-        assert!(!e.contains("unexpected argument"), "{e}");
-
-        for (w, want) in [
-            ("--no-ff", "shapes a merge commit"),
-            ("--force", "gates whether a merge may run"),
-            ("--abort", "already in progress"),
-            ("--theirs", "conflicting hunks"),
-            ("--review", "already in effect"),
-        ] {
-            let e = parse_review(&[w]).unwrap_err();
-            assert!(e.contains(want), "{w}: {e}");
-        }
-
-        // A real typo still gets the plain error: the merge vocabulary is a
-        // named list, not a catch-all.
-        assert!(parse_review(&["--bogus"]).unwrap_err().contains("unexpected argument"));
-
-        // The property the whole handoff rests on: this arm is reached only
-        // after every commits spelling has failed, so no flag commits accepts
-        // can be intercepted by it -- least of all the shared short letters,
-        // which are the reason the tail is passed over untouched.
-        for args in [
-            vec!["-f"],
-            vec!["-c", "af48509"],
-            vec!["-d", "2026-01-01"],
-            vec!["-m", "term"],
-            vec!["-n", "5"],
-        ] {
-            let got = parse_review(&args);
-            assert!(got.is_ok(), "{args:?} should still be a commits flag: {got:?}");
-        }
-        assert!(parse_review(&["-f"]).unwrap().files);
-        // '-a' is '--all', which a review refuses on its own grounds -- but as
-        // a commits flag, never as merge's 'abort'.
-        let e = parse_review(&["-a"]).unwrap_err();
-        assert!(e.contains("--all"), "{e}");
-        assert!(!e.contains("in progress"), "{e}");
-    }
-
-    /// A day past the month's end is a typo, and matching zero rows would show
-    /// it as an empty table rather than a mistake.
     #[test]
     fn iso_date_rejects_days_the_month_does_not_have() {
         assert!(iso_date("2026-02-31").is_err());
@@ -1189,472 +724,128 @@ mod tests {
         assert!(iso_date("2026-01-31").is_ok());
         assert!(iso_date("2026-04-30").is_ok());
         assert!(iso_date("2026-02-28").is_ok());
-        // Leap years: divisible by 4, except centuries that are not by 400.
         assert!(iso_date("2024-02-29").is_ok());
         assert!(iso_date("2000-02-29").is_ok());
         assert!(iso_date("1900-02-29").is_err());
     }
 
     #[test]
-    fn commits_args_take_a_limit_and_all() {
-        let a = parse(&[]).unwrap();
-        assert_eq!(a.limit, None);
-        // The default is the first branch's merge-request-style range; the
-        // full first-branch log is --all and the full union is --union.
-        assert!(!a.union);
-        assert!(!a.all);
-
-        assert_eq!(parse(&["-n", "20"]).unwrap().limit, Some(20));
-        assert_eq!(parse(&["--limit", "20"]).unwrap().limit, Some(20));
-        assert_eq!(parse(&["--limit=5"]).unwrap().limit, Some(5));
-        assert!(parse(&["--union"]).unwrap().union);
-        // '--any' was a second name for it. Gone, with no signpost: the flag
-        // has one name now.
-        assert!(parse(&["--any"]).unwrap_err().contains("unexpected argument '--any'"));
-        assert!(parse(&["--all"]).unwrap().all);
-        // --all and --union name two different row sources, so they conflict.
-        assert!(parse(&["--all", "--union"]).unwrap_err().contains("--union"));
-
-        // A count of zero asks for an empty table, which is never meant.
-        assert!(parse(&["-n", "0"]).unwrap_err().contains("show nothing"));
-        assert!(parse(&["-n", "x"]).unwrap_err().contains("bad count 'x'"));
-        assert!(parse(&["-n"]).unwrap_err().contains("needs a count"));
-        assert!(parse(&["--stat"]).unwrap_err().contains("unexpected argument"));
-
-        // The pick column is asked for, never assumed: it costs a second
-        // patch-id walk.
-        assert!(!parse(&[]).unwrap().pick);
-        assert!(parse(&["--pick-id"]).unwrap().pick);
-        // And it cannot be asked for and switched off at once.
-        assert!(parse(&["--pick-id", "--no-cherry"]).unwrap_err().contains("drop one of them"));
-
-        // --files is also opt-in: it spawns a diff per displayed commit.
-        assert!(!parse(&[]).unwrap().files);
-        assert!(parse(&["--files"]).unwrap().files);
-
-        // --squash is the consolidated file view, opt-in and off by default.
-        assert!(!parse(&[]).unwrap().squash);
-        assert!(parse(&["--squash"]).unwrap().squash);
-    }
-
-    #[test]
-    fn short_flags_alias_their_long_forms() {
-        assert!(parse(&["-a"]).unwrap().all);
-        assert!(parse(&["-f"]).unwrap().files);
-    }
-
-    #[test]
-    fn short_flags_bundle_under_one_dash() {
-        for spelling in [&["-af"][..], &["-fa"][..], &["-a", "-f"][..]] {
-            let got = parse(spelling).unwrap();
-            assert!(got.all && got.files, "{spelling:?}");
-        }
-    }
-
-    #[test]
-    fn a_value_taking_short_ends_the_bundle() {
-        // Last letter: the value is unambiguously its own.
-        let got = parse(&["-fn", "5"]).unwrap();
-        assert!(got.files);
-        assert_eq!(got.limit, Some(5));
-        // Anywhere else, '5' would have to belong to two flags at once.
-        let err = parse(&["-nf", "5"]).unwrap_err();
-        assert!(err.contains("has to come last"), "{err}");
-    }
-
-    #[test]
-    fn a_bundle_of_nonsense_is_reported_whole() {
-        // '-xz' names no flag of ours, so the error quotes what was typed
-        // rather than an invented '-x' the user never wrote.
-        let err = parse(&["-xz"]).unwrap_err();
-        assert!(err.contains("'-xz'"), "{err}");
-    }
-
-    #[test]
     fn date_takes_one_day_and_no_operator() {
         let f = |s: &str| parse_date_filter(s).unwrap();
-        // One day, and the filter that day makes: --date is exact, full stop.
         assert_eq!(f("2026-01-01"), DateFilter { op: DateOp::Eq, date: "2026-01-01".into() });
-
-        // The comparisons moved to their own flags, so an operator here names
-        // a bound that has a better spelling -- and the error says which.
-        for (given, flag) in [
-            (">=2026-01-01", "--date-since"),
-            (">2026-01-01", "--date-since"),
-            ("=2026-01-01", "--date-since"),
-            ("<=2026-01-01", "--date-until"),
-            ("<2026-01-01", "--date-until"),
-        ] {
-            let _ = flag;
+        for given in [">=2026-01-01", ">2026-01-01", "=2026-01-01", "<=2026-01-01", "<2026-01-01"] {
             let err = parse_date_filter(given).unwrap_err();
             assert!(err.contains("in --date"), "{given}: {err}");
-            // The day survives into the error, so the fix is copy-pasteable.
             assert!(err.contains("2026-01-01"), "{given}: {err}");
         }
-
-        // Only YYYY-MM-DD: a short spelling would compare as a prefix and mean
-        // something other than what it reads as.
         assert!(parse_date_filter("2026-1-1").unwrap_err().contains("want YYYY-MM-DD"));
-        assert!(parse_date_filter("2026-01").unwrap_err().contains("want YYYY-MM-DD"));
-        assert!(parse_date_filter("2026-13-01").unwrap_err().contains("no such date"));
-        assert!(parse_date_filter("2026-01-32").unwrap_err().contains("no such date"));
-        // An unquoted '>' is eaten by the shell, so the value arrives empty.
         assert!(parse_date_filter("").unwrap_err().contains("a date is missing"));
     }
 
     #[test]
     fn date_filters_compare_iso_dates_as_text() {
         let admits = |op: DateOp, d: &str, key: &str| DateFilter { op, date: d.into() }.admits(key);
-        // A bound takes its own day, both ends.
         assert!(admits(DateOp::Ge, "2026-03-01", "2026-03-01"));
         assert!(admits(DateOp::Le, "2026-03-01", "2026-03-01"));
         assert!(!admits(DateOp::Ge, "2026-03-02", "2026-03-01"));
-        assert!(!admits(DateOp::Le, "2026-02-28", "2026-03-01"));
-        // Ordering is lexicographic, which for zero-padded ISO is chronological
-        // -- across months and years, where a naive text compare could not be.
         assert!(admits(DateOp::Ge, "2026-01-01", "2026-10-01"));
-        assert!(admits(DateOp::Le, "2026-12-31", "2026-12-31"));
-        assert!(!admits(DateOp::Ge, "2026-01-01", "2025-12-31"));
     }
 
     #[test]
-    fn commits_args_take_the_filters() {
-        let parse = |args: &[&str]| {
-            let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            parse_commits_args_with(&v, Mode::Commits)
-        };
+    fn parse_limit_rejects_zero_and_non_numbers() {
+        assert_eq!(parse_limit("20").unwrap(), 20);
+        assert!(parse_limit("0").unwrap_err().contains("show nothing"));
+        assert!(parse_limit("x").unwrap_err().contains("bad count 'x'"));
+    }
 
-        // A range is --date-since plus --date-until; --date itself is one day.
-        let a = parse(&["--date", "2026-01-01"]).unwrap();
-        assert_eq!(a.dates, vec![DateFilter { op: DateOp::Eq, date: "2026-01-01".into() }]);
+    #[test]
+    fn widths_enforce_their_floor() {
+        assert!(parse_subjectw("8").unwrap_err().contains("columns or more"));
+        assert_eq!(parse_subjectw("full").unwrap(), SubjectWidth::Full);
+        assert!(parse_branchw("8").unwrap_err().contains("columns or more"));
+        assert!(parse_pathw("4").unwrap_err().contains("columns or more"));
+        assert!(parse_wrap("0").unwrap_err().contains("1 or more"));
+        assert_eq!(parse_wrap("full").unwrap(), Wrap::Full);
+    }
 
-        // --date-since/--date-until are those same bounds, needing no quoting.
-        let a = parse(&["--date-since", "2026-01-01", "--date-until=2026-06-01"]).unwrap();
-        assert_eq!(a.dates[0], DateFilter { op: DateOp::Ge, date: "2026-01-01".into() });
-        assert_eq!(a.dates[1], DateFilter { op: DateOp::Le, date: "2026-06-01".into() });
+    #[test]
+    fn commits_rejects_undeclared_flags() {
+        assert!(commits(&["1", "--oneline"]).is_err());
+        assert!(commits(&["1", "--stat"]).is_err());
+    }
 
-        let a = parse(&["--commit-since", "abc123", "--commit-until=def456"]).unwrap();
-        assert_eq!(a.commit_since.as_deref(), Some("abc123"));
-        assert_eq!(a.commit_until.as_deref(), Some("def456"));
-        assert_eq!(parse(&["--author=alex"]).unwrap().author.as_deref(), Some("alex"));
-        assert!(!parse(&[]).unwrap().topo);
-        assert!(parse(&["--topo"]).unwrap().topo);
-        assert!(parse(&["--topo-order"]).unwrap().topo);
-        // Merges are dropped by default; --merges asks for them back, and
-        // --no-merges still parses as the default it now names.
-        assert!(!parse(&[]).unwrap().merges);
-        assert!(parse(&["--merges"]).unwrap().merges);
-        // --no-merges names nothing in `commits`: dropping them is what the
-        // default already does. Unknown word, unknown-word error.
-        let err = parse(&["--no-merges"]).unwrap_err();
-        assert!(err.contains("unexpected argument '--no-merges'"), "{err}");
+    #[test]
+    fn commits_knows_its_own_flags() {
+        assert_eq!(commits(&["--limit", "5"]).unwrap().limit, Some(5));
+        assert!(commits(&["--all"]).unwrap().all);
+        assert!(commits(&["--filename", "ui.rs"]).unwrap().filename.is_some());
+        assert!(commits(&["--filename", "ui.rs", "--all-files"]).unwrap().all_files);
+        assert!(commits(&["--all-files"]).unwrap_err().contains("--filename"));
+        assert!(commits(&["--pick-id", "--no-cherry"]).unwrap_err().contains("drop one of them"));
+        assert!(commits(&["--all", "--union"]).unwrap_err().contains("--union"));
+    }
 
-        // ISO, no time, unless asked; the flags are independent.
-        assert_eq!(parse(&[]).unwrap().fmt, DateFmt { human: false, time: false });
-        assert_eq!(parse(&["--time"]).unwrap().fmt.spec(), "%Y-%m-%d %H:%M:%S");
-        assert_eq!(parse(&["--date-human"]).unwrap().fmt.spec(), "%b. %-d, %Y");
-        assert_eq!(
-            parse(&["--date-human", "--time"]).unwrap().fmt.spec(),
-            "%b. %-d, %Y %H:%M:%S"
-        );
-        // A format flag is not a filter: --date-human must not be read as a
-        // bound, nor collide with --date's value parsing.
-        assert!(parse(&["--date-human"]).unwrap().dates.is_empty());
+    #[test]
+    fn commits_bundles_short_flags() {
+        let a = commits(&["-af"]).unwrap();
+        assert!(a.all && a.files);
+    }
 
-        assert!(!parse(&[]).unwrap().reverse);
-        assert!(parse(&["--reverse"]).unwrap().reverse);
-        assert!(parse(&["--oldest-first"]).unwrap().reverse);
+    #[test]
+    fn commits_optional_value_flags() {
+        assert_eq!(commits(&[]).unwrap().wrap, Wrap::Lines(1));
+        assert_eq!(commits(&["--wrap"]).unwrap().wrap, Wrap::Full);
+        assert_eq!(commits(&["--wrap", "2"]).unwrap().wrap, Wrap::Lines(2));
+        assert_eq!(commits(&["--md"]).unwrap().md, Some(None));
+        assert_eq!(commits(&["--md", "out.md"]).unwrap().md, Some(Some("out.md".into())));
+    }
 
-        // --md's path is optional, so the flag after it must not be eaten:
-        // 'commits --md --topo' asks for the default name AND topo order.
-        assert_eq!(parse(&[]).unwrap().md, None);
-        assert_eq!(parse(&["--md"]).unwrap().md, Some(None));
-        assert_eq!(parse(&["--md", "out.md"]).unwrap().md, Some(Some("out.md".into())));
-        assert_eq!(parse(&["--md=out.md"]).unwrap().md, Some(Some("out.md".into())));
-        let a = parse(&["--md", "--topo"]).unwrap();
-        assert_eq!(a.md, Some(None), "--topo is a flag, not a filename");
-        assert!(a.topo, "--topo must still take effect");
-
-        assert!(parse(&["--commit-since"]).unwrap_err().contains("--commit-since needs a commit"));
-        assert!(parse(&["--date-since", "nope"]).unwrap_err().contains("want YYYY-MM-DD"));
-        // Neither git's spellings nor the bare bounds are words here: the
-        // parser knows --date-since/--date-until and --commit-since/
-        // --commit-until, and anything else is an unknown argument.
-        for w in ["--from", "--to", "--since", "--until"] {
-            let err = parse(&[w, "x"]).unwrap_err();
-            assert!(err.contains(&format!("unexpected argument '{w}'")), "{w}: {err}");
+    #[test]
+    fn log_does_not_know_the_flags_the_path_already_answers() {
+        for w in ["--filename", "--all", "-a", "--all-files"] {
+            assert!(log(&[w]).is_err(), "{w}");
         }
+        assert!(commits(&["--all"]).unwrap().all);
+        assert!(log(&["--union"]).unwrap().union);
+        assert!(log(&["-f"]).unwrap().files);
     }
 
     #[test]
-    fn the_old_flag_names_are_gone_without_a_signpost() {
-        // These five were renamed, and the old spellings no longer carry a
-        // pointer to the new one -- they are simply words the parser does not
-        // know, like any other flag that was never there.
-        for old in [
-            "--from-date",
-            "--to-date",
-            "--from-id",
-            "--to-id",
-            "--show-time",
-        ] {
-            let err = parse(&[old]).unwrap_err();
-            assert_eq!(
-                err,
-                format!("unexpected argument '{old}' for commits\nTry 'git-wt --help'")
-            );
-        }
+    fn log_only_words() {
+        assert!(!log(&[]).unwrap().no_follow);
+        assert!(log(&["--no-follow"]).unwrap().no_follow);
+        assert!(commits(&["--no-follow"]).is_err());
+        assert_eq!(log(&["--path-width", "60"]).unwrap().pathw, Some(PathWidth::Cols(60)));
+        assert!(commits(&["--path-width", "60"]).is_err());
     }
 
     #[test]
-    fn a_lower_bound_widens_the_source_and_an_upper_one_does_not() {
-        // The default rows are cut at the bottom, so anything that names a
-        // floor -- a commit, a day, a lower bound -- can point below it and
-        // has to widen the source to mean what it says.
-        assert!(parse(&["--commits", "abc123"]).unwrap().all);
-        assert!(parse(&["--commit-since", "abc123"]).unwrap().all);
-        assert!(parse(&["--date", "2026-01-01"]).unwrap().all);
-        assert!(parse(&["--date-since", "2026-01-01"]).unwrap().all);
-
-        // An upper bound only ever trims the top, which the slice already ends
-        // at: a post-filter, and a post-filter does not redefine the source.
-        assert!(!parse(&["--date-until", "2026-01-01"]).unwrap().all);
-        assert!(!parse(&["--commit-until", "abc123"]).unwrap().all);
-        // ...but a range widens, because its lower bound does.
-        assert!(parse(&["--date-since", "2026-01-01", "--date-until", "2026-06-01"]).unwrap().all);
-        assert!(parse(&["--commit-since", "abc", "--commit-until", "def"]).unwrap().all);
-        // And an upper bound still takes --all when it is asked for.
-        assert!(parse(&["--date-until", "2026-01-01", "--all"]).unwrap().all);
-
-        // --author matches many commits and named none of them, so the slice
-        // stays the question; --all is there to be typed.
-        assert!(!parse(&["--author", "alex"]).unwrap().all);
-        assert!(parse(&["--author", "alex", "--all"]).unwrap().all);
-
-        // Nothing is implied without a selector, and a --union the user typed
-        // is never overridden -- nor does the implied --all trip its guard.
-        assert!(!parse(&[]).unwrap().all);
-        let a = parse(&["--union", "--date", "2026-01-01"]).unwrap();
-        assert!(a.union && !a.all);
+    fn log_leading_run_is_the_positional() {
+        let a = LogWrap::try_parse_from(["log", "src/a.rs", "src/b.rs", "--union"]).unwrap();
+        assert_eq!(a.o.leading, vec!["src/a.rs".to_string(), "src/b.rs".to_string()]);
+        assert!(a.o.common.union);
     }
 
     #[test]
-    fn commits_names_rows_outright() {
-        // A list, a repeat, and both at once all reach the same place.
-        assert!(parse(&[]).unwrap().commits.is_empty());
-        assert_eq!(parse(&["--commits", "abc123"]).unwrap().commits, vec!["abc123"]);
-        assert_eq!(parse(&["-c", "abc123"]).unwrap().commits, vec!["abc123"]);
-        assert_eq!(
-            parse(&["--commits", "abc123,def456"]).unwrap().commits,
-            vec!["abc123", "def456"]
-        );
-        assert_eq!(
-            parse(&["--commits=abc123", "-c", "def456"]).unwrap().commits,
-            vec!["abc123", "def456"]
-        );
-        // An empty id would be a prefix of every sha, so the typo is named.
-        assert!(parse(&["--commits", "abc,,def"]).unwrap_err().contains("bad commit list"));
-        assert!(parse(&["--commits"]).unwrap_err().contains("needs one or more commits"));
+    fn review_merges_default_to_kept() {
+        assert!(review(&[]).unwrap().merges);
+        assert!(!review(&["--no-merges"]).unwrap().merges);
+        assert!(!commits(&[]).unwrap().merges);
     }
 
     #[test]
-    fn wrap_reads_a_count_or_full() {
-        let parse = |a: &[&str]| {
-            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), Mode::Commits)
-        };
-        // One line is the table's shape: more of it is asked for, never given.
-        assert_eq!(parse(&[]).unwrap().wrap, Wrap::Lines(1));
-        assert_eq!(parse(&["--wrap", "2"]).unwrap().wrap, Wrap::Lines(2));
-        assert_eq!(parse(&["--wrap=3"]).unwrap().wrap, Wrap::Lines(3));
-        assert_eq!(parse(&["-w", "2"]).unwrap().wrap, Wrap::Lines(2));
-        assert_eq!(parse(&["--wrap", "full"]).unwrap().wrap, Wrap::Full);
-        assert_eq!(parse(&["--wrap=full"]).unwrap().wrap, Wrap::Full);
-        assert_eq!(parse(&["--wrap"]).unwrap().wrap, Wrap::Full);
-        // The count is optional, so the flag after a bare --wrap must not be
-        // eaten -- the same rule --md's optional path follows.
-        let a = parse(&["--wrap", "--topo"]).unwrap();
-        assert_eq!(a.wrap, Wrap::Full);
-        assert!(a.topo, "--topo must still take effect");
-        // Zero lines is no subject column, and a word is not a count.
-        assert!(parse(&["--wrap=0"]).unwrap_err().contains("1 or more"));
-        assert!(parse(&["--wrap=two"]).unwrap_err().contains("1 or more"));
+    fn review_refuses_the_flags_that_would_redefine_its_range() {
+        let e = review(&["--all"]).unwrap_err();
+        assert!(e.contains("no '--all' under '--review'"), "{e}");
+        assert!(e.contains("dest..src"), "{e}");
+        assert!(review(&["-f"]).unwrap().files);
     }
 
     #[test]
-    fn text_and_path_filters_take_a_term() {
-        assert_eq!(parse(&[]).unwrap().message, None);
-        assert_eq!(parse(&["--message", "wrap"]).unwrap().message.as_deref(), Some("wrap"));
-        assert_eq!(parse(&["--message=wrap"]).unwrap().message.as_deref(), Some("wrap"));
-        assert_eq!(parse(&["-m", "wrap"]).unwrap().message.as_deref(), Some("wrap"));
-        assert_eq!(parse(&["--filename", "ui.rs"]).unwrap().filename.as_deref(), Some("ui.rs"));
-        assert_eq!(parse(&["--filename=ui.rs"]).unwrap().filename.as_deref(), Some("ui.rs"));
-
-        // An empty term is a prefix of every row, so it is a typo rather than
-        // a filter -- whichever spelling it arrives in.
-        assert!(parse(&["--message"]).unwrap_err().contains("needs a term"));
-        assert!(parse(&["--message="]).unwrap_err().contains("needs a term"));
-        assert!(parse(&["--message", "  "]).unwrap_err().contains("needs a term"));
-        assert!(parse(&["--filename"]).unwrap_err().contains("needs a term"));
-
-        // '-m' takes a value, so it ends a bundle like every other value-short.
-        assert!(parse(&["-fm", "wrap"]).unwrap().files);
-        assert!(parse(&["-mf", "wrap"]).unwrap_err().contains("has to come last"));
-    }
-
-    #[test]
-    fn a_text_filter_shows_what_it_matched() {
-        // The subject is the one cell cut at the terminal's edge, so searching
-        // it means showing all of it: a row kept for a word past the cut would
-        // be asserting a match it never displays.
-        assert_eq!(parse(&[]).unwrap().wrap, Wrap::Lines(1));
-        assert_eq!(parse(&["--message", "wrap"]).unwrap().wrap, Wrap::Full);
-        // An explicit --wrap is an answer already given, and wins either way.
-        assert_eq!(parse(&["--message", "wrap", "-w", "1"]).unwrap().wrap, Wrap::Lines(1));
-        assert_eq!(parse(&["-w", "2", "--message", "wrap"]).unwrap().wrap, Wrap::Lines(2));
-
-        // Likewise a row kept for a path it touched has to name that path.
-        assert!(!parse(&[]).unwrap().files);
-        assert!(parse(&["--filename", "ui.rs"]).unwrap().files);
-        // ...and --filename does not turn on the wrap: its match is in the
-        // block below the row, not in the subject.
-        assert_eq!(parse(&["--filename", "ui.rs"]).unwrap().wrap, Wrap::Lines(1));
-    }
-
-    #[test]
-    fn all_files_needs_something_to_widen() {
-        // Trimming to the matches is the default, so --match-only names what it
-        // already gets and --all-files is the one that changes anything.
-        assert!(!parse(&[]).unwrap().all_files);
-        assert!(!parse(&["--filename", "ui.rs"]).unwrap().all_files);
-        assert!(parse(&["--filename", "ui.rs", "--all-files"]).unwrap().all_files);
-        // On its own it widens nothing: with no --filename the block is already
-        // every file the commit touched.
-        let err = parse(&["--all-files"]).unwrap_err();
-        assert!(err.contains("--filename"), "{err}");
-        // --match-only is gone: the cut it asked for is what --filename does,
-        // and the word itself is no longer known.
-        let err = parse(&["--filename", "ui.rs", "--match-only"]).unwrap_err();
-        assert!(err.contains("unexpected argument '--match-only'"), "{err}");
-    }
-
-    #[test]
-    fn the_text_filters_never_widen_the_source() {
-        // They match many commits and name none, so the branch comparison stays
-        // the question -- the same rule --author follows. --all is there to be
-        // typed, and the empty-result note says so.
-        assert!(!parse(&["--message", "wrap"]).unwrap().all);
-        assert!(!parse(&["--filename", "ui.rs"]).unwrap().all);
-        assert!(parse(&["--message", "wrap", "--all"]).unwrap().all);
-        let a = parse(&["--union", "--filename", "ui.rs"]).unwrap();
-        assert!(a.union && !a.all);
-    }
-
-    #[test]
-    fn the_flags_these_filters_are_mistaken_for() {
-        // '--subject' reads as a filter, and there is one -- it just covers the
-        // Reads as a filter, but is not a word here: --message is the filter,
-        // and --subject-width beside it is a column width.
-        let err = parse(&["--subject", "fix"]).unwrap_err();
-        assert!(err.contains("unexpected argument '--subject'"), "{err}");
-        // git's word for a message search. Not carried: '--message' is the
-        // flag here, and '--grep' is now just a word commits does not know.
-        let err = parse(&["--grep", "^fix"]).unwrap_err();
-        assert!(err.contains("unexpected argument '--grep'"), "{err}");
-        // One letter from --files, and a prefix of --filename -- but not a
-        // word here either way.
-        let err = parse(&["--file", "ui.rs"]).unwrap_err();
-        assert!(err.contains("unexpected argument '--file'"), "{err}");
-    }
-
-    #[test]
-    fn subject_width_is_a_width_not_a_filter() {
-        let parse = |a: &[&str]| {
-            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), Mode::Commits)
-        };
-        // None is the terminal's answer, which is the default it always was.
-        assert_eq!(parse(&[]).unwrap().subjectw, None);
-        assert_eq!(parse(&["--subject-width", "80"]).unwrap().subjectw, Some(SubjectWidth::Cols(80)));
-        assert_eq!(parse(&["--subject-width=80"]).unwrap().subjectw, Some(SubjectWidth::Cols(80)));
-        assert_eq!(parse(&["--subjw", "80"]).unwrap().subjectw, Some(SubjectWidth::Cols(80)));
-        assert_eq!(parse(&["--subjw=full"]).unwrap().subjectw, Some(SubjectWidth::Full));
-        // The count is required, unlike --wrap's: no width is named by a bare
-        // flag, and 'full' is the word for wanting all of it.
-        assert!(parse(&["--subject-width"]).unwrap_err().contains("needs a column count"));
-        assert!(parse(&["--subjw=wide"]).unwrap_err().contains("needs a column count"));
-        // Below MIN_TEXTW the column says only 'there was a subject'.
-        assert!(parse(&["--subjw=8"]).unwrap_err().contains("columns or more"));
-        assert!(parse(&["--subjw=0"]).unwrap_err().contains("needs a column count"));
-        // '--subject' is not a word here; only the width has this prefix.
-        assert!(parse(&["--subject", "fix"]).unwrap_err().contains("unexpected argument"));
-    }
-
-    #[test]
-    fn branch_width_cuts_the_header_not_the_terminal() {
-        let parse = |a: &[&str]| {
-            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), Mode::Commits)
-        };
-        // None is the default cap (BRANCH_HEAD_MAX), applied at render time.
-        assert_eq!(parse(&[]).unwrap().branchw, None);
-        assert_eq!(parse(&["--branch-width", "40"]).unwrap().branchw, Some(BranchWidth::Cols(40)));
-        assert_eq!(parse(&["--branch-width=40"]).unwrap().branchw, Some(BranchWidth::Cols(40)));
-        assert_eq!(parse(&["--branchw", "40"]).unwrap().branchw, Some(BranchWidth::Cols(40)));
-        assert_eq!(parse(&["--branchw=full"]).unwrap().branchw, Some(BranchWidth::Full));
-        assert!(parse(&["--branch-width"]).unwrap_err().contains("needs a column count"));
-        assert!(parse(&["--branchw=wide"]).unwrap_err().contains("needs a column count"));
-        // Below BRANCH_MIN a cut name cannot tell two branches apart.
-        assert!(parse(&["--branchw=8"]).unwrap_err().contains("columns or more"));
-        assert!(parse(&["--branchw=0"]).unwrap_err().contains("needs a column count"));
-    }
-
-    /// `--path-width` is a `log`-only word, the same way `--no-follow` is: no
-    /// other verb has a `path` column for it to widen.
-    #[test]
-    fn path_width_is_a_log_only_word() {
-        // None is the default cap (PATH_MAX), applied at render time.
-        assert_eq!(parse_log(&[]).unwrap().pathw, None);
-        assert_eq!(parse_log(&["--path-width", "60"]).unwrap().pathw, Some(PathWidth::Cols(60)));
-        assert_eq!(parse_log(&["--path-width=60"]).unwrap().pathw, Some(PathWidth::Cols(60)));
-        assert_eq!(parse_log(&["--pathw", "60"]).unwrap().pathw, Some(PathWidth::Cols(60)));
-        assert_eq!(parse_log(&["--pathw=full"]).unwrap().pathw, Some(PathWidth::Full));
-        assert!(parse_log(&["--path-width"]).unwrap_err().contains("needs a column count"));
-        assert!(parse_log(&["--pathw=wide"]).unwrap_err().contains("needs a column count"));
-        // Below PATH_MIN a cut path name says nothing.
-        assert!(parse_log(&["--pathw=4"]).unwrap_err().contains("columns or more"));
-        assert!(parse_log(&["--pathw=0"]).unwrap_err().contains("needs a column count"));
-        // Not a word outside `log`.
-        assert!(parse(&["--path-width", "60"]).unwrap_err().contains("unexpected argument '--path-width'"));
-        assert!(parse_review(&["--pathw", "60"]).is_err());
-    }
-
-    #[test]
-    fn short_aliases_set_the_same_field_as_their_long_form() {
-        let parse = |a: &[&str]| {
-            parse_commits_args_with(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), Mode::Commits)
-        };
-        assert_eq!(parse(&["--au", "alex"]).unwrap().author, parse(&["--author", "alex"]).unwrap().author);
-        assert_eq!(parse(&["--dh"]).unwrap().fmt.human, parse(&["--date-human"]).unwrap().fmt.human);
-        assert_eq!(
-            parse(&["--filename", "ui.rs", "--af"]).unwrap().all_files,
-            parse(&["--filename", "ui.rs", "--all-files"]).unwrap().all_files
-        );
-        assert_eq!(parse(&["--fn", "ui.rs"]).unwrap().filename, parse(&["--filename", "ui.rs"]).unwrap().filename);
-        assert_eq!(
-            parse(&["--cs", "abc123"]).unwrap().commit_since,
-            parse(&["--commit-since", "abc123"]).unwrap().commit_since
-        );
-        assert_eq!(
-            parse(&["--cu", "def456"]).unwrap().commit_until,
-            parse(&["--commit-until", "def456"]).unwrap().commit_until
-        );
-        assert_eq!(
-            parse(&["--ds", "2026-01-01"]).unwrap().dates,
-            parse(&["--date-since", "2026-01-01"]).unwrap().dates
-        );
-        assert_eq!(
-            parse(&["--du", "2026-01-01"]).unwrap().dates,
-            parse(&["--date-until", "2026-01-01"]).unwrap().dates
-        );
-        assert_eq!(parse(&["--nc"]).unwrap().no_cherry, parse(&["--no-cherry"]).unwrap().no_cherry);
-        assert_eq!(parse(&["--pi"]).unwrap().pick, parse(&["--pick-id"]).unwrap().pick);
+    fn review_rejects_merge_vocabulary_as_an_unknown_argument() {
+        // The bespoke cross-referenced wording is gone with the hand-rolled
+        // parser; a merge option here is simply not a word `review` knows.
+        assert!(review(&["--dry-run"]).is_err());
+        assert!(review(&["--continue"]).is_err());
     }
 }

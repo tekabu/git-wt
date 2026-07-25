@@ -10,9 +10,8 @@ mod ui;
 mod worktree;
 
 use crate::cli::{
-    check_index, effective_target, extract_branch_flag, extract_target_flag, gather_targets,
-    resolve_target_list, typed_verb, warn_if_alias_shadows_branch, worktree_on_branch, Cli,
-    Commands,
+    check_index, effective_target, gather_targets, resolve_target_list, typed_verb,
+    warn_if_alias_shadows_branch, worktree_on_branch, Cli, Commands,
 };
 use clap::{CommandFactory, Parser};
 use crate::cmd::add::cmd_add;
@@ -23,7 +22,7 @@ use crate::cmd::doctor::cmd_doctor;
 use crate::cmd::list::cmd_list;
 use crate::cmd::log::cmd_log;
 use crate::cmd::meld::cmd_meld;
-use crate::cmd::merge::{cmd_merge, parse_merge_args};
+use crate::cmd::merge::{build_merge_parsed_args, cmd_merge};
 use crate::cmd::merged::{cmd_merged, cmd_merged_others};
 use crate::cmd::remove::cmd_remove;
 use crate::cmd::switch::{cmd_path, cmd_switch};
@@ -222,35 +221,43 @@ fn run() -> Result<(), String> {
             cmd_compare(&cwd, &args)
         }
 
-        Commands::Merge(args) => {
-            let (rest, branch, embedded_target) = split_rest_flags(args.rest, &args.branch)?;
-            let (target_token, merge_rest) = if let Some(first) = rest.first() {
-                if first.starts_with('-') {
-                    (None, rest)
-                } else if gather_targets(Some(first), &[])
-                    .and_then(|p| resolve_target_list(&trees, &p))
-                    .is_ok()
+        Commands::Merge(mut args) => {
+            // `MergeOptions.source` is the one bare positional this grammar
+            // has, and clap has already fully parsed it -- but which of two
+            // things it means (a worktree list, or a bare branch name to
+            // merge with the current worktree as destination) still needs
+            // the live worktree list to judge, the same runtime trial
+            // `commits`/`log` need for their own ambiguous leading token.
+            if args.target_flag.as_deref().is_some_and(|t| t.contains(',')) {
+                return Err("merge's '-t/--target' takes exactly one target".into());
+            }
+            let positional = args.options.source.take();
+            let target_token = match &positional {
+                Some(t)
+                    if gather_targets(Some(t), &[])
+                        .and_then(|p| resolve_target_list(&trees, &p))
+                        .is_ok() =>
                 {
-                    (Some(first.clone()), rest[1..].to_vec())
-                } else {
-                    (None, rest)
+                    Some(t.clone())
                 }
-            } else {
-                (None, rest)
+                _ => None,
             };
-            let target_token = effective_target(target_token, embedded_target.as_ref())?;
+            let bare_source = if target_token.is_none() { positional } else { None };
+            let target_token = effective_target(target_token, args.target_flag.as_ref())?;
 
             // `-b/--branch` on merge means the source to merge, not an
             // "other target" the way it does elsewhere: `git-wt merge -b 2`
-            // is "merge 2 into <target, default current>", so it takes
-            // exactly one branch and skips the generic dest/source idxs
-            // dance below entirely. The source token is handed to
-            // `parse_merge_args`/`resolve_merge_source` unresolved, same as
-            // any other merge source, so a branch with no worktree of its
-            // own still works (`git-wt merge -b feat/x`).
-            if !branch.is_empty() {
-                if branch.len() > 1 || branch.iter().any(|b| b.contains(',')) {
+            // is "merge 2 into <target, default current>", so it skips the
+            // generic dest/source idxs dance below entirely. The branch is
+            // handed to `cmd_merge`/`resolve_merge_source` unresolved, same
+            // as any other merge source, so one with no worktree of its own
+            // still works (`git-wt merge -b feat/x`).
+            if let Some(b) = args.branch {
+                if b.contains(',') {
                     return Err("merge's '-b/--branch' takes exactly one source branch".into());
+                }
+                if let Some(w) = bare_source {
+                    return Err(format!("unexpected argument '{w}' for merge\nTry 'git-wt --help'"));
                 }
                 if target_token.as_deref().is_some_and(|t| t.contains(',')) {
                     return Err(
@@ -265,13 +272,12 @@ fn run() -> Result<(), String> {
                     None => current_worktree_index(&trees)
                         .ok_or("not inside a worktree; use 'git-wt merge <N> -b <BRANCH>'")?,
                 };
-                let mut merge_argv = vec![branch[0].clone()];
-                merge_argv.extend(merge_rest.iter().cloned());
-                let parsed = parse_merge_args(&merge_argv)?;
+                args.options.source = Some(b);
+                let parsed = build_merge_parsed_args(args.options)?;
                 return cmd_merge(&root, &trees, dest_idx, &parsed);
             }
 
-            let idxs = resolve_targets(&trees, target_token.as_ref(), &branch, true, false)?;
+            let idxs = resolve_targets(&trees, target_token.as_ref(), &[], true, false)?;
             if idxs.is_empty() {
                 return Err("not inside a worktree; use 'git-wt merge <N>[,<M>]'".into());
             }
@@ -291,7 +297,7 @@ fn run() -> Result<(), String> {
             let is_branch_word = target_token
                 .as_deref()
                 .is_some_and(|t| t.parse::<usize>().is_err());
-            let (dest_idx, mut merge_argv) = if idxs.len() == 1 && is_branch_word {
+            let (dest_idx, source) = if idxs.len() == 1 && is_branch_word {
                 let cur = current_worktree_index(&trees)
                     .ok_or("not inside a worktree; use 'git-wt merge <N>[,<M>]'")?;
                 if idxs[0] == cur {
@@ -300,26 +306,14 @@ fn run() -> Result<(), String> {
                             .into(),
                     );
                 }
-                (cur, vec![ref_of(&trees[idxs[0]])?])
+                (cur, Some(ref_of(&trees[idxs[0]])?))
             } else if idxs.len() == 2 {
-                (idxs[0], vec![ref_of(&trees[idxs[1]])?])
+                (idxs[0], Some(ref_of(&trees[idxs[1]])?))
             } else {
-                // A target was already given (a plain number, or a
-                // dest,source comma list already handled above), so a
-                // further bare word can no longer double as the source --
-                // that two-positional form ("merge 1 feat/x") isn't accepted;
-                // use a comma list or '-b'.
-                if let Some(first) = merge_rest.first() {
-                    if !first.starts_with('-') && first != "review" {
-                        return Err(format!(
-                            "unexpected argument '{first}' for merge\nTry 'git-wt --help'"
-                        ));
-                    }
-                }
-                (idxs[0], Vec::new())
+                (idxs[0], None)
             };
-            merge_argv.extend(merge_rest.iter().cloned());
-            let parsed = parse_merge_args(&merge_argv)?;
+            args.options.source = source.or(bare_source);
+            let parsed = build_merge_parsed_args(args.options)?;
             cmd_merge(&root, &trees, dest_idx, &parsed)
         }
 
@@ -432,22 +426,6 @@ fn run() -> Result<(), String> {
 
         Commands::Version => unreachable!(),
     }
-}
-
-/// Recover `-b`/`--branch` and `-t`/`--target` from a raw catch-all `rest`
-/// (see `extract_branch_flag`'s doc comment for why they can end up there),
-/// and fold them into whatever the command's own declared `-b` already caught.
-fn split_rest_flags(
-    rest: Vec<String>,
-    declared_branch: &[String],
-) -> Result<(Vec<String>, Vec<String>, Option<String>), String> {
-    let (rest, embedded_branch) = extract_branch_flag(&rest)?;
-    let (rest, embedded_target) = extract_target_flag(&rest)?;
-    let mut branch = declared_branch.to_vec();
-    if let Some(b) = embedded_branch {
-        branch.push(b);
-    }
-    Ok((rest, branch, embedded_target))
 }
 
 /// Shared body of the fetch/pull/push arms: `--all` is now a plain declared

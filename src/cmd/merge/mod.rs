@@ -37,13 +37,6 @@ impl Side {
     pub(crate) fn strategy_option(self) -> &'static str {
         self.word()
     }
-
-    pub(crate) fn flag(self) -> &'static str {
-        match self {
-            Side::Ours => "--ours",
-            Side::Theirs => "--theirs",
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -56,7 +49,8 @@ pub(crate) struct MergeParsedArgs {
     pub(crate) force: bool,
     pub(crate) side: Option<Side>,
     pub(crate) dry_run: bool,
-    pub(crate) review: Option<Vec<String>>,
+    pub(crate) review: bool,
+    pub(crate) meld: bool,
 }
 
 pub(crate) fn start_only_flags(
@@ -95,6 +89,7 @@ const NEEDS_SOURCE: &str = "merge needs a source: 'git-wt <N>,<M> merge' \
 /// else, so its error needs the same bare-one-liner shape: just clap's
 /// reason, not its own repeated `error: ` prefix or the multi-line Usage
 /// block underneath it.
+#[cfg(test)]
 fn clap_err_line(e: clap::error::Error) -> String {
     let s = e.to_string();
     s.lines()
@@ -110,69 +105,46 @@ struct MergeOptionsWrap {
     o: MergeOptions,
 }
 
-/// Re-parse `rest` (a raw `Vec<String>`, since the target/dest split ahead of
-/// it in `main.rs` genuinely needs untyped tokens -- which one resolves as a
-/// worktree can only be judged at runtime) through `MergeOptions`: clap owns
-/// unknown-flag rejection and every pairwise/start-only conflict now (see
-/// that struct's doc comment), so what's left here is `--review`'s hand-off
-/// (its tail is a different vocabulary entirely, sliced off untouched before
-/// clap ever sees it) and turning the typed struct into `MergeParsedArgs`.
-pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, String> {
-    let review_at = args.iter().position(|a| a == "review" || a == "--review");
-    let (head, review) = match review_at {
-        Some(i) => (&args[..i], Some(args[i + 1..].to_vec())),
-        None => (&args[..], None),
-    };
-
-    let o = MergeOptionsWrap::try_parse_from(std::iter::once("merge".to_string()).chain(head.iter().cloned()))
+/// The test-only front door: parses raw argv through `MergeOptions` via clap
+/// (same struct `Cli::parse()` already filled `MergeArgs.options` with in
+/// production, wrapped here only so tests can hand this function strings) and
+/// turns the typed result into `MergeParsedArgs`.
+#[cfg(test)]
+fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, String> {
+    let o = MergeOptionsWrap::try_parse_from(std::iter::once("merge".to_string()).chain(args.iter().cloned()))
         .map_err(clap_err_line)?
         .o;
+    build_merge_parsed_args(o)
+}
 
+/// Turn a clap-parsed `MergeOptions` into `MergeParsedArgs`. `review` and
+/// `--continue`/`--abort` each rule out every other merge option
+/// declaratively (see `MergeOptions`' doc comment) -- nothing here can
+/// collide with what clap has already refused.
+pub(crate) fn build_merge_parsed_args(o: MergeOptions) -> Result<MergeParsedArgs, String> {
     let side = match (o.ours, o.theirs) {
         (true, false) => Some(Side::Ours),
         (false, true) => Some(Side::Theirs),
         _ => None,
     };
 
-    if review.is_some() {
-        // Every other start-only flag already conflicts with `--continue`/
-        // `--abort` declaratively; `review` isn't a field on `MergeOptions`
-        // (its tail is sliced off before clap sees it), so its "forbids
-        // everything" rule is the one accumulator left.
-        let mut bad = start_only_flags(o.message.as_ref(), o.no_ff, o.ff_only, o.squash, o.force);
-        if o.dry_run {
-            bad.push("--dry-run");
-        }
-        if let Some(sd) = side {
-            bad.push(sd.flag());
-        }
-        if o.r#continue {
-            bad.push("--continue");
-        }
-        if o.abort {
-            bad.push("--abort");
-        }
-        if !bad.is_empty() {
-            return Err(format!("review takes no merge options (got {})", bad.join(", ")));
-        }
+    if o.review {
         let source = o.source.ok_or(NEEDS_SOURCE)?;
         return Ok(MergeParsedArgs {
             op: MergeOp::Start(source),
-            message: o.message,
-            no_ff: o.no_ff,
-            ff_only: o.ff_only,
-            squash: o.squash,
-            force: o.force,
-            side,
-            dry_run: o.dry_run,
-            review,
+            message: None,
+            no_ff: false,
+            ff_only: false,
+            squash: false,
+            force: false,
+            side: None,
+            dry_run: false,
+            review: true,
+            meld: o.meld,
         });
     }
 
     if o.r#continue || o.abort {
-        // clap's own `conflicts_with_all` on every start-only field already
-        // refused a source or any merge option alongside these; nothing here
-        // can be true at this point.
         let op = if o.r#continue { MergeOp::Continue } else { MergeOp::Abort };
         return Ok(MergeParsedArgs {
             op,
@@ -183,7 +155,8 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
             force: false,
             side: None,
             dry_run: false,
-            review: None,
+            review: false,
+            meld: false,
         });
     }
 
@@ -204,7 +177,8 @@ pub(crate) fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, Strin
         force: o.force,
         side,
         dry_run: o.dry_run,
-        review: None,
+        review: false,
+        meld: false,
     })
 }
 
@@ -257,8 +231,8 @@ pub(crate) fn cmd_merge(
         return merge_dry_run(dir, &src_branch, &label(dest), color);
     }
 
-    if let Some(tail) = &args.review {
-        return cmd_merge_review(root, trees, dest, dir, &src_branch, tail, color);
+    if args.review {
+        return cmd_merge_review(root, trees, dest, dir, &src_branch, args.meld, color);
     }
 
     if in_progress {
@@ -354,23 +328,12 @@ fn cmd_merge_review(
     dest: &Worktree,
     dir: &Path,
     src: &str,
-    tail: &[String],
+    meld: bool,
     color: bool,
 ) -> Result<(), String> {
     let dest_ref = ref_of(dest)?;
     let dest_label = label(dest);
     let verdict = merge_probe(dir, src)?;
-
-    // '--meld' only means something under review -- outside it, it is just
-    // an unknown option to the merge parser -- so it is pulled out of the
-    // tail here rather than recognized by 'parse_merge_args'.
-    let mut tail = tail.to_vec();
-    let meld = if let Some(i) = tail.iter().position(|a| a == "--meld") {
-        tail.remove(i);
-        true
-    } else {
-        false
-    };
 
     if meld {
         review_meld(root, &dest_ref, &dest_label, src)?;
@@ -400,7 +363,6 @@ fn cmd_merge_review(
     cmd_commits_review(
         root,
         trees,
-        &tail,
         ReviewCtx {
             dest_ref: &dest_ref,
             dest_label: &dest_label,
@@ -726,41 +688,42 @@ mod tests {
     }
 
     #[test]
-    fn review_hands_the_tail_over_untouched() {
+    fn review_is_a_plain_flag_with_no_vocabulary_of_its_own() {
         let a = merge_args(&["2", "--review"]).unwrap();
-        assert_eq!(a.review.as_deref(), Some(&[][..]));
+        assert!(a.review);
         assert!(!a.force);
 
-        let a = merge_args(&["2", "--review", "-f", "-n", "5", "-af", "-m", "x", "-d", "1"])
-            .unwrap();
-        assert!(!a.force && !a.dry_run && a.message.is_none());
-        assert_eq!(a.review.unwrap(), ["-f", "-n", "5", "-af", "-m", "x", "-d", "1"]);
-
-        assert!(merge_args(&["2", "review"]).unwrap().review.is_some());
-
-        let a = merge_args(&["feat/x", "--review", "-f"]).unwrap();
+        let a = merge_args(&["feat/x", "--review"]).unwrap();
         assert_eq!(a.op, MergeOp::Start("feat/x".into()));
-        assert_eq!(a.review.unwrap(), ["-f"]);
-        // A second bare word for the one `source` positional is now clap's
-        // own rejection -- it was custom before ("too many arguments") --
-        // once `--review` and its tail are sliced off first.
+        assert!(a.review);
+
+        // A second bare word for the one `source` positional is clap's own
+        // rejection.
         assert!(merge_args(&["1", "2", "--review"]).unwrap_err().contains("unexpected argument '2'"));
     }
 
     #[test]
-    fn review_rejects_merge_flags_typed_before_it() {
+    fn review_conflicts_with_every_merge_option_declaratively() {
+        // Same set the old hand-built accumulator checked, now enforced by
+        // `conflicts_with_all` on the `review` field itself.
         for (args, want) in [
-            (vec!["2", "-f", "--review"], "-f"),
-            (vec!["2", "-m", "x", "--review"], "-m"),
+            (vec!["2", "-f", "--review"], "--force"),
+            (vec!["2", "-m", "x", "--review"], "--message"),
             (vec!["2", "--squash", "--review"], "--squash"),
             (vec!["2", "--dry-run", "--review"], "--dry-run"),
             (vec!["2", "--theirs", "--review"], "--theirs"),
             (vec!["-a", "--review"], "--abort"),
         ] {
             let e = merge_args(&args).unwrap_err();
-            assert!(e.starts_with("review takes no merge options"), "{args:?}: {e}");
             assert!(e.contains(want), "{args:?}: {e}");
+            assert!(e.contains("--review"), "{args:?}: {e}");
         }
+    }
+
+    #[test]
+    fn meld_needs_review() {
+        assert!(merge_args(&["2", "--meld"]).is_err());
+        assert!(merge_args(&["2", "--review", "--meld"]).unwrap().meld);
     }
 
     #[test]

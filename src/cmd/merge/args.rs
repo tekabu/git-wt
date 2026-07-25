@@ -1,36 +1,37 @@
-use clap::{ArgAction, Args};
+use clap::Args;
 
 /// Merge a source branch into a worktree.
+///
+/// The one positional (`MergeOptions.source`) is genuinely ambiguous --
+/// `merge 1` means "dest 1, source stays unnamed" and `merge feat/x` means
+/// "dest is current, source is feat/x" -- and telling them apart needs the
+/// live worktree list, so it stays a single `Option<String>` for `main.rs` to
+/// resolve at dispatch time rather than a `target` field of its own here.
 #[derive(Args, Debug)]
 pub(crate) struct MergeArgs {
-    /// Destination worktree, optionally with source worktree (`1` or `1,2`),
-    /// followed by merge options, source branch/number, resume flags
-    /// (`--continue`, `--abort`), and the `--review` hand-off. When the first
-    /// token resolves as a worktree list it is consumed as the target;
-    /// otherwise the current worktree is used and the whole tail passed
-    /// through as options. The source goes in the comma list (`1,feat/x`) or
-    /// in `-b` (`1 -b feat/x`), never in a separate bare word (`1 feat/x`).
-    #[arg(allow_hyphen_values = true, num_args = 0.., value_name = "TARGETS/OPTIONS")]
-    pub rest: Vec<String>,
+    /// Override for dest, the worktree `git merge` runs in -- current
+    /// worktree if unset. One target only (# or branch); unlike every other
+    /// verb's `-t`, the dest,source pair only ever comes from the positional.
+    #[arg(short = 't', long = "target", value_name = "TARGET")]
+    pub target_flag: Option<String>,
 
-    /// The one source branch to merge. Unlike every other verb, merge's `-b`
-    /// is not an "extra target": it names what gets merged in.
-    #[arg(short, long, action = ArgAction::Append, value_name = "BRANCH")]
-    pub branch: Vec<String>,
+    /// Branch to merge in, the source `git merge` runs with. One target
+    /// only (# or branch); unlike every other verb, merge's `-b` is not an
+    /// "extra target" -- it names what gets merged in, not dest.
+    #[arg(short, long, value_name = "BRANCH")]
+    pub branch: Option<String>,
+
+    #[command(flatten)]
+    pub options: MergeOptions,
 }
 
-/// The merge-option vocabulary: what `parse_merge_args` re-parses `rest` (with
-/// `--review`'s tail already sliced off, untouched -- it hands off to a wholly
-/// different vocabulary, commits' filters) into via clap, in place of a
-/// hand-written token loop.
-///
-/// Every start-only flag declares `conflicts_with_all = ["r#continue" ->
-/// "continue", "abort"]` itself, so "continue/abort takes no merge options"
-/// is enforced by clap at parse time -- not a hand-built accumulator -- for
-/// every one of them except `review`, which isn't a field here at all (its
-/// tail is sliced off before this struct ever sees the tokens) and whose
-/// "review takes no merge options" check stays a small accumulator in
-/// `parse_merge_args` for exactly that reason.
+/// The merge-option vocabulary. Every start-only flag declares
+/// `conflicts_with_all` itself, so "X takes no other merge options" is
+/// enforced by clap at parse time -- not a hand-built accumulator -- for
+/// every one of them, `review` included: unlike a bare `--review <tail>`
+/// hand-off, this `review` is a plain flag with no vocabulary of its own, so
+/// there is nothing left to re-parse once clap has rejected everything it
+/// conflicts with.
 #[derive(clap::Args, Debug, Default)]
 pub(crate) struct MergeOptions {
     /// Source branch or worktree number to merge in.
@@ -42,7 +43,7 @@ pub(crate) struct MergeOptions {
         short = 'c',
         long = "continue",
         overrides_with = "continue",
-        conflicts_with_all = ["abort", "message", "no_ff", "ff_only", "squash", "force", "ours", "theirs", "dry_run"]
+        conflicts_with_all = ["abort", "message", "no_ff", "ff_only", "squash", "force", "ours", "theirs", "dry_run", "review"]
     )]
     pub r#continue: bool,
 
@@ -51,9 +52,23 @@ pub(crate) struct MergeOptions {
         short = 'a',
         long,
         overrides_with = "abort",
-        conflicts_with_all = ["message", "no_ff", "ff_only", "squash", "force", "ours", "theirs", "dry_run"]
+        conflicts_with_all = ["message", "no_ff", "ff_only", "squash", "force", "ours", "theirs", "dry_run", "review"]
     )]
     pub abort: bool,
+
+    /// Show the range this merge would bring over (`dest..src`) instead of
+    /// running it. A mode, not an option: it takes no merge option of its
+    /// own, and needs the same `SOURCE` a real merge does.
+    #[arg(
+        long,
+        conflicts_with_all = ["message", "no_ff", "ff_only", "squash", "force", "ours", "theirs", "dry_run"]
+    )]
+    pub review: bool,
+
+    /// Open meld on the files `dest..src` touches, instead of the table.
+    /// Only means anything under `--review`.
+    #[arg(long, requires = "review")]
+    pub meld: bool,
 
     /// Resolve conflicts by keeping the destination's side.
     #[arg(short = 'o', long, overrides_with = "ours", conflicts_with = "theirs")]

@@ -74,7 +74,7 @@ pub(crate) fn start_only_flags(
         v.push("--squash");
     }
     if force {
-        v.push("-f");
+        v.push("-F");
     }
     v
 }
@@ -583,7 +583,7 @@ mod tests {
         assert_eq!(a.op, MergeOp::Start("2".into()));
         assert!(!a.no_ff && !a.squash && !a.force && a.message.is_none());
 
-        let a = merge_args(&["feat/x", "--no-ff", "-m", "sync", "-f"]).unwrap();
+        let a = merge_args(&["feat/x", "--no-ff", "-m", "sync", "-F"]).unwrap();
         assert_eq!(a.op, MergeOp::Start("feat/x".into()));
         assert!(a.no_ff && a.force);
         assert_eq!(a.message.as_deref(), Some("sync"));
@@ -623,11 +623,7 @@ mod tests {
             assert_eq!(merge_args(&[dashed]).unwrap().op, want, "{dashed}");
             assert_eq!(merge_args(&[short]).unwrap().op, want, "{short}");
         }
-        for (dashed, short, want) in [("--ours", "-o", Side::Ours)] {
-            for w in [dashed, short] {
-                assert_eq!(merge_args(&["2", w]).unwrap().side, Some(want), "{w}");
-            }
-        }
+        assert_eq!(merge_args(&["2", "--ours"]).unwrap().side, Some(Side::Ours));
         assert_eq!(merge_args(&["2", "--theirs"]).unwrap().side, Some(Side::Theirs));
         for w in ["--dry-run", "-d"] {
             assert!(merge_args(&["2", w]).unwrap().dry_run, "{w}");
@@ -660,15 +656,14 @@ mod tests {
         // ours/theirs, unlike message/no-ff/ff-only/squash/force), so its
         // "takes no merge options" check is still the hand-written
         // accumulator, unchanged.
-        let e = merge_args(&["2", "--dry-run", "--no-ff", "-f"]).unwrap_err();
-        assert!(e.contains("got --no-ff, -f"), "{e}");
+        let e = merge_args(&["2", "--dry-run", "--no-ff", "-F"]).unwrap_err();
+        assert!(e.contains("got --no-ff, -F"), "{e}");
     }
 
     #[test]
     fn merge_rejects_both_sides_but_allows_repeats() {
         assert!(merge_args(&["2", "--ours", "--theirs"]).is_err());
-        assert!(merge_args(&["2", "-o", "--theirs"]).is_err());
-        assert_eq!(merge_args(&["2", "--ours", "-o"]).unwrap().side, Some(Side::Ours));
+        assert_eq!(merge_args(&["2", "--ours", "--ours"]).unwrap().side, Some(Side::Ours));
     }
 
     #[test]
@@ -681,7 +676,7 @@ mod tests {
     fn merge_dry_run_rejects_start_only_flags() {
         assert!(merge_args(&["2", "--dry-run", "--no-ff"]).is_err());
         assert!(merge_args(&["2", "--dry-run", "-m", "x"]).is_err());
-        assert!(merge_args(&["2", "--dry-run", "-f"]).is_err());
+        assert!(merge_args(&["2", "--dry-run", "-F"]).is_err());
         let e = merge_args(&["2", "--dry-run", "--ff-only"]).unwrap_err();
         assert!(e.contains("got --ff-only"), "{e}");
         assert!(merge_args(&["2", "--dry-run", "--theirs"]).is_ok());
@@ -707,7 +702,7 @@ mod tests {
         // Same set the old hand-built accumulator checked, now enforced by
         // `conflicts_with_all` on the `review` field itself.
         for (args, want) in [
-            (vec!["2", "-f", "--review"], "--force"),
+            (vec!["2", "-F", "--review"], "--force"),
             (vec!["2", "-m", "x", "--review"], "--message"),
             (vec!["2", "--squash", "--review"], "--squash"),
             (vec!["2", "--dry-run", "--review"], "--dry-run"),

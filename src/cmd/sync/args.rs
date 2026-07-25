@@ -39,7 +39,7 @@ pub(crate) struct FetchArgs {
     pub no_tags: bool,
 
     /// Fetch even a non-fast-forward update to a remote-tracking ref.
-    #[arg(short, long, overrides_with = "force")]
+    #[arg(short = 'F', long, overrides_with = "force")]
     pub force: bool,
 }
 
@@ -92,9 +92,9 @@ pub(crate) struct PushArgs {
     #[arg(short = 'n', long = "dry-run", overrides_with = "dry_run")]
     pub dry_run: bool,
 
-    /// Declared only to give '-f/--force' its own explanatory rejection --
+    /// Declared only to give '-F/--force' its own explanatory rejection --
     /// see `cmd_sync`'s push arm -- rather than clap's generic "unknown
     /// argument", since typing it here is a plausible, dangerous mistake.
-    #[arg(short, long, hide = true, overrides_with = "force")]
+    #[arg(short = 'F', long, hide = true, overrides_with = "force")]
     pub force: bool,
 }

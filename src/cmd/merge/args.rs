@@ -12,7 +12,7 @@ pub(crate) struct MergeArgs {
     /// Override for dest, the worktree `git merge` runs in -- current
     /// worktree if unset. One target only (# or branch); unlike every other
     /// verb's `-t`, the dest,source pair only ever comes from the positional.
-    #[arg(short = 't', long = "target", value_name = "TARGET")]
+    #[arg(short, long = "target", value_name = "TARGET")]
     pub target_flag: Option<String>,
 
     /// Branch to merge in, the source `git merge` runs with. One target
@@ -71,7 +71,7 @@ pub(crate) struct MergeOptions {
     pub meld: bool,
 
     /// Resolve conflicts by keeping the destination's side.
-    #[arg(short = 'o', long, overrides_with = "ours", conflicts_with = "theirs")]
+    #[arg(long, overrides_with = "ours", conflicts_with = "theirs")]
     pub ours: bool,
 
     /// Resolve conflicts by keeping the source's side.
@@ -99,6 +99,6 @@ pub(crate) struct MergeOptions {
     pub squash: bool,
 
     /// Force a merge commit even into a worktree with uncommitted changes.
-    #[arg(short, long, overrides_with = "force")]
+    #[arg(short = 'F', long, overrides_with = "force")]
     pub force: bool,
 }

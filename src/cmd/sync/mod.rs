@@ -75,7 +75,7 @@ pub(crate) fn pull_parsed(a: &PullArgs) -> SyncParsedArgs {
     SyncParsedArgs { op: SyncOp::Pull, all: a.common.all, flags }
 }
 
-/// `-f/--force` is declared on `PushArgs` (see its doc comment) purely so this
+/// `-F/--force` is declared on `PushArgs` (see its doc comment) purely so this
 /// can name the danger instead of clap's generic "unexpected argument": it
 /// overwrites a remote branch without checking what is on it, and force is a
 /// real word on the other two verbs, so a typo here is a plausible mistake.
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn sync_push_force_is_refused() {
-        for f in ["--force", "-f"] {
+        for f in ["--force", "-F"] {
             let a = push(&[f]).unwrap();
             let e = push_parsed(&a).unwrap_err();
             assert!(e.contains("no '--force' for push"));

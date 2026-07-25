@@ -22,9 +22,10 @@ use crate::cmd::doctor::cmd_doctor;
 use crate::cmd::list::cmd_list;
 use crate::cmd::log::cmd_log;
 use crate::cmd::meld::cmd_meld;
-use crate::cmd::merge::{build_merge_parsed_args, cmd_merge};
+use crate::cmd::merge::{build_merge_parsed_args, cmd_merge, resolve_merge_source};
 use crate::cmd::merged::{cmd_merged, cmd_merged_others};
 use crate::cmd::remove::cmd_remove;
+use crate::cmd::review::cmd_review;
 use crate::cmd::switch::{cmd_path, cmd_switch};
 use crate::cmd::sync::{cmd_sync, fetch_parsed, pull_parsed, push_parsed};
 use crate::worktree::{current_worktree_index, ref_of, repo_root, worktrees};
@@ -222,99 +223,139 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Merge(mut args) => {
-            // `MergeOptions.source` is the one bare positional this grammar
-            // has, and clap has already fully parsed it -- but which of two
-            // things it means (a worktree list, or a bare branch name to
-            // merge with the current worktree as destination) still needs
-            // the live worktree list to judge, the same runtime trial
-            // `commits`/`log` need for their own ambiguous leading token.
-            if args.target_flag.as_deref().is_some_and(|t| t.contains(',')) {
-                return Err("merge's '-t/--target' takes exactly one target".into());
+            // Grammar, deliberately the same shape as `git merge <thing>`:
+            // the one bare positional is always the *source* to merge in,
+            // whether it is a worktree number, a branch that has a worktree,
+            // or a plain branch name. The destination is never positional --
+            // it is `-d/--destination`, defaulting to the current worktree.
+            // One token, one meaning, and it is the same meaning `git merge`
+            // gives it.
+            if args.sd.destination_flag.as_deref().is_some_and(|t| t.contains(',')) {
+                return Err("merge's '-d/--destination' takes exactly one target".into());
             }
             let positional = args.options.source.take();
-            let target_token = match &positional {
-                Some(t)
-                    if gather_targets(Some(t), &[])
-                        .and_then(|p| resolve_target_list(&trees, &p))
-                        .is_ok() =>
-                {
-                    Some(t.clone())
-                }
-                _ => None,
-            };
-            let bare_source = if target_token.is_none() { positional } else { None };
-            let target_token = effective_target(target_token, args.target_flag.as_ref())?;
-
-            // `-b/--branch` on merge means the source to merge, not an
-            // "other target" the way it does elsewhere: `git-wt merge -b 2`
-            // is "merge 2 into <target, default current>", so it skips the
-            // generic dest/source idxs dance below entirely. The branch is
-            // handed to `cmd_merge`/`resolve_merge_source` unresolved, same
-            // as any other merge source, so one with no worktree of its own
-            // still works (`git-wt merge -b feat/x`).
-            if let Some(b) = args.branch {
-                if b.contains(',') {
-                    return Err("merge's '-b/--branch' takes exactly one source branch".into());
-                }
-                if let Some(w) = bare_source {
-                    return Err(format!("unexpected argument '{w}' for merge\nTry 'git-wt --help'"));
-                }
-                if target_token.as_deref().is_some_and(|t| t.contains(',')) {
-                    return Err(
-                        "merge: can't combine a 'dest,source' target list with '-b/--branch'".into(),
-                    );
-                }
-                let dest_idx = match &target_token {
-                    Some(t) => {
-                        let ns = resolve_target_list(&trees, &[t.clone()])?;
-                        check_index(ns[0], trees.len())?
-                    }
-                    None => current_worktree_index(&trees)
-                        .ok_or("not inside a worktree; use 'git-wt merge <N> -b <BRANCH>'")?,
-                };
-                args.options.source = Some(b);
-                let parsed = build_merge_parsed_args(args.options)?;
-                return cmd_merge(&root, &trees, dest_idx, &parsed);
-            }
-
-            let idxs = resolve_targets(&trees, target_token.as_ref(), &[], true, false)?;
-            if idxs.is_empty() {
-                return Err("not inside a worktree; use 'git-wt merge <N>[,<M>]'".into());
-            }
-            if idxs.len() > 2 {
+            if let Some(t) = positional.as_deref().filter(|t| t.contains(',')) {
                 return Err(format!(
-                    "merge takes exactly two worktrees, got {}",
-                    idxs.len()
+                    "merge takes one source, got the list '{t}'; the destination is '-d/--destination'"
                 ));
             }
-            // A single resolved worktree named by a *branch* (not a plain
-            // number) is ambiguous between "destination, still needs a
-            // source" and "source, destination is current" -- the grammar
-            // reads a bare branch as the latter (`git-wt merge <BRANCH>`).
-            // A number always keeps its long-standing meaning, destination,
-            // whatever flags or resume words follow it (`git-wt merge 2
-            // --abort`, `git-wt merge 2 --continue`).
-            let is_branch_word = target_token
-                .as_deref()
-                .is_some_and(|t| t.parse::<usize>().is_err());
-            let (dest_idx, source) = if idxs.len() == 1 && is_branch_word {
-                let cur = current_worktree_index(&trees)
-                    .ok_or("not inside a worktree; use 'git-wt merge <N>[,<M>]'")?;
-                if idxs[0] == cur {
-                    return Err(
-                        "merge needs a source: 'git-wt <N>,<M> merge' (or 'git-wt <N> merge <BRANCH>', or --continue/--abort)"
-                            .into(),
-                    );
+
+            // `-s/--source` on merge is a second spelling of the source, not
+            // the "extra target" `-b` is under every other verb, so it cannot
+            // double up with the positional.
+            if let Some(b) = args.sd.source_flag.as_deref() {
+                if b.contains(',') {
+                    return Err("merge's '-s/--source' takes exactly one source branch".into());
                 }
-                (cur, Some(ref_of(&trees[idxs[0]])?))
-            } else if idxs.len() == 2 {
-                (idxs[0], Some(ref_of(&trees[idxs[1]])?))
-            } else {
-                (idxs[0], None)
+                if let Some(w) = positional.as_deref() {
+                    return Err(format!(
+                        "source given twice: '{w}' and '-s/--source {b}'; use one or the other"
+                    ));
+                }
+            }
+
+            let dest_idx = match args.sd.destination_flag.as_deref() {
+                Some(t) => {
+                    let ns = resolve_target_list(&trees, &[t.to_string()])?;
+                    check_index(ns[0], trees.len())?
+                }
+                None => current_worktree_index(&trees)
+                    .ok_or("not inside a worktree; use 'git-wt merge <SOURCE> -d <DEST>'")?,
             };
-            args.options.source = source.or(bare_source);
+
+            // A source naming a worktree becomes that worktree's ref; one
+            // that names no worktree here is a branch in its own right and
+            // goes on unresolved, so a branch with no worktree still merges.
+            // A *number* has no such second reading -- it is a worktree or
+            // it is nothing -- so it reports its own miss rather than being
+            // handed on as a would-be branch called "99".
+            args.options.source = match args.sd.source_flag.take().or(positional) {
+                None => None,
+                Some(tok) => {
+                    let idx = if tok.parse::<usize>().is_ok() {
+                        let ns = resolve_target_list(&trees, &[tok.clone()])?;
+                        Some(check_index(ns[0], trees.len())?)
+                    } else {
+                        worktree_on_branch(&trees, tok.strip_prefix("heads/").unwrap_or(&tok))
+                    };
+                    match idx {
+                        Some(i) if i == dest_idx => {
+                            return Err(format!(
+                                "worktree #{} is both the source and the target",
+                                i + 1
+                            ))
+                        }
+                        Some(i) => Some(ref_of(&trees[i])?),
+                        None => Some(tok),
+                    }
+                }
+            };
             let parsed = build_merge_parsed_args(args.options)?;
             cmd_merge(&root, &trees, dest_idx, &parsed)
+        }
+
+        Commands::Review(mut args) => {
+            // Same source/dest grammar `merge` has -- the positional is the
+            // source, `-d/--destination` the destination, defaulting to the
+            // current worktree -- because it is the same question about the
+            // same pair. `-d` is review's own field, not the shared commits
+            // vocabulary (`--date` already sits on that letter there);
+            // `-s/--source` is review's own field too, the same letter
+            // merge's own second source spelling uses.
+            if !args.flags.common.branch.is_empty() {
+                return Err(
+                    "review has no '-b/--branch'; name the source with '-s/--source' or the positional".into(),
+                );
+            }
+            if args.destination_flag.as_deref().is_some_and(|t| t.contains(',')) {
+                return Err("review's '-d/--destination' takes exactly one target".into());
+            }
+            if let Some(t) = args.source.as_deref().filter(|t| t.contains(',')) {
+                return Err(format!(
+                    "review takes one source, got the list '{t}'; the destination is '-d/--destination'"
+                ));
+            }
+            if let Some(s) = args.source_flag.as_deref().filter(|s| s.contains(',')) {
+                return Err(format!(
+                    "review's '-s/--source' takes exactly one source branch, got the list '{s}'"
+                ));
+            }
+            if let (Some(w), Some(s)) = (args.source.as_deref(), args.source_flag.as_deref()) {
+                return Err(format!(
+                    "source given twice: '{w}' and '-s/--source {s}'; use one or the other"
+                ));
+            }
+            let dest_idx = match args.destination_flag.take().as_deref() {
+                Some(t) => {
+                    let ns = resolve_target_list(&trees, &[t.to_string()])?;
+                    check_index(ns[0], trees.len())?
+                }
+                None => current_worktree_index(&trees)
+                    .ok_or("not inside a worktree; use 'git-wt review <SOURCE> -d <DEST>'")?,
+            };
+            let tok = args
+                .source_flag
+                .take()
+                .or(args.source)
+                .ok_or("review needs a source: 'git-wt review <SOURCE>' (or '-s <SOURCE>')")?;
+            let idx = if tok.parse::<usize>().is_ok() {
+                let ns = resolve_target_list(&trees, &[tok.clone()])?;
+                Some(check_index(ns[0], trees.len())?)
+            } else {
+                worktree_on_branch(&trees, tok.strip_prefix("heads/").unwrap_or(&tok))
+            };
+            let src = match idx {
+                Some(i) if i == dest_idx => {
+                    return Err(format!(
+                        "worktree #{} is both the source and the target",
+                        i + 1
+                    ))
+                }
+                Some(i) => ref_of(&trees[i])?,
+                None => tok,
+            };
+            let src = resolve_merge_source(&root, &trees, &src)?;
+            cmd_review(&root, &trees, dest_idx, &src, args.meld, args.flags)
         }
 
         Commands::Merged(args) => {
@@ -378,7 +419,7 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Commits(args) => {
-            let target = effective_target(args.target.clone(), args.common.target_flag.as_ref())?;
+            let target = effective_target(args.target.clone(), args.target_flag.as_ref())?;
             let idxs = resolve_targets(&trees, target.as_ref(), &args.common.branch, true, false)?;
             if idxs.is_empty() {
                 return Err("not inside a worktree; use 'git-wt commits <N>[,...]'".into());
@@ -409,7 +450,7 @@ fn run() -> Result<(), String> {
             } else {
                 args.leading.clone()
             };
-            let target_token = effective_target(target_token, args.common.target_flag.as_ref())?;
+            let target_token = effective_target(target_token, args.target_flag.as_ref())?;
             let mut idxs = resolve_targets(&trees, target_token.as_ref(), &args.common.branch, true, false)?;
             if idxs.is_empty() {
                 idxs = current_or_empty(&trees, "log")?;

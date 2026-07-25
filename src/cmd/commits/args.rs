@@ -252,14 +252,11 @@ pub(crate) struct CommonCommitsFlags {
     /// Extra worktree targets, appended to the target list.
     #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
     pub(crate) branch: Vec<String>,
-    
-    #[arg(short = 't', long = "target", value_name = "TARGET")]
-    pub(crate) target_flag: Option<String>,
 
     #[arg(short = 'n', long, value_parser = parse_limit, value_name = "LIMIT")]
     pub(crate) limit: Option<usize>,
     
-    #[arg(short = 'd', long = "date", value_parser = parse_date_filter, value_name = "DATE")]
+    #[arg(long = "date", value_parser = parse_date_filter, value_name = "DATE")]
     pub(crate) date: Vec<DateFilter>,
     
     #[arg(long = "date-since", visible_alias = "ds", value_parser = iso_date, value_name = "DATE")]
@@ -338,7 +335,10 @@ pub(crate) struct CommonCommitsFlags {
 pub(crate) struct CommitsFlags {
     #[arg(value_name = "TARGET")]
     pub(crate) target: Option<String>,
-    
+
+    #[arg(short = 't', long = "target", value_name = "TARGET")]
+    pub(crate) target_flag: Option<String>,
+
     #[command(flatten)]
     pub(crate) common: CommonCommitsFlags,
 
@@ -366,6 +366,10 @@ pub(crate) struct CommitsFlags {
 pub(crate) struct LogFlags {
     #[arg(value_name = "TARGET/PATH", num_args = 0..)]
     pub(crate) leading: Vec<String>,
+
+    #[arg(short = 't', long = "target", value_name = "TARGET")]
+    pub(crate) target_flag: Option<String>,
+
     #[command(flatten)]
     pub(crate) common: CommonCommitsFlags,
 
@@ -540,7 +544,7 @@ pub(crate) fn finalize_commits_args(mode: Mode, raw: RawCommitsArgs) -> Result<C
         for (flag, what) in [(all, "--all"), (union, "--union")] {
             if flag {
                 return Err(format!(
-                    "no '{what}' under '--review': the rows are the range 'dest..src', \
+                    "no '{what}' under 'review': the rows are the range 'dest..src', \
                      which is the one source a review has"
                 ));
             }
@@ -866,7 +870,7 @@ mod tests {
     #[test]
     fn review_refuses_the_flags_that_would_redefine_its_range() {
         let e = review(&["--all"]).unwrap_err();
-        assert!(e.contains("no '--all' under '--review'"), "{e}");
+        assert!(e.contains("no '--all' under 'review'"), "{e}");
         assert!(e.contains("dest..src"), "{e}");
         assert!(review(&["-f"]).unwrap().files);
     }

@@ -10,6 +10,7 @@ use crate::cmd::meld::args::MeldArgs;
 use crate::cmd::merge::args::MergeArgs;
 use crate::cmd::merged::args::MergedArgs;
 use crate::cmd::remove::args::RemoveArgs;
+use crate::cmd::review::args::ReviewArgs;
 use crate::cmd::switch::args::{PathArgs, SwitchArgs};
 use crate::cmd::sync::args::{FetchArgs, PullArgs, PushArgs};
 use crate::worktree::{Worktree};
@@ -90,6 +91,10 @@ pub(crate) enum Commands {
 
     /// Merge a source into a worktree.
     Merge(MergeArgs),
+
+    /// What would merging a source in bring over, and would it merge?
+    #[command(alias = "r")]
+    Review(ReviewArgs),
 
     /// Check merge status.
     #[command(alias = "m")]

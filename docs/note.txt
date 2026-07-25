@@ -1,0 +1,139 @@
+# merge: 
+# C = current branch
+merge N                # merge N to current branch
+merge -s/--source N    # merge N to current branch
+merge                  # source required -> error, no empty default
+
+-t/--target rename to -d/--destination/--dest
+retire -d in dry-run   # no retirement info, clap err - unknown...
+
+merge N -d M  # merge N into M
+merge -s/--source N -d M
+
+# review:
+# C = current branch
+review N               # review N to current branch
+review -s/--source N
+review                 # source required -> error, no empty default
+
+-t/--target rename to -d/--destination/--dest # no retirement info, clap err - unknown...
+
+review N -d M          # review N into M
+review -s N -d M       # review N into M
+
+# commits: alias to c
+# C = current branch
+# X = not existing branch
+commits                # current branch if empty
+commits N              # curent branch + N
+commits N,M,O,C        # curent branch + N,M,O,(dedup C)
+commits N M O C        # space sep
+commits N,M,X          # error, branch X does not exists
+
+-t/--target rename to -w/--worktree/--wt # no retirement info, clap err - unknown...
+-b/--branch rename to -r/--reference/--ref # no retirement info, clap err - unknown...
+
+commits -w N            # N only
+commits -w N,M,O        # error, single value only
+commits -r C            # dedup current branch
+commits -r N            # current branch + N
+commits -r N,M,O        # current branch + N,M,O
+commits -r N M O        # space sep
+
+# log: rename to filelogs alias to fl
+# P1 = pathspec1 
+# P2 = pathspec2
+# PX = not existing pathspec
+log                    # history of the current dir
+log P1                 # history of P1
+log P1,P2              # history of P1,P2
+log P1 P2              # space sep
+log P1,P2,PX           # error, PX does not exists
+log P1,P2,P1           # dedup P1
+
+log -p/--path P1
+log -p/--path P1,P2
+log -p/--path P1 P2
+
+retire -t/--target, -b/--branch
+
+# switch / path / remove: one target
+<verb>                 # current worktree if empty
+<verb> N
+<verb> -t/--target N
+
+# single target + extra targets via -b (repeatable, or comma list)
+<verb> N -b M
+<verb> N -b M -b P
+<verb> N -b M,P
+
+# diff: exactly two worktrees, no empty/single default
+diff                   # -> current only (1) -> error
+diff N                 # -> just N (1) -> error, -b/-t not added
+diff N,M               # the pair
+diff -t/--target N,M
+diff N -b M            # -b appends -> N,M
+
+# meld: 2-3 worktrees; empty -> error
+meld N,M
+meld N,M,P
+meld -t/--target N,M
+meld N -b M
+
+# sync (fetch,pull,...): target list
+sync                   # current worktree if empty (or --all for every one)
+sync N,M
+sync -t/--target N,M
+sync N -b M            # -b appends to the list
+
+# merged: target list is the reference; second positional is the source to compare against
+merged                 # current worktree as reference if empty
+merged N
+merged -t/--target N
+merged N M             # is N merged into M
+merged N,M             # reference list
+
+
+Full args for review:
+
+Usage: git-wt review [OPTIONS] [SOURCE]
+
+Arguments:
+  [SOURCE]  Branch or worktree number whose commits would come over
+
+Notes:
+  By default merge commis is hidden, use --merges to show
+
+Options:
+  -s, --source <SOURCE>        second spelling of the source, branch or commit sha
+  -d, --destination <DEST>     destination worktree (alias: --dest), default current worktree
+      --meld                   open meld on the touched files instead of printing the table
+  -b, --branch <TARGET_LIST>   (rejected for review at runtime — see below)
+  -n, --limit <LIMIT>
+      --date <DATE>            (long-only, no short — collides with -d/--destination)
+      --date-since <DATE>      [alias: --ds]
+      --date-until <DATE>      [alias: --du]
+      --commit-since <COMMIT>  [alias: --cs]
+      --commit-until <COMMIT>  [alias: --cu]
+  -c, --commits <SHA_LIST>
+      --author <NAME>          [alias: --au]
+  -m, --message <MESSAGE>      filter for subject + body
+      --search <SEARCH>        highlight substring
+      --topo-order             [aliases: --topo, --to]
+      --merges                 show merge commits
+      --reverse                [aliases: --oldest-first, --of, --rev]
+      --no-cherry              [alias: --nc]
+      --pick-id                [alias: --pi]
+  -f, --files                  show files in every commit
+      --squash                 [alias: --sq]
+      --union                  (refused for review: not a valid row source there)
+      --time                   show time in 24 hours format
+      --date-human             [alias: --dh]
+  -w, --wrap-subject [<N>]     [alias: --ws]
+      --subject-width <COLS>   [aliases: --subjw, --sw]
+      --branch-width <COLS>    [aliases: --branchw, --bw]
+      --md [<PATH>]
+      --no-merges
+  -a, --all                    (refused for review: not a valid row source there)
+      --all-files              [alias: --af]
+      --filename <TERM>        [alias: --fn]

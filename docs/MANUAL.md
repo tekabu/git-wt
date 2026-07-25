@@ -21,15 +21,15 @@ action, then the worktrees or branches it acts on.
     git-wt path <N>              Print worktree N's path only
     git-wt remove <N> [-y] [-f] [-D]
                                  Remove worktree N (-D: delete branch too)
-    git-wt merge <N>,<M>         Merge M into N
-    git-wt merge <N> -b <M>      Merge M into worktree N (-b is the one
-                                 source to merge, not an "other target" the
-                                 way it is elsewhere; a comma list ('<N>,<M>')
-                                 works the same way -- a target and a bare
-                                 separate source word, e.g. 'merge <N> <M>',
-                                 is not accepted)
-    git-wt merge <N>,<M> --review  What would that merge bring over?
-    git-wt merge <N> --continue|--abort
+    git-wt merge <M>             Merge M into the current worktree, the
+                                 same way 'git merge <M>' reads
+    git-wt merge <M> -d <N>      Merge M into worktree N
+    git-wt merge -s <M> [-d <N>] Same, naming the source with -s/--source
+                                 (merge has no -b at all; two sources, e.g.
+                                 'merge <M> -s <M2>', is not accepted)
+    git-wt merge --continue|--abort [-d <N>]
+    git-wt review <M> [-d <N>]   What would merging M into N bring over,
+                                 and would it merge? (alias: r)
     git-wt merged <N>,<M>        Is M's branch already in N's branch?
     git-wt merged <N> <BRANCH>   Is BRANCH already in worktree N's branch?
     git-wt merged <N>            Is N's branch already in the current branch?
@@ -51,7 +51,7 @@ action, then the worktrees or branches it acts on.
     git-wt <VERB> [TARGET_LIST] -b/--branch LIST
                                  Append LIST to the command's target list:
                                  'git-wt commits 1 -b 2,3' == 'git-wt commits 1,2,3'
-                                 (merge is the exception -- see MERGE above)
+                                 (merge and review have no -b -- see MERGE above)
     git-wt <VERB> -t/--target <N>
                                  Alternative spelling of the leading TARGET_LIST,
                                  for scripts that would rather always use a flag:
@@ -80,11 +80,12 @@ action, then the worktrees or branches it acts on.
     git-wt <VERB> --help         Options for a single command
 
     Aliases: ls = list, rm = remove, cd = switch,
-    a = add, c = commits, l = log, m = merged, p = pull, s = switch.
+    a = add, c = commits, l = log, m = merged, p = pull, r = review,
+    s = switch.
 
     Anywhere a TARGET_LIST appears above, a worktree may be named by the branch
     it holds instead of its number, and the two spellings mix:
-    'git-wt commits main', 'git-wt diff main,2', 'git-wt merge main,feat/x'.
+    'git-wt commits main', 'git-wt diff main,2', 'git-wt merge feat/x'.
     A bare number is always the worktree number, and a verb always wins over
     a branch of the same name; 'heads/main' reaches the branch either way.
 
@@ -112,21 +113,28 @@ action, then the worktrees or branches it acts on.
     -b/--branch LIST is not a target itself; it appends its list to the
     target list the command already has:
         git-wt commits 1 -b 2,3     == git-wt commits 1,2,3
-    merge reads it differently: there '-b' names the one source branch to
-    merge, and the target list (positional only on merge) is the destination:
-        git-wt merge 1 -b 2         == git-wt merge 1,2   (2 into 1)
-        git-wt merge -b 2           == git-wt merge 2     (2 into current)
+    review has its own '-s/--source' for this, same as merge, and no '-b'
+    at all -- names the one source branch, a second spelling of the
+    positional, and '-d/--destination' is the destination (its own field,
+    not the shared '-t/--target': review's own '-d' would collide with
+    '--date' otherwise):
+        git-wt review -s 2         == git-wt review 2     (2 into current)
+        git-wt review -s 2 -d 1    == git-wt review 2 -d 1   (2 into 1)
+    merge has its own flag for this instead, '-s/--source', and no '-b' at
+    all -- it takes one source and one destination, nothing to append to:
+        git-wt merge -s 2           == git-wt merge 2     (2 into current)
+        git-wt merge -s 2 -d 1      == git-wt merge 2 -d 1   (2 into 1)
 
     VERB count per command depends on the target list's length:
         one target   -> switch, path, remove, commits, fetch/pull/push,
-                         merge <BRANCH>, merged [BRANCH]
-        two targets   -> merge, merged, diff, meld (also 3 for meld)
+                         merge, review, merged [BRANCH]
+        two targets   -> merged, diff, meld (also 3 for meld)
         any length    -> commits, meld (2-3), pull (each in turn)
     Some verbs also take a bare word before their own flags, matched ahead
     of a branch of the same name ('merged --others'): spell it
     'heads/others' on the rare branch actually called that. (merge's own
     words -- continue, abort, ours, theirs, dry-run -- take no bare form
-    at all, so they never compete with a branch name in the first place.)
+    at all, so they never compete with a branch name.)
 
     FLAGS combine freely after the target list, in any order, short or long:
         git-wt commits 1,2 --author alex --all-files --filename api.php -n 5
@@ -184,7 +192,7 @@ side is dirty and points at '--live'.
     git-wt diff 1,2 --stat
     git-wt diff 1,2 -p src/
 
-The default range is '...', so 'diff 1,2' shows exactly what 'merge 1,2'
+The default range is '...', so 'diff 1,2' shows exactly what 'merge 2 -d 1'
 would bring in: M's own commits since the fork, and nothing of N's. '..'
 compares the two tips instead, which also reports N's commits, inverted,
 as if M had removed them.
@@ -292,7 +300,7 @@ stderr as 'no files only in <branch>' so a pipe still sees an empty list.
         --date-human, --dh 'Jan. 31, 2028' instead of the default '2028-01-31'
         --author, --au NAME
                           Only NAME's commits (fuzzy, like list's SEARCH)
-    -d, --date DATE       Only commits on exactly this YYYY-MM-DD day
+        --date DATE       Only commits on exactly this YYYY-MM-DD day
         --date-since, --ds DATE  That day and after
         --date-until, --du DATE  That day and before
         --commit-since, --cs C   Same bound, dated by commit C: C's day,
@@ -699,7 +707,7 @@ Requires meld on PATH.
     -a, --abort           Undo a conflicted merge
     -o, --ours            On a conflicting hunk, keep worktree N's side
     -t, --theirs          On a conflicting hunk, take the source's side
-    -d, --dry-run         Report whether it would merge; change nothing
+        --dry-run         Report whether it would merge; change nothing
         review            Show the commits it would bring over; change nothing
                            ('review' is not a merge option, so it stays bare)
 
@@ -709,84 +717,92 @@ Requires meld on PATH.
         --no-ff, --nf     Always create a merge commit
         --ff-only, --fo   Refuse anything but a fast-forward
         --squash          Stage the merge without committing
-    -f, --force           Merge even when worktree N has uncommitted changes
-    -o, --ours            Let worktree N's side win every conflicting hunk
+    -F, --force           Merge even when worktree N has uncommitted changes
+        --ours            Let worktree N's side win every conflicting hunk
         --theirs          Let the source's side win every conflicting hunk
-    -d, --dry-run         Report whether it would merge; change nothing
+        --dry-run         Report whether it would merge; change nothing
     -c, --continue        Finish a merge you have resolved by hand
     -a, --abort           Undo a merge that stopped on conflicts
-        --review          Show what the merge would bring, as a commit table
 
-None of these has a bare-word form: 'merge 1 theirs' is an error, not a
-side. '--review' is the exception -- 'merge 1,2 review' still works.
-'-b' means something different here too -- see MERGE below.
+None of these has a bare-word form: 'merge theirs' names a source branch
+called 'theirs', not a side. '-b' means something different here too --
+see MERGE below.
 
 # MERGE
 
-The merge runs inside worktree N, so N's branch is the one that moves:
+The merge runs inside the destination worktree, so its branch is the one
+that moves:
 
-    git-wt merge 1,2            # worktree 2's branch -> worktree 1's branch
-    git-wt merge 1 -b feat/x    # a branch name works too
-    git-wt merge 1 -b 2         # worktree 2's branch -> worktree 1's branch
-    git-wt merge -b 2           # same, N defaults to the current worktree
-    git-wt merge 1,2 --dry-run  # would it conflict? nothing is touched
-    git-wt merge 1,2 --theirs   # let 2 win every collision
+    git-wt merge 2              # worktree 2's branch -> the current branch
+    git-wt merge feat/x         # a branch name works too
+    git-wt merge 2 -d 1         # worktree 2's branch -> worktree 1's branch
+    git-wt merge -s 2 -d 1      # same, naming the source with -s
+    git-wt merge 2 --dry-run    # would it conflict? nothing is touched
+    git-wt merge 2 --theirs     # let 2 win every collision
 
-A target with a separate bare source word ('git-wt merge 1 feat/x') is not
-accepted -- name the source with a comma ('1,feat/x') or '-b' ('1 -b
-feat/x'), so a source can never be mistaken for a merge option or vice versa.
+Two sources ('git-wt merge 2 -s feat/x') is not accepted -- use one or the
+other, so a source can never be mistaken for a merge option or vice versa.
 
-'-b/--branch' on merge is the one source branch to merge in, not an
-"other target" the way it is on every other verb -- it takes exactly one
+'-s/--source' on merge is the one source branch to merge in -- unlike '-b'
+on every other verb, which is an "other target" -- it takes exactly one
 branch, and errors if it names the same worktree as the target.
 
-The list reads dest-first, so 'merge 1,2' merges 2 into 1. It takes
-exactly two worktrees -- unlike meld, which diffs 2-3 -- because a
-merge has one destination and one source. The list already names the
-source, so it cannot be combined with '--continue'/'--abort'; those take
-a single target, 'git-wt merge 1 --continue' (or 'git-wt merge 1 --abort').
+The bare word is the source, never the destination: 'merge 2' merges
+worktree 2's branch into wherever you are, exactly as 'git merge' would.
+The destination is '-d/--destination' (alias '--dest'), and defaults to the
+current worktree. A source is a worktree number, a branch that has a
+worktree, or a plain branch name that has none.
+
+Since the positional is always a source, and '--continue'/'--abort' take
+none, the two cannot be combined; to resume somewhere other than the
+current worktree, name it with '-d': 'git-wt merge --continue -d 1'.
 
 A number that names a worktree wins over a branch of the same name: to
 merge a branch called '2', spell it 'heads/2'.
 
-Before it actually merges (not '--dry-run', '--review', '--continue', or
-'--abort'), it asks 'Merge <src> into <dest>? [y/N]'.
+Before it actually merges (not '--dry-run', '--continue', or '--abort'),
+it asks 'Merge <src> into <dest>? [y/N]'.
 
 On conflict, git-wt exits nonzero and lists the conflicted files; fix
-them in worktree N, then run 'git-wt merge N --continue' (or --abort).
+them in worktree N, then run 'git-wt merge --continue -d N' (or --abort),
+or just '--continue' from inside N.
 Merge commits never open an editor: without -m, git's default message is
 taken as-is.
 
-# MERGE REVIEW
+# REVIEW
 
-'--dry-run' answers whether a merge conflicts. '--review' answers what it
-would bring: the same verdict as a header, then the commit table for
+'merge --dry-run' answers whether a merge conflicts. 'review' answers what
+it would bring: the same verdict as a header, then the commit table for
 'dest..src'. It merges nothing and keeps --dry-run's exit codes, 0 clean
 and 1 on conflict.
 
-    git-wt merge 1,2 --review        # what would 2 bring into 1?
-    git-wt merge 1,2 --review -f     # + the files under each commit
-    git-wt merge 1,2 --review -n 5 --author alex
-    git-wt merge 1,2 --review --meld # open the touched files in meld instead
+    git-wt review 2                  # what would 2 bring into here?
+    git-wt review 2 -d 1             # ...into worktree 1 instead
+    git-wt review 2 -f               # + the files under each commit
+    git-wt review 2 -n 5 --author alex
+    git-wt review 2 --squash         # one consolidated file block
+    git-wt review 2 --meld           # open the touched files in meld instead
 
-'--meld' only means something after '--review': it swaps the printed commit
-table for meld on the files 'dest..src' touches, each side extracted from
-git (not the worktree's on-disk state) into a temp dir, same as 'compare -m'
-or 'meld --diff'. It takes no arguments of its own and is refused outside
-'--review' -- 'git-wt merge 1,2 --meld' is just an unknown option.
+Source and destination read the same way merge's do: the lone positional is
+the source ('-b/--branch' is a second spelling of it here, where merge uses
+'-s/--source' instead), and '-d/--destination' (alias '--dest') is the
+destination, defaulting to the current worktree.
 
-'--review' ends merge's own flags. Everything after it is a 'commits'
-flag and is passed through untouched, which is the only way both can keep
-the letters they share: '-f' after '--review' is --files, not --force.
-Merge options before it are an error rather than a silent claim, so put
-them after -- or drop them, since nothing is being merged. After it they
-are an error too, and one that says which: '--review --dry-run' is told
-the two answer the same question, not that '--dry-run' is unexpected.
+'--meld' swaps the printed commit table for meld on the files 'dest..src'
+touches, each side extracted from git (not the worktree's on-disk state)
+into a temp dir, same as 'compare -m' or 'meld --diff'. It takes no
+arguments of its own.
 
-'--all' and '--union' are refused as well, though they are commits flags:
-both name a row source, and a review's is already the range 'dest..src'.
-('-a' is '--all', so it is refused under that name -- '-fn 5' is the
-bundle that still works here.)
+Being a verb rather than an option on merge is what lets review own a whole
+flag vocabulary -- the 'commits' table's -- without arbitrating letters
+against merge's. '-f' is --files here and --force under 'merge'; '-a' is
+--all here and --abort there. A merge option is simply not a word review
+knows, and vice versa.
+
+'--all' and '--union' are refused, though they are commits flags: both name
+a row source, and a review's is already the range 'dest..src'. ('-a' is
+'--all', so it is refused under that name -- '-fn 5' is the bundle that
+still works here.)
 
 The single mark column is the DESTINATION's, and it has four answers:
 
@@ -802,9 +818,9 @@ definition, so it would say nothing.
 
 Merge commits are shown, unlike in 'commits', where they are dropped: a
 review range is bounded by the merge about to happen, so a merge inside
-it is the cargo rather than the noise. '--review --no-merges' drops them.
+it is the cargo rather than the noise. 'review --no-merges' drops them.
 A merge carries no patch of its own, so it can never be marked '≈' and
-'--review --pick-id' leaves its cell empty; that is the mark saying
+'review --pick-id' leaves its cell empty; that is the mark saying
 nothing about merges, not a missing answer.
 
 'ours'/'theirs' are git's -X strategy options, so they settle only the

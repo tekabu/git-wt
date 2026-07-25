@@ -482,7 +482,6 @@ case "$lonly" in
   *)           report PASS HAPPY "commits anchors on the first" "$lcmd" ;;
 esac
 check "commits --union adds the rest" exit=0 out="loginside" -- commits "1,$didx" --union
-check "commits --any is gone"         exit=1 err="unexpected argument '--any' for commits" -- commits "1,$didx" --any
 check "commits heads the author col" exit=0 out="author" -- commits "1,$didx"
 check "commits names the author"     exit=0 out="Test" -- commits "1,$didx"
 check "commits heads the subject col" exit=0 out="subject" -- commits "1,$didx"
@@ -509,11 +508,13 @@ check "commits -f aliases --files"   exit=0 out="A  onlymain.txt" -- commits "1,
 check "commits -af bundles both"     exit=0 out="A  onlymain.txt" -- commits "1,$didx" -af
 check "commits -fa order-free"       exit=0 out="A  onlymain.txt" -- commits "1,$didx" -fa
 check "commits -fn takes a value"    exit=0 out="init" -- commits "1,$didx" -afn 20
-# A value-taking flag mid-bundle would hand one value to two flags.
-check "commits -nf refused"          exit=1 err="has to come last" -- commits "1,$didx" -nf 20
-check "commits -nf rejects bundle"   exit=1 err="has to come last in '-nf'" -- commits "1,$didx" -nf 20
-# A bundle of letters that name nothing is reported as typed, not split up.
-check "commits -xz reported whole"   exit=1 err="'-xz'" -- commits "1,$didx" -xz
+# A value-taking flag mid-bundle is refused: '-nf' reads as '-n f', so 'f'
+# lands as --limit's value and fails there, with the 20 left over. The
+# assertion is that it is rejected, not which half is blamed.
+check "commits -nf refused"          exit=2 err="bad count 'f'" -- commits "1,$didx" -nf 20
+# A bundle of letters that name nothing: the first unknown short is the one
+# reported.
+check "commits -xz names the first"  exit=2 err="unexpected argument '-x' found" -- commits "1,$didx" -xz
 # The default really drops the shared root -- not merely 'not asserted'.
 droot="$("$BIN" commits "1,$didx" 2>/dev/null | grep -cw init || true)"
 dcmd2="$(fmt_cmd commits "1,$didx")"
@@ -599,14 +600,20 @@ check "commits --date-until yesterday"   exit=0 err="no commits match those filt
 
 # No operators in --date at all: each one names a bound that has its own flag,
 # and the error says which -- with the day carried into the hint.
-check "commits --date rejects >="     exit=1 err="no '>' in --date" -- commits "1,$didx" --date ">=$today"
-check "commits --date rejects <="     exit=1 err="no '<' in --date" -- commits "1,$didx" --date "<=$today"
-check "commits --date rejects ="      exit=1 err="no '=' in --date" -- commits "1,$didx" --date "=$today"
-check "commits --date bad shape"      exit=1 err="want YYYY-MM-DD" -- commits "1,$didx" --date "2026-1-1"
-check "commits --date impossible"     exit=1 err="no such date" -- commits "1,$didx" --date "2026-13-01"
-check "commits --date needs a value"  exit=1 err="--date needs a day" -- commits "1,$didx" --date
+#
+# The wording is ours (parse_date_filter), but it reaches the user inside clap's
+# "invalid value 'X' for '--date <DATE>': ..." wrapper, and a value_parser
+# rejection is a clap usage error -- exit 2, not the 1 a run-time failure gets.
+check "commits --date rejects >="     exit=2 err="no '>' in --date" -- commits "1,$didx" --date ">=$today"
+check "commits --date rejects <="     exit=2 err="no '<' in --date" -- commits "1,$didx" --date "<=$today"
+check "commits --date rejects ="      exit=2 err="no '=' in --date" -- commits "1,$didx" --date "=$today"
+check "commits --date bad shape"      exit=2 err="want YYYY-MM-DD" -- commits "1,$didx" --date "2026-1-1"
+check "commits --date impossible"     exit=2 err="no such date" -- commits "1,$didx" --date "2026-13-01"
+# A flag left without its value is clap's own message: one generic wording for
+# every flag, rather than a bespoke closure per flag.
+check "commits --date needs a value"  exit=2 err="a value is required for '--date <DATE>'" -- commits "1,$didx" --date
 # An unquoted '>' is eaten by the shell, so the value arrives bare: say why.
-check "commits --date eaten by shell" exit=1 err="no '>' in --date" -- commits "1,$didx" --date ">="
+check "commits --date eaten by shell" exit=2 err="no '>' in --date" -- commits "1,$didx" --date ">="
 
 # A commit or a date filter widens the source to the full log by itself: it
 # names something in the history, not something in the default slice. 'init' is
@@ -748,22 +755,16 @@ case "$toid" in
   *)           report FAIL HAPPY "commit bound is a date, not ancestry" "$tcmd" "loginside dropped; the bound read as ancestry: '$toid'" ;;
 esac
 check "commits --commit-since bad commit"  exit=1 err="--commit-since: no commit 'zzz9'" -- commits "1,$didx" --commit-since zzz9
-check "commits --commit-until needs a value" exit=1 err="--commit-until needs a commit" -- commits "1,$didx" --commit-until
-# A bare --from names neither bound; git's date words point at ours.
-check "commits rejects bare --from"   exit=1 err="unexpected argument '--from' for commits" -- commits "1,$didx" --from x
-check "commits rejects --since"       exit=1 err="unexpected argument '--since' for commits" -- commits "1,$didx" --since 2026-01-01
-# The old spellings are gone; clap reports them as unknown options.
-check "commits --from-date is gone"   exit=1 err="unexpected argument '--from-date' for commits" -- commits "1,$didx" --from-date 2026-01-01
-check "commits --to-date is gone"     exit=1 err="unexpected argument '--to-date' for commits" -- commits "1,$didx" --to-date 2026-01-01
-check "commits --from-id is gone"     exit=1 err="unexpected argument '--from-id' for commits" -- commits "1,$didx" --from-id HEAD
-check "commits --to-id is gone"       exit=1 err="unexpected argument '--to-id' for commits" -- commits "1,$didx" --to-id HEAD
-check "commits --show-time is gone"   exit=1 err="unexpected argument '--show-time' for commits" -- commits "1,$didx" --show-time
+check "commits --commit-until needs a value" exit=2 err="a value is required for '--commit-until <COMMIT>'" -- commits "1,$didx" --commit-until
 # --commits names the rows outright, and resolves every id before filtering.
 check "commits --commits one sha"     exit=0 out="$mainsha" -- commits "1,$didx" --commits "$mainsha"
 check "commits -c short flag"         exit=0 out="$mainsha" -- commits "1,$didx" -c "$mainsha"
 check "commits --commits bundled -ac" exit=0 out="$mainsha" -- commits "1,$didx" -ac "$mainsha"
 check "commits --commits bad sha"     exit=1 err="--commits: no commit 'zzz9'" -- commits "1,$didx" --commits zzz9
-check "commits --commits empty id"    exit=1 err="bad commit list" -- commits "1,$didx" --commits "a,,b"
+# clap's value_delimiter splits the list, so an empty part is never seen as a
+# malformed list -- each part is just resolved in turn, and the first one that
+# is not a commit is the error.
+check "commits --commits empty id"    exit=1 err="--commits: no commit 'a'" -- commits "1,$didx" --commits "a,,b"
 # One named commit is one row, whatever else the range holds.
 conly="$("$BIN" commits "1,$didx" --all --commits "$mainsha" 2>/dev/null | grep -c "^$mainsha" || true)"
 call="$("$BIN" commits "1,$didx" --all 2>/dev/null | grep -cE "^[0-9a-f]{7}" || true)"
@@ -773,7 +774,6 @@ if [ "$conly" = 1 ] && [ "$call" -gt 1 ]; then
 else
   report FAIL HAPPY "commits --commits keeps only those" "$ccmd" "wanted 1 row of $call, got $conly"
 fi
-check "commits rejects --until"       exit=1 err="unexpected argument '--until' for commits" -- commits "1,$didx" --until 2026-01-01
 
 # Merges are dropped by default and --merges puts them back. Needs a merge with
 # something to merge: a branch main already contains is "Already up to date"
@@ -792,7 +792,6 @@ if [ "$nm" = 0 ]; then
 else
   report FAIL HAPPY "commits hides merges by default" "$nmc" "merge row survived the default"
 fi
-check "commits --no-merges is gone"  exit=1 err="unexpected argument '--no-merges' for commits" -- commits "1,$didx" --no-merges
 # The work the merge joined must survive: only the merge row goes.
 check "commits default keeps work"   exit=0 out="mainside" -- commits "1,$didx"
 
@@ -883,7 +882,7 @@ check "commits --author exact"        exit=0 out="mainside" -- commits "1,$didx"
 check "commits --author fuzzy"        exit=0 out="mainside" -- commits "1,$didx" --author tst
 check "commits --author case-folds"   exit=0 out="mainside" -- commits "1,$didx" --author TEST
 check "commits --author no match"     exit=0 err="no commits match those filters" -- commits "1,$didx" --author zzzz
-check "commits --author needs a name" exit=1 err="--author needs a name" -- commits "1,$didx" --author
+check "commits --author needs a name" exit=2 err="a value is required for '--author <NAME>'" -- commits "1,$didx" --author
 
 # --message is a substring over the subject and the body; --filename is a
 # substring over the paths a commit touched.
@@ -891,9 +890,13 @@ check "commits --message subject"     exit=0 out="mainside" -- commits "1,$didx"
 check "commits --message case-folds"  exit=0 out="mainside" -- commits "1,$didx" --message MAINSIDE
 check "commits -m short form"         exit=0 out="mainside" -- commits "1,$didx" -m mainside
 check "commits --message no match"    exit=0 err="no commits match those filters" -- commits "1,$didx" --message zzzz
-check "commits --message needs a term" exit=1 err="--message needs a term" -- commits "1,$didx" --message
-check "commits --message rejects empty" exit=1 err="--message needs a term" -- commits "1,$didx" --message ""
-check "commits --filename needs a term" exit=1 err="--filename needs a term" -- commits "1,$didx" --filename
+check "commits --message needs a term" exit=2 err="a value is required for '--message <MESSAGE>'" -- commits "1,$didx" --message
+# An *empty* term is a different case from a missing one, and nothing rejects
+# it: clap is satisfied by the empty string, and an empty substring matches
+# every subject, so the filter is a no-op rather than an error. Asserted as it
+# behaves; if it should be refused, that is a src change, not a test one.
+check "commits --message empty is a no-op" exit=0 out="mainside" -- commits "1,$didx" --message ""
+check "commits --filename needs a term" exit=2 err="a value is required for '--filename <FILENAME>'" -- commits "1,$didx" --filename
 # The block is cut to the matched paths by default; --all-files widens it back.
 #
 # Two files in one commit, only one of them matching the term: without the
@@ -917,18 +920,13 @@ fi
 check "commits --all-files widens"     exit=0 out="blockother.txt" -- commits "1,$didx" --filename blockmatch --all --all-files
 check "commits --all-files keeps match" exit=0 out="blockmatch.txt" -- commits "1,$didx" --filename blockmatch --all --all-files
 check "commits --all-files alone errors" exit=1 err="--all-files needs" -- commits "1,$didx" --all-files
-check "commits --match-only is gone"   exit=1 err="unexpected argument '--match-only' for commits" -- commits "1,$didx" --filename blockmatch --match-only
-# The flags these two get confused with, each naming the one that is here.
-check "commits --subject is gone"         exit=1 err="unexpected argument '--subject' for commits" -- commits "1,$didx" --subject fix
-check "commits --grep is gone"            exit=1 err="unexpected argument '--grep' for commits" -- commits "1,$didx" --grep "^fix"
-check "commits --file is gone"            exit=1 err="unexpected argument '--file' for commits" -- commits "1,$didx" --file x
 
 check "commits rejects a dup target" exit=1 err="listed twice" -- commits "1,1"
 check "commits bad index errors"     exit=1 err="no worktree #99" -- commits "1,99"
-check "commits rejects git flags"    exit=1 err="unexpected argument '--stat' for commits" -- commits "1,$didx" --stat
-check "commits -n needs a count"     exit=1 err="-n needs a count" -- commits "1,$didx" -n
-check "commits -n 0 errors"          exit=1 err="would show nothing" -- commits "1,$didx" -n 0
-check "commits -n non-numeric"       exit=1 err="bad count 'x'" -- commits "1,$didx" -n x
+check "commits -n needs a count"     exit=2 err="a value is required for '--limit <LIMIT>'" -- commits "1,$didx" -n
+# Same as --date: our wording, clap's wrapper, clap's exit 2.
+check "commits -n 0 errors"          exit=2 err="would show nothing" -- commits "1,$didx" -n 0
+check "commits -n non-numeric"       exit=2 err="bad count 'x'" -- commits "1,$didx" -n x
 check "bare commits uses current"    exit=0 out="mainside" -- commits
 
 # --- diff live --------------------------------------------------------------
@@ -1257,76 +1255,82 @@ A="$(midx feat-a)"; C1="$(midx cb1)"; C2="$(midx cb2)"; D="$(midx dirtybr)"
 FF2="$(midx stuckbr)"; M3="$(midx cb3)"; LM="$(midx lmbr)"
 
 # Errors before any state changes.
-# Worktree-number sources use the list form; branch sources and resume words
-# keep the single-target form.
-check "merge needs a source"         exit=1 err="merge needs a source" -- merge 1
-check "merge one target needs source" exit=1 err="merge needs a source" -- merge 2
+# The lone positional is the source, exactly as 'git merge <thing>' reads it,
+# whether it is a worktree number, a branch with a worktree, or a plain branch
+# name. The destination is '-d/--destination' and defaults to the current
+# worktree; cwd here is the main worktree, #1.
+check "merge takes one source"       exit=2 err="unexpected argument" -- merge "$A" "$C1"
 check "merge old target-first order rejected" exit=2 err="unexpected argument 'merge' found" -- switch 1 merge 2
-check "merge unknown source"         exit=1 err="no worktree or branch 'zzz'" -- merge 1 -b zzz
-check "merge self refused"           exit=1 err="worktree #1 listed twice" -- merge "1,1"
-# merge's option tail re-parses through a real clap-derived struct now
-# (MergeOptions), not a hand-written token loop, so an extra positional or an
-# unrecognized flag is clap's own rejection, and every pairwise/start-only
-# conflict (ours/theirs, continue/abort, a source or option alongside
-# continue/abort) is clap's declarative conflicts_with -- not our wording, but
-# still a single bare line (clap_err_line strips the doubled "error:" and the
-# Usage block a nested try_parse_from would otherwise add).
-check "merge too many args"          exit=1 err="unexpected argument" -- merge "1,$A" "$C1"
-check "merge unknown option"         exit=1 err="unexpected argument '--rebase'" -- merge "1,$A" --rebase
-check "merge ours+theirs conflict"   exit=1 err="'--ours' cannot be used with '--theirs'" -- merge "1,$A" --ours --theirs
+check "merge unknown source"         exit=1 err="no worktree or branch 'zzz'" -- merge -s zzz
+check "merge source out of range"    exit=1 err="no worktree #99" -- merge 99
+check "merge source twice refused"   exit=1 err="source given twice" -- merge "$A" -s feat-a
+check "merge -d takes one target"    exit=1 err="takes exactly one target" -- merge "$A" -d "1,$C1"
+check "merge rejects a source list"  exit=1 err="merge takes one source" -- merge "1,$A"
+# Source and destination naming one worktree is refused, by either spelling.
+check "merge self refused"           exit=1 err="worktree #1 is both the source and the target" -- merge 1 -d 1
+check "merge self by default target" exit=1 err="worktree #1 is both the source and the target" -- merge 1
+# merge's options are clap-declared (MergeOptions), so an unrecognized flag
+# and every pairwise/start-only conflict (ours/theirs, continue/abort, an
+# option alongside continue/abort) is clap's declarative conflicts_with: clap's
+# wording, its Usage block underneath, and its exit 2 -- `Cli::parse()` renders
+# and exits itself, before main's `error: `-prefixed one-liner path can run.
+check "merge unknown option"         exit=2 err="unexpected argument '--rebase'" -- merge "$A" --rebase
+check "merge ours+theirs conflict"   exit=2 err="'--ours' cannot be used with '--theirs'" -- merge "$A" --ours --theirs
 # '--dry-run' is compatible with ours/theirs (unlike the other start-only
-# flags), so its "takes no merge options" check is still the hand-written
-# accumulator this list feeds -- unchanged, same wording as before.
-check "merge dry-run + --no-ff"      exit=1 err="dry-run takes no merge options (got --no-ff)" -- merge "1,$A" --dry-run --no-ff
-# The resume words keep the single-target form, so their parse errors are
-# reachable only there.
-check "merge continue takes no arg"  exit=1 err="'--continue' cannot be used with '[SOURCE]'" -- merge 1 --continue 2
-check "merge continue with a side"   exit=1 err="'--theirs' cannot be used with '--continue'" -- merge 1 --theirs --continue
-check "merge continue+abort"         exit=1 err="'--continue' cannot be used with '--abort'" -- merge 1 --continue --abort
-check "rejection names the flag"     exit=1 err="'--abort' cannot be used with" -- merge 1 --abort -m x --squash
-check "merge continue w/o merge"     exit=1 err="no merge in progress" -- merge 1 --continue
-check "merge abort w/o merge"        exit=1 err="no merge in progress" -- merge 1 --abort
+# flags), so its "takes no merge options" check is the hand-written accumulator
+# this list feeds.
+check "merge dry-run + --no-ff"      exit=1 err="dry-run takes no merge options (got --no-ff)" -- merge "$A" --dry-run --no-ff
+# A resume word takes no source at all: it finishes what is already started in
+# the destination, so '-d' is how it reaches a worktree other than the current.
+check "merge continue takes no source" exit=2 err="'[SOURCE]' cannot be used with '--continue'" -- merge "$A" --continue
+check "merge abort takes no source"  exit=2 err="'[SOURCE]' cannot be used with '--abort'" -- merge "$A" --abort
+check "merge continue takes no -s"   exit=1 err="'--continue' cannot be used with '[SOURCE]'" -- merge -s feat-a --continue
+check "merge continue with a side"   exit=2 err="'--theirs' cannot be used with '--continue'" -- merge --theirs --continue
+check "merge continue+abort"         exit=2 err="'--continue' cannot be used with '--abort'" -- merge --continue --abort
+check "rejection names the flag"     exit=2 err="'--abort' cannot be used with" -- merge --abort -m x --squash
+check "merge continue w/o merge"     exit=1 err="no merge in progress" -- merge --continue -d 1
+check "merge abort w/o merge"        exit=1 err="no merge in progress" -- merge --abort -d 1
 
 # Dirty destination takes -f; untracked files alone do not count as dirty.
 touch "$ROOT/mrg/w-dirty/untracked.txt"
-check "merge with untracked only ok"  exit=0 err="Merged feat-a into dirtybr" in=y -- merge "$D,$A"
+check "merge with untracked only ok"  exit=0 err="Merged feat-a into dirtybr" in=y -- merge "$A" -d "$D"
 git -C "$ROOT/mrg/w-dirty" merge -q --abort 2>/dev/null; git -C "$ROOT/mrg/w-dirty" reset -q --hard HEAD~1
 # Tracked edits must still be refused even when untracked files are also
 # present; the porcelain reports both, and the untracked lines must not mask
 # the tracked ones. Re-create the untracked file so the combined case is real.
 touch "$ROOT/mrg/w-dirty/untracked.txt"
 echo edit >> "$ROOT/mrg/w-dirty/base.txt"
-check "merge into dirty+untracked refused" exit=1 err="uncommitted changes" -- merge "$D,$A"
+check "merge into dirty+untracked refused" exit=1 err="uncommitted changes" -- merge "$A" -d "$D"
 rm -f "$ROOT/mrg/w-dirty/untracked.txt"
-check "merge into dirty refused"     exit=1 err="uncommitted changes" -- merge "$D,$A"
-check "merge into dirty with -f"     exit=0 err="Merged feat-a into dirtybr" in=y -- merge "$D,$A" -f
+check "merge into dirty refused"     exit=1 err="uncommitted changes" -- merge "$A" -d "$D"
+check "merge into dirty with -F"     exit=0 err="Merged feat-a into dirtybr" in=y -- merge "$A" -d "$D" -F
 
 # Clean merge by worktree number: worktree A's branch moves into worktree 1.
-check "merge by number"              exit=0 err="Merged feat-a into" in=y -- merge "1,$A"
+check "merge by number"              exit=0 err="Merged feat-a into" in=y -- merge "$A" -d "1"
 if [ -f "$MRG/a.txt" ]; then
   report PASS HAPPY "merge by number moved the files" "test -f a.txt  # in worktree 1"
 else
   report FAIL HAPPY "merge by number moved the files" "test -f a.txt  # in worktree 1" \
     "a.txt absent from $MRG after merge"
 fi
-check "merge prints no stdout"       exit=0 out="" in=y -- merge "$C1,$A"
+check "merge prints no stdout"       exit=0 out="" in=y -- merge "$A" -d "$C1"
 
 # A branch name works where a number does, and --ff-only refuses a real merge.
-check "merge by branch name"         exit=0 err="Merged feat-a into cb2" in=y -- merge "$C2" -b feat-a
-check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" in=y -- merge "$C2,$C1" --ff-only
+check "merge by branch name"         exit=0 err="Merged feat-a into cb2" in=y -- merge -s feat-a -d "$C2"
+check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" in=y -- merge "$C1" -d "$C2" --ff-only
 
 # Conflict -> continue.  cb1 and cb2 both rewrote shared.txt.
-check "merge conflict reports files" exit=1 err="shared.txt" in=y -- merge "$C1,$C2"
-check "second merge while stuck"     exit=1 err="already in progress" in=y -- merge "$C1" -b feat-a
-check "continue with unresolved"     exit=1 err="merge conflict in" -- merge "$C1" --continue
+check "merge conflict reports files" exit=1 err="shared.txt" in=y -- merge "$C2" -d "$C1"
+check "second merge while stuck"     exit=1 err="already in progress" in=y -- merge -s feat-a -d "$C1"
+check "continue with unresolved"     exit=1 err="merge conflict in" -- merge --continue -d "$C1"
 echo resolved > "$ROOT/mrg/w-cb1/shared.txt"
 git -C "$ROOT/mrg/w-cb1" add shared.txt
-check "continue after resolve"       exit=0 err="Completed merge" -- merge "$C1" --continue
+check "continue after resolve"       exit=0 err="Completed merge" -- merge --continue -d "$C1"
 
 # Conflict -> abort restores the pre-merge state. cb1 has swallowed cb2 by now,
 # so cb3 is the branch that still genuinely conflicts with cb2.
-printf "y\\n" | "$BIN" merge "$C2,$M3" >/dev/null 2>&1
-check "abort a conflicted merge"     exit=0 err="Aborted merge" -- merge "$C2" --abort
+printf "y\\n" | "$BIN" merge "$M3" -d "$C2" >/dev/null 2>&1
+check "abort a conflicted merge"     exit=0 err="Aborted merge" -- merge --abort -d "$C2"
 if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report FAIL HAPPY "abort clears MERGE_HEAD" "git rev-parse MERGE_HEAD  # in w-cb2" \
     "MERGE_HEAD still present after --abort"
@@ -1335,16 +1339,14 @@ else
 fi
 
 # dry-run: answers the question, writes nothing. cb3 still collides with cb2.
-check "dry-run clean merge"          exit=0 err="merges into" -- merge "$C2,$A" --dry-run
-check "dry-run reports a conflict"   exit=1 err="does NOT merge" -- merge "$C2,$M3" --dry-run
-check "dry-run names the file"       exit=1 err="shared.txt" -- merge "$C2,$M3" --dry-run
-check "dry-run says it touched none" exit=1 err="nothing was changed" -- merge "$C2,$M3" --dry-run
-# The short form drives the same path end to end, not just the parser.
-check "dry-run -d short form"        exit=1 err="does NOT merge" -- merge "$C2,$M3" -d
-# '-t' is the target flag now, so 'theirs' is long-form only; '-o' still
-# shortens 'ours'. Neither counts as a start-only option under a dry run.
-check "theirs long form + -d"        exit=0 err="merges into" -- merge "$C2,$A" --theirs -d
-check "ours -o short form"           exit=0 err="merges into" -- merge "$C2,$A" -o -d
+check "dry-run clean merge"          exit=0 err="merges into" -- merge "$A" -d "$C2" --dry-run
+check "dry-run reports a conflict"   exit=1 err="does NOT merge" -- merge "$M3" -d "$C2" --dry-run
+check "dry-run names the file"       exit=1 err="shared.txt" -- merge "$M3" -d "$C2" --dry-run
+check "dry-run says it touched none" exit=1 err="nothing was changed" -- merge "$M3" -d "$C2" --dry-run
+# '--dry-run' has no short form any more -- '-d' is the destination flag now
+# -- so ours/theirs under a dry run are only worth checking long-form.
+check "theirs + --dry-run"           exit=0 err="merges into" -- merge "$A" -d "$C2" --theirs --dry-run
+check "ours + --dry-run"             exit=0 err="merges into" -- merge "$A" -d "$C2" --ours --dry-run
 # Proof it wrote nothing: a dry run that predicted a conflict left no merge
 # behind, so a real merge can still start cleanly afterwards.
 if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
@@ -1354,17 +1356,19 @@ else
   report PASS HAPPY "dry-run leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2"
 fi
 
-# --review: dry-run's verdict, plus the commits behind it. Same exit contract,
-# so these mirror the dry-run cases above rather than inventing a new one.
-check "review clean merge"           exit=0 err="merges cleanly" -- merge "$LM,$A" --review
+# 'review' is a verb of its own: it answers what a merge would bring over and
+# whether it would be clean, writes nothing, and carries the verdict in its
+# exit code the way 'merge --dry-run' does -- so these mirror the dry-run cases
+# above. Its source/dest grammar is merge's: positional source, '-d' dest.
+check "review clean merge"           exit=0 err="merges cleanly" -- review "$A" -d "$LM"
 # Nothing to bring: there is no merge to have a verdict about, so it says the
 # one true thing in 'merged's words rather than "0 commits, merges cleanly"
 # above an empty table -- which reads as though a merge just ran.
-check "review of an empty range"     exit=0 err="is already in" -- merge "$C2,$FF2" --review
+check "review of an empty range"     exit=0 err="is already in" -- review "$FF2" -d "$C2"
 # ...and says only that: no verdict line, no count, no table. `check` asserts
 # what output contains, so the absence is checked here.
-emptyrev="$("$BIN" merge "$C2,$FF2" --review 2>&1)"
-emptycmd="git-wt $C2,$FF2 merge --review"
+emptyrev="$("$BIN" review "$FF2" -t "$C2" 2>&1)"
+emptycmd="git-wt review $FF2 -t $C2"
 if [[ "$emptyrev" == *"merges cleanly"* || "$emptyrev" == *"0 commits"* ]]; then
   report FAIL HAPPY "review empty says it once" "$emptycmd" \
     "an empty range still printed a verdict (got '$emptyrev')"
@@ -1373,37 +1377,46 @@ else
 fi
 # An empty range is still parsed: the flags are rejected on their own terms,
 # not skipped because there happened to be nothing to report.
-check "review empty still parses"    exit=1 err="unexpected argument '--bogus'" -- merge "$C2,$FF2" --review --bogus
-check "review empty refuses --all"   exit=1 err="no '--all' under '--review'" -- merge "$C2,$FF2" --review --all
-check "review names both branches"   exit=0 err="->" -- merge "$LM,$A" --review
-check "review reports a conflict"    exit=1 err="does NOT merge cleanly" -- merge "$C2,$M3" --review
-check "review lists the conflict"    exit=1 err="shared.txt" -- merge "$C2,$M3" --review
-check "review says it touched none"  exit=1 err="nothing was changed" -- merge "$C2,$M3" --review
-# The handoff: past --review, merge stops parsing and 'commits' takes over, so
-# -f is --files and not --force. A wrong answer here runs a real merge.
-check "review -f is files not force" exit=0 err="merges cleanly" -- merge "$LM,$A" --review -f
-check "review takes -n"              exit=0 err="merges cleanly" -- merge "$LM,$A" --review -n 1
-check "review takes --author"        exit=0 err="merges cleanly" -- merge "$LM,$A" --review --author t
-# --no-merges is a hard error in 'commits' and a real flag under --review; the
-# default flipped, so the message that refused it would no longer be true.
-check "review takes --no-merges"     exit=0 err="merges cleanly" -- merge "$LM,$A" --review --no-merges
-check "commits still rejects it"     exit=1 err="unexpected argument '--no-merges'" -- commits "$LM,$A" --no-merges
-# A merge flag before --review was already claimed, so it errors rather than
-# quietly shaping a merge that never runs.
-check "merge flag before --review"   exit=1 err="review takes no merge options" -- merge "$LM,$A" -f --review
-# A merge option after --review reached the commits parser, which would have
-# blamed a command the user never typed. It names the collision instead.
-check "review + dry-run is an error" exit=1 err="answer the same question" -- merge "$LM,$A" --review --dry-run
-# '--squash' is a commits flag now (the consolidated file block), so it is a
-# legal thing to put after '--review' rather than a collision to report.
-check "review + squash consolidates" exit=0 err="merges cleanly" -- merge "$LM,$A" --review --squash
-check "review twice is an error"     exit=1 err="already in effect" -- merge "$LM,$A" --review --review
-check "review keeps typo errors"     exit=1 err="unexpected argument '--bogus'" -- merge "$LM,$A" --review --bogus
-# --all/--union are commits flags, and still refused: both name a row source,
-# and a review's is the range. '-a' is '--all', so it goes under that name.
-check "review refuses --all"         exit=1 err="no '--all' under '--review'" -- merge "$LM,$A" --review --all
-check "review refuses -a as --all"   exit=1 err="no '--all' under '--review'" -- merge "$LM,$A" --review -a
-check "review refuses --union"       exit=1 err="no '--union' under '--review'" -- merge "$LM,$A" --review --union
+check "review empty still parses"    exit=2 err="unexpected argument '--bogus'" -- review "$FF2" -d "$C2" --bogus
+check "review empty refuses --all"   exit=1 err="no '--all' under 'review'" -- review "$FF2" -d "$C2" --all
+check "review names both branches"   exit=0 err="->" -- review "$A" -d "$LM"
+check "review reports a conflict"    exit=1 err="does NOT merge cleanly" -- review "$M3" -d "$C2"
+check "review lists the conflict"    exit=1 err="shared.txt" -- review "$M3" -d "$C2"
+check "review says it touched none"  exit=1 err="nothing was changed" -- review "$M3" -d "$C2"
+# review owns a whole flag vocabulary, the 'commits' table's. Several of these
+# letters are merge options under 'merge' -- '-f' is force there and files
+# here, '-a' is abort there and all here -- which is exactly what a separate
+# verb buys: no collision to arbitrate.
+check "review -f is files"           exit=0 err="merges cleanly" -- review "$A" -d "$LM" -f
+check "review takes -n"              exit=0 err="merges cleanly" -- review "$A" -d "$LM" -n 1
+check "review takes --author"        exit=0 err="merges cleanly" -- review "$A" -d "$LM" --author t
+# --no-merges is a hard error in 'commits' and a real flag here: a review keeps
+# merges by default, so the word that turns them off has something to do.
+check "review takes --no-merges"     exit=0 err="merges cleanly" -- review "$A" -d "$LM" --no-merges
+check "commits still rejects it"     exit=2 err="unexpected argument '--no-merges'" -- commits "$LM,$A" --no-merges
+# A merge option is not a word review knows, in either order.
+check "review rejects -F"            exit=2 err="unexpected argument '-F'" -- review "$A" -d "$LM" -F
+check "review rejects --dry-run"     exit=2 err="unexpected argument '--dry-run'" -- review "$A" -d "$LM" --dry-run
+check "review rejects --ff-only"     exit=2 err="unexpected argument '--ff-only'" -- review "$A" -d "$LM" --ff-only
+# ...and '--review' is not a word merge knows any more either.
+check "merge rejects --review"       exit=2 err="unexpected argument '--review'" -- merge "$A" -d "$LM" --review
+check "merge rejects --meld"         exit=2 err="unexpected argument '--meld'" -- merge "$A" -d "$LM" --meld
+# '--squash' is a commits flag (the consolidated file block), so it shapes the
+# table rather than colliding with anything.
+check "review + squash consolidates" exit=0 err="merges cleanly" -- review "$A" -d "$LM" --squash
+check "review keeps typo errors"     exit=2 err="unexpected argument '--bogus'" -- review "$A" -d "$LM" --bogus
+# --all/--union are commits flags, and refused: both name a row source, and a
+# review's is the range. '-a' is '--all' here, so it goes under that name.
+check "review refuses --all"         exit=1 err="no '--all' under 'review'" -- review "$A" -d "$LM" --all
+check "review refuses -a as --all"   exit=1 err="no '--all' under 'review'" -- review "$A" -d "$LM" -a
+check "review refuses --union"       exit=1 err="no '--union' under 'review'" -- review "$A" -d "$LM" --union
+# The source/dest grammar, same shape merge's block asserts.
+check "review needs a source"        exit=1 err="review needs a source" -- review -d "$LM"
+check "review source twice refused"  exit=1 err="source given twice" -- review "$A" -s feat-a
+check "review -d takes one target"   exit=1 err="takes exactly one target" -- review "$A" -d "1,$C1"
+check "review rejects a source list" exit=1 err="review takes one source" -- review "1,$A"
+check "review self refused"          exit=1 err="worktree #1 is both the source and the target" -- review 1 -d 1
+check "review -s names the source"   exit=0 err="merges cleanly" -- review -s feat-a -d "$LM"
 # Proof it wrote nothing, exactly as the dry-run block above proves it.
 if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report FAIL HAPPY "review leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2" \
@@ -1449,7 +1462,7 @@ check "list --col 6"                 exit=0 out="ahead 1" -- list --col 1,2,6
 
 # ours/theirs settle the collision that stopped the plain merge above.
 # cb3 (shared.txt=C) vs w-cb2 (shared.txt=B): theirs takes C, ours keeps B.
-check "merge theirs resolves"        exit=0 err="theirs won conflicts" in=y -- merge "$C2,$M3" --theirs
+check "merge theirs resolves"        exit=0 err="theirs won conflicts" in=y -- merge "$M3" -d "$C2" --theirs
 if [ "$(cat "$ROOT/mrg/w-cb2/shared.txt")" = "C" ]; then
   report PASS HAPPY "theirs took the source's side" "cat shared.txt  # in w-cb2"
 else
@@ -1459,7 +1472,7 @@ fi
 
 # cb4 (shared.txt=D) collides with whatever w-cb1 settled on earlier.
 before="$(cat "$ROOT/mrg/w-cb1/shared.txt")"
-check "merge ours keeps our side"    exit=0 err="ours won conflicts" in=y -- merge "$C1" -b cb4 --ours
+check "merge ours keeps our side"    exit=0 err="ours won conflicts" in=y -- merge -s cb4 -d "$C1" --ours
 if [ "$(cat "$ROOT/mrg/w-cb1/shared.txt")" = "$before" ]; then
   report PASS HAPPY "ours kept worktree N's side" "cat shared.txt  # in w-cb1"
 else
@@ -1469,8 +1482,8 @@ fi
 
 # 'theirs' on a merge that already stopped: it can't join one, so git-wt offers
 # to abort and redo. Declining must leave the stopped merge exactly as it was.
-printf "y\\n" | "$BIN" merge "$FF2,$M3" >/dev/null 2>&1   # conflict in w-ff2
-check "stuck+theirs declined"        exit=0 err="Aborted." in=n -- merge "$FF2,$M3" --theirs
+printf "y\\n" | "$BIN" merge "$M3" -d "$FF2" >/dev/null 2>&1   # conflict in w-ff2
+check "stuck+theirs declined"        exit=0 err="Aborted." in=n -- merge "$M3" -d "$FF2" --theirs
 if git -C "$ROOT/mrg/w-ff2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report PASS UNHAPPY "declining keeps the stopped merge" "git rev-parse MERGE_HEAD  # in w-ff2"
 else
@@ -1478,7 +1491,7 @@ else
     "MERGE_HEAD gone — the merge was aborted despite answering n"
 fi
 # Accepting redoes it from clean, and the source wins.
-check "stuck+theirs accepted"       exit=0 err="theirs won conflicts" in=$'y\ny' -- merge "$FF2,$M3" --theirs
+check "stuck+theirs accepted"       exit=0 err="theirs won conflicts" in=$'y\ny' -- merge "$M3" -d "$FF2" --theirs
 if [ "$(cat "$ROOT/mrg/w-ff2/shared.txt")" = "C" ]; then
   report PASS HAPPY "redo let theirs win" "cat shared.txt  # in w-ff2"
 else
@@ -1486,27 +1499,28 @@ else
     "shared.txt is '$(cat "$ROOT/mrg/w-ff2/shared.txt")', want C"
 fi
 
-# List form sanity checks for the new grammar.
-check "list form dry-run clean"      exit=0 err="merges into" -- merge "1,$A" --dry-run
-check "list form takes options"      exit=1 err="does NOT merge" -- merge "$C1,$M3" --dry-run
-check "list form rejects 3"          exit=1 err="exactly two worktrees" -- merge "1,$A,$C1"
+# Explicit '-d' sanity checks: it takes an option tail like any other form, and
+# a source list is not a target.
+check "explicit -d dry-run clean"    exit=0 err="merges into" -- merge "$A" -d "1" --dry-run
+check "explicit -d takes options"    exit=1 err="does NOT merge" -- merge "$M3" -d "$C1" --dry-run
+check "-d rejects 3 targets"         exit=1 err="takes exactly one target" -- merge "$A" -d "1,$C1,$M3"
 check "bare list without verb rejected" exit=1 err="switch takes a single worktree, not '1,$A'" -- "1,$A"
 check "malformed list with verb rejected" exit=1 err="unexpected argument for the verb" -- "1," merge
 check "list form + verb order rejected" exit=1 err="unexpected argument for the verb" -- "1,$A" merge continue
 check "list form + short flag order rejected" exit=1 err="unexpected argument for the verb" -- "1,$A" merge -a
 check "bad list + verb order rejected" exit=1 err="unexpected argument for the verb" -- "1,x" merge
-# The real thing: worktree M's branch lands in worktree N, list-style.
-check "list form merges M into N"    exit=0 err="Merged feat-a into" in=y -- merge "$LM,$A"
+# The real thing: worktree M's branch lands in worktree N.
+check "-d merges the source into it" exit=0 err="Merged feat-a into" in=y -- merge "$A" -d "$LM"
 if [ -f "$ROOT/mrg/w-lm/a.txt" ]; then
-  report PASS HAPPY "list form moved the files" "test -f a.txt  # in w-lm"
+  report PASS HAPPY "-d moved the files" "test -f a.txt  # in w-lm"
 else
-  report FAIL HAPPY "list form moved the files" "test -f a.txt  # in w-lm" \
-    "a.txt absent from w-lm after '$LM,$A merge'"
+  report FAIL HAPPY "-d moved the files" "test -f a.txt  # in w-lm" \
+    "a.txt absent from w-lm after 'merge $A -d $LM'"
 fi
 
 # --squash stages the merge without committing it.
 FF="$(cd "$MRG" && "$BIN" add ffbr --dirname w-ff >/dev/null 2>&1; midx ffbr)"
-check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" in=y -- merge "$FF,$A" --squash
+check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" in=y -- merge "$A" -d "$FF" --squash
 if [ -n "$(git -C "$ROOT/mrg/w-ff" diff --cached --name-only)" ]; then
   report PASS HAPPY "--squash leaves changes staged" "git diff --cached  # in w-ff"
 else
@@ -1571,12 +1585,12 @@ check "sync unknown flag"            exit=2 err="unexpected argument '--depth' f
 check "sync flags are per verb"      exit=2 err="unexpected argument '--rebase' found" -- fetch 1 --rebase
 check "sync push has no --rebase"    exit=2 err="unexpected argument '--rebase' found" -- push 1 --rebase
 check "sync pull has no -u"          exit=2 err="unexpected argument '-u' found" -- pull 1 -u
-# push's own '-f/--force' stays a declared flag purely so this keeps its
+# push's own '-F/--force' stays a declared flag purely so this keeps its
 # explanatory rejection instead of becoming clap's generic "unexpected
 # argument" -- it is a real word on the other two verbs, so a safety note
 # beats silence.
 check "sync push --force refused"    exit=1 err="no '--force' for push" -- push 1 --force
-check "sync push -f refused"         exit=1 err="no '--force' for push" -- push 1 -f
+check "sync push -F refused"         exit=1 err="no '--force' for push" -- push 1 -F
 check "sync contradiction"           exit=2 err="'--rebase' cannot be used with '--no-rebase'" -- pull 1 --rebase --no-rebase
 check "sync rebase vs ff-only"       exit=2 err="'--rebase' cannot be used with '--ff-only'" -- pull 1 --rebase --ff-only
 

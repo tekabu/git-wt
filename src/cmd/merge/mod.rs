@@ -5,13 +5,10 @@ use std::path::Path;
 
 use clap::Parser;
 
-use crate::cmd::commits::rows::commit_files;
-use crate::cmd::commits::{cmd_commits_review, ReviewCtx};
-use crate::cmd::meld::{extract_files, require_meld, temp_meld_dir};
 use crate::cmd::merge::args::MergeOptions;
 use crate::git::{git_cmd, git_quiet, git_run, git_run_no_editor, git_stdout};
 use crate::ui::{color_enabled, confirm, paint, GREEN};
-use crate::worktree::{label, leaf_of, ref_of, Worktree};
+use crate::worktree::{label, leaf_of, Worktree};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum MergeOp {
@@ -49,8 +46,6 @@ pub(crate) struct MergeParsedArgs {
     pub(crate) force: bool,
     pub(crate) side: Option<Side>,
     pub(crate) dry_run: bool,
-    pub(crate) review: bool,
-    pub(crate) meld: bool,
 }
 
 pub(crate) fn start_only_flags(
@@ -79,8 +74,8 @@ pub(crate) fn start_only_flags(
     v
 }
 
-const NEEDS_SOURCE: &str = "merge needs a source: 'git-wt <N>,<M> merge' \
-     (or 'git-wt <N> merge <BRANCH>', or --continue/--abort)";
+const NEEDS_SOURCE: &str = "merge needs a source: 'git-wt merge <SOURCE>' \
+     (or '-b <SOURCE>', or --continue/--abort)";
 
 /// `main`'s top-level error path prints its own leading `error: `, unlike
 /// clap's own `Cli::parse()`, which prints the full render itself and exits
@@ -117,35 +112,29 @@ fn parse_merge_args(args: &[String]) -> Result<MergeParsedArgs, String> {
     build_merge_parsed_args(o)
 }
 
-/// Turn a clap-parsed `MergeOptions` into `MergeParsedArgs`. `review` and
-/// `--continue`/`--abort` each rule out every other merge option
-/// declaratively (see `MergeOptions`' doc comment) -- nothing here can
-/// collide with what clap has already refused.
+/// Turn a clap-parsed `MergeOptions` into `MergeParsedArgs`.
+/// `--continue`/`--abort` rule out every other merge option declaratively
+/// (see `MergeOptions`' doc comment), so nothing here can collide with what
+/// clap has already refused.
 pub(crate) fn build_merge_parsed_args(o: MergeOptions) -> Result<MergeParsedArgs, String> {
-    let side = match (o.ours, o.theirs) {
+    let side = match (o.side.ours, o.side.theirs) {
         (true, false) => Some(Side::Ours),
         (false, true) => Some(Side::Theirs),
         _ => None,
     };
 
-    if o.review {
-        let source = o.source.ok_or(NEEDS_SOURCE)?;
-        return Ok(MergeParsedArgs {
-            op: MergeOp::Start(source),
-            message: None,
-            no_ff: false,
-            ff_only: false,
-            squash: false,
-            force: false,
-            side: None,
-            dry_run: false,
-            review: true,
-            meld: o.meld,
-        });
-    }
-
-    if o.r#continue || o.abort {
-        let op = if o.r#continue { MergeOp::Continue } else { MergeOp::Abort };
+    if o.resume.r#continue || o.resume.abort {
+        // `source`'s own `conflicts_with_all` covers the positional spelling,
+        // but merge has a second one: `-s/--source` is a source here, not the
+        // `-b` extra target it is elsewhere, and it lives on `MergeArgs` rather
+        // than in this struct -- so clap never sees it as the thing a resume
+        // word rules out. Dispatch folds it into `source` before calling us,
+        // which is where both spellings finally meet.
+        if o.source.is_some() {
+            let word = if o.resume.r#continue { "--continue" } else { "--abort" };
+            return Err(format!("'{word}' cannot be used with '[SOURCE]'"));
+        }
+        let op = if o.resume.r#continue { MergeOp::Continue } else { MergeOp::Abort };
         return Ok(MergeParsedArgs {
             op,
             message: None,
@@ -155,13 +144,11 @@ pub(crate) fn build_merge_parsed_args(o: MergeOptions) -> Result<MergeParsedArgs
             force: false,
             side: None,
             dry_run: false,
-            review: false,
-            meld: false,
         });
     }
 
     if o.dry_run {
-        let bad = start_only_flags(o.message.as_ref(), o.no_ff, o.ff_only, o.squash, o.force);
+        let bad = start_only_flags(o.message.as_ref(), o.no_ff, o.ff_only, o.squash.squash, o.force.force);
         if !bad.is_empty() {
             return Err(format!("--dry-run takes no merge options (got {})", bad.join(", ")));
         }
@@ -173,12 +160,10 @@ pub(crate) fn build_merge_parsed_args(o: MergeOptions) -> Result<MergeParsedArgs
         message: o.message,
         no_ff: o.no_ff,
         ff_only: o.ff_only,
-        squash: o.squash,
-        force: o.force,
+        squash: o.squash.squash,
+        force: o.force.force,
         side,
         dry_run: o.dry_run,
-        review: false,
-        meld: false,
     })
 }
 
@@ -229,10 +214,6 @@ pub(crate) fn cmd_merge(
 
     if args.dry_run {
         return merge_dry_run(dir, &src_branch, &label(dest), color);
-    }
-
-    if args.review {
-        return cmd_merge_review(root, trees, dest, dir, &src_branch, args.meld, color);
     }
 
     if in_progress {
@@ -320,151 +301,6 @@ pub(crate) fn cmd_merge(
         eprintln!("the merge is staged but not committed");
     }
     Ok(())
-}
-
-fn cmd_merge_review(
-    root: &Path,
-    trees: &[Worktree],
-    dest: &Worktree,
-    dir: &Path,
-    src: &str,
-    meld: bool,
-    color: bool,
-) -> Result<(), String> {
-    let dest_ref = ref_of(dest)?;
-    let dest_label = label(dest);
-    let verdict = merge_probe(dir, src)?;
-
-    if meld {
-        review_meld(root, &dest_ref, &dest_label, src)?;
-        return match verdict {
-            MergeVerdict::Clean => Ok(()),
-            MergeVerdict::Conflict(files) => Err(review_conflict_msg(&files)),
-        };
-    }
-
-    let range = format!("{dest_ref}..{src}");
-    let n: usize = git_stdout(dir, &["rev-list", "--count", &range])?
-        .trim()
-        .parse()
-        .unwrap_or(0);
-
-    let plural = if n == 1 { "commit" } else { "commits" };
-    let how = match &verdict {
-        MergeVerdict::Clean => paint("merges cleanly", GREEN, color),
-        MergeVerdict::Conflict(_) => "does NOT merge cleanly".to_string(),
-    };
-    let header = if n == 0 {
-        format!("{} {src} is already in {dest_label}", paint("Merged", GREEN, color))
-    } else {
-        format!("{src} -> {dest_label}   {n} {plural}, {how}")
-    };
-
-    cmd_commits_review(
-        root,
-        trees,
-        ReviewCtx {
-            dest_ref: &dest_ref,
-            dest_label: &dest_label,
-            src_ref: src,
-            src_label: src,
-            header: &header,
-        },
-    )?;
-
-    match verdict {
-        MergeVerdict::Clean => Ok(()),
-        MergeVerdict::Conflict(files) => Err(review_conflict_msg(&files)),
-    }
-}
-
-fn review_conflict_msg(files: &[String]) -> String {
-    let mut m = format!(
-        "{} conflicting {}:\n",
-        files.len(),
-        if files.len() == 1 { "path" } else { "paths" }
-    );
-    for f in files {
-        m.push_str(&format!("  {f}\n"));
-    }
-    m.push_str("nothing was changed — this was a review");
-    m
-}
-
-/// `merge <N>,<M> --review --meld`: open meld on the files 'dest_ref..src'
-/// touches, each side extracted from git (not the worktree's on-disk
-/// state), same as `meld --diff` does for two worktrees.
-///
-/// The path set is the union of each reviewed commit's first-parent diff --
-/// exactly the set the `--review --squash` "consolidated files" block lists,
-/// computed through the same `commit_files`. A plain `merge-base..src` tree
-/// diff instead nets merges against neither parent, so a merge inside the
-/// range drops its whole second-parent import into the set even though the
-/// table (first-parent) never shows it: that is what made meld's file list
-/// disagree with the consolidated one printed beside it.
-fn review_meld(root: &Path, dest_ref: &str, dest_label: &str, src: &str) -> Result<(), String> {
-    require_meld()?;
-
-    let mut paths = review_paths(root, dest_ref, src)?;
-    paths.sort();
-    paths.dedup();
-    if paths.is_empty() {
-        eprintln!("no files differ between {dest_label} and {src}");
-        return Ok(());
-    }
-
-    let tmp = temp_meld_dir()?;
-    let dir_dest = tmp.join("a");
-    let dir_src = tmp.join("b");
-    let extract_all = || -> Result<(), String> {
-        extract_files(root, dest_ref, &paths, &dir_dest)?;
-        extract_files(root, src, &paths, &dir_src)
-    };
-    if let Err(e) = extract_all() {
-        let _ = std::fs::remove_dir_all(&tmp);
-        return Err(e);
-    }
-
-    let on = color_enabled(std::io::stderr().is_terminal());
-    eprintln!("{} {dest_label} ↔ {src}", paint("meld", GREEN, on));
-    eprintln!("  {dest_label}: {}", dir_dest.display());
-    eprintln!("  {src}: {}", dir_src.display());
-
-    let status = std::process::Command::new("meld").arg(&dir_dest).arg(&dir_src).status();
-    let _ = std::fs::remove_dir_all(&tmp);
-    let status = status.map_err(|e| format!("failed to run meld: {e}"))?;
-    if !status.success() {
-        return Err("meld exited with an error".into());
-    }
-    Ok(())
-}
-
-/// The files the reviewed commits touch, defined exactly as the review
-/// table's consolidated block defines them: the union of each commit's
-/// first-parent diff over `dest_ref..src`, via the same `commit_files`. So
-/// the meld tree and the `--squash` "consolidated files" list name the same
-/// paths rather than two subtly different sets.
-///
-/// A rename's `commit_files` path is `old => new`; both halves are kept, so
-/// meld can extract the file under whichever name each side holds it by.
-fn review_paths(root: &Path, dest_ref: &str, src: &str) -> Result<Vec<String>, String> {
-    let range = format!("{dest_ref}..{src}");
-    let shas = git_stdout(root, &["rev-list", &range])?;
-    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for sha in shas.lines().map(str::trim).filter(|s| !s.is_empty()) {
-        for f in commit_files(root, sha)? {
-            match f.path.split_once(" => ") {
-                Some((old, new)) => {
-                    set.insert(old.to_string());
-                    set.insert(new.to_string());
-                }
-                None => {
-                    set.insert(f.path);
-                }
-            }
-        }
-    }
-    Ok(set.into_iter().collect())
 }
 
 pub(crate) fn merge_dry_run(dir: &Path, src: &str, into: &str, color: bool) -> Result<(), String> {
@@ -625,9 +461,7 @@ mod tests {
         }
         assert_eq!(merge_args(&["2", "--ours"]).unwrap().side, Some(Side::Ours));
         assert_eq!(merge_args(&["2", "--theirs"]).unwrap().side, Some(Side::Theirs));
-        for w in ["--dry-run", "-d"] {
-            assert!(merge_args(&["2", w]).unwrap().dry_run, "{w}");
-        }
+        assert!(merge_args(&["2", "--dry-run"]).unwrap().dry_run);
     }
 
     #[test]
@@ -683,42 +517,17 @@ mod tests {
     }
 
     #[test]
-    fn review_is_a_plain_flag_with_no_vocabulary_of_its_own() {
-        let a = merge_args(&["2", "--review"]).unwrap();
-        assert!(a.review);
-        assert!(!a.force);
-
-        let a = merge_args(&["feat/x", "--review"]).unwrap();
-        assert_eq!(a.op, MergeOp::Start("feat/x".into()));
-        assert!(a.review);
-
-        // A second bare word for the one `source` positional is clap's own
-        // rejection.
-        assert!(merge_args(&["1", "2", "--review"]).unwrap_err().contains("unexpected argument '2'"));
-    }
-
-    #[test]
-    fn review_conflicts_with_every_merge_option_declaratively() {
-        // Same set the old hand-built accumulator checked, now enforced by
-        // `conflicts_with_all` on the `review` field itself.
-        for (args, want) in [
-            (vec!["2", "-F", "--review"], "--force"),
-            (vec!["2", "-m", "x", "--review"], "--message"),
-            (vec!["2", "--squash", "--review"], "--squash"),
-            (vec!["2", "--dry-run", "--review"], "--dry-run"),
-            (vec!["2", "--theirs", "--review"], "--theirs"),
-            (vec!["-a", "--review"], "--abort"),
+    fn review_and_meld_are_not_merge_words() {
+        // `review` is its own subcommand with its own vocabulary, so merge
+        // knows neither word: they reach clap as unknown arguments.
+        for a in [
+            vec!["2", "--review"],
+            vec!["2", "--meld"],
+            vec!["2", "--review", "--meld"],
         ] {
-            let e = merge_args(&args).unwrap_err();
-            assert!(e.contains(want), "{args:?}: {e}");
-            assert!(e.contains("--review"), "{args:?}: {e}");
+            let e = merge_args(&a).unwrap_err();
+            assert!(e.contains("unexpected argument"), "{a:?}: {e}");
         }
-    }
-
-    #[test]
-    fn meld_needs_review() {
-        assert!(merge_args(&["2", "--meld"]).is_err());
-        assert!(merge_args(&["2", "--review", "--meld"]).unwrap().meld);
     }
 
     #[test]

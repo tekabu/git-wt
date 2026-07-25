@@ -3,7 +3,7 @@
 Quick reference. Happy path only.
 
 Aliases: `ls`=list, `rm`=remove, `cd`=switch, `a`=add, `c`=commits,
-`l`=log, `m`=merged, `p`=pull, `s`=switch.
+`l`=log, `m`=merged, `p`=pull, `r`=review, `s`=switch.
 
 `git-wt` (binary) always prints a path; `wt` (the `--alias` shell function)
 `cd`'s into it for `switch`/`cd`/`add`/`remove`. Everything else behaves
@@ -25,7 +25,8 @@ named (or to the current worktree if the positional is omitted):
 
 ```sh
 git-wt commits -b 1,2       # == git-wt commits <current>,1,2
-git-wt merge -b 2           # == git-wt merge <current>,2
+git-wt review -s 2          # review: has its own -s/--source instead, no -b at all
+git-wt merge -s 2           # merge: same, its own -s/--source instead, no -b at all
 ```
 
 ## switch / cd / s
@@ -252,43 +253,74 @@ Options:
 
 ## merge
 
-    git-wt merge 1,2
-    git-wt merge 1 -b feat/x
-    git-wt merge 1 -b 2
-    git-wt merge -b 2
-    git-wt merge -t 1 -b feat/x
-    git-wt merge 1,2 --dry-run
-    git-wt merge 1,2 --theirs
-    git-wt merge 1,2 --ours
-    git-wt merge 1,2 --review
-    git-wt merge 1,2 --review --meld
-    git-wt merge 1 --continue
-    git-wt merge 1 --abort
-    git-wt merge main,2             mix branch names and numbers
+    git-wt merge 2                  merge 2 into the current worktree
+    git-wt merge feat/x             a branch works where a number does
+    git-wt merge 2 -d 1             merge 2 into worktree 1
+    git-wt merge -s 2 [-d 1]        name the source with -s instead
+    git-wt merge 2 --dry-run
+    git-wt merge 2 --theirs
+    git-wt merge 2 --ours
+    git-wt merge --continue [-d 1]
+    git-wt merge --abort [-d 1]
 
-A target and a separate bare source word (`merge 1 feat/x`) is not accepted —
-use a comma list (`merge 1,feat/x`) or `-b` (`merge 1 -b feat/x`). Before an
-actual merge runs (not `--dry-run`/`--review`/`--continue`/`--abort`), it asks
-`Merge <src> into <dest>? [y/N]`.
+The bare word is always the source, read the way `git merge <thing>` reads it;
+the destination is `-d/--destination` (alias `--dest`) and defaults to the
+current worktree. Two sources (`merge 2 -s feat/x`) is not accepted — use one
+or the other. Before an actual merge runs (not
+`--dry-run`/`--continue`/`--abort`), it asks `Merge <src> into <dest>? [y/N]`.
 
-`--review --meld` opens meld on the files the merge would touch (each side
-extracted from git, like `compare -m`/`meld --diff`) instead of printing the
-commit table; `--meld` on its own, without `--review`, is refused.
-
-Sample (`git-wt merge 1 -b feature/review --dry-run`):
+Sample (`git-wt merge -s feature/review -d 1 --dry-run`):
 
     Clean feature/review merges into main cleanly
 
-Options (target list, then merge options/words — raw catch-all):
+Options (source, then merge options/words):
 
-    -b, --branch TARGET_LIST     one source branch (merge's own '-b'; a plain worktree/branch elsewhere)
-    -t, --target TARGET_LIST     destination worktree (same as the leading positional)
+    -s, --source BRANCH           one source branch (merge's own; '-b' is a plain worktree/branch elsewhere)
+    -d, --destination, --dest TARGET  destination worktree (default: current)
     --theirs                      take theirs on conflict
-    -o, --ours                    take ours on conflict
-    -d, --dry-run                 preview without merging
-    --review                      hand off to review flow
+    --ours                        take ours on conflict
+    --dry-run                     preview without merging
     -c, --continue                 resume an in-progress merge
     -a, --abort                    abort an in-progress merge
+
+## review / r
+
+    git-wt review 2                 what would 2 bring into the current worktree?
+    git-wt review 2 -d 1            ...into worktree 1 instead
+    git-wt review feat/x            a branch works where a number does
+    git-wt review -s 2 [-d 1]       name the source with -s instead
+    git-wt review 2 -f              + the files under each commit
+    git-wt review 2 -n 5 --author alex
+    git-wt review 2 --squash        one consolidated file block
+    git-wt review 2 --meld          open the touched files in meld instead
+
+`merge --dry-run` says whether a merge conflicts; `review` says what it would
+bring: the same verdict as a header, then the commit table for `dest..src`. It
+merges nothing, and its exit code is the verdict — 0 clean, 1 on conflict.
+
+Source and destination read exactly as `merge`'s do: the lone positional is the
+source, `-d/--destination` (alias `--dest`) is the destination and defaults to
+the current worktree.
+
+Being its own verb is what lets `review` own the whole `commits` flag
+vocabulary without arbitrating letters against merge's: `-f` is `--files` here
+and `--force` under `merge`, `-a` is `--all` here and `--abort` there. Its
+own `-d/--destination` (rather than `commits`' shared `-t/--target`) is the
+same reasoning: `commits`' own `--date` already sits on `-d`.
+
+`--all` and `--union` are refused: both name a row source, and a review's is
+already the range `dest..src`.
+
+Sample (`git-wt review 2`):
+
+    feat -> main   2 commits, merges cleanly
+    commit   author        date  main  subject
+    9c21184  t       2026-07-25   ·    touch shared
+    2aa82e4  t       2026-07-25   ·    add a.txt
+
+Options: `-s, --source BRANCH` (second spelling of the source),
+`-d, --destination, --dest TARGET`, plus the `commits` table's and `--meld`.
+See `commits` for the full list.
 
 ## merged / m
 

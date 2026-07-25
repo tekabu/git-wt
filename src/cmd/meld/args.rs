@@ -15,7 +15,7 @@ pub(crate) struct MeldArgs {
     pub diff: bool,
 
     /// Diff only: three-way with auto base.
-    #[arg(long = "3way")]
+    #[arg(long = "3way", visible_alias = "tw")]
     pub three_way: bool,
 
     /// Diff only: explicit base ref (branch, commit, or worktree number).

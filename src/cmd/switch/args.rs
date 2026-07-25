@@ -7,7 +7,7 @@ pub(crate) struct SwitchArgs {
     pub target: Option<String>,
 
     /// Alternative spelling of the positional target; errors if both given.
-    #[arg(short = 't', long = "target", value_name = "TARGET_LIST")]
+    #[arg(short = 't', long = "target", value_name = "TARGET")]
     pub target_flag: Option<String>,
 
     /// Extra worktree targets, appended to this command's target list.
@@ -24,6 +24,6 @@ pub(crate) struct PathArgs {
     pub target: Option<String>,
 
     /// Alternative spelling of the positional target; errors if both given.
-    #[arg(short = 't', long = "target", value_name = "TARGET_LIST")]
+    #[arg(short = 't', long = "target", value_name = "TARGET")]
     pub target_flag: Option<String>,
 }

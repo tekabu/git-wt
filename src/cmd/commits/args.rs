@@ -252,58 +252,82 @@ pub(crate) struct CommonCommitsFlags {
     /// Extra worktree targets, appended to the target list.
     #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
     pub(crate) branch: Vec<String>,
-    #[arg(short = 't', long = "target", value_name = "TARGET_LIST")]
+    
+    #[arg(short = 't', long = "target", value_name = "TARGET")]
     pub(crate) target_flag: Option<String>,
 
-    #[arg(short = 'n', long, value_parser = parse_limit, value_name = "N")]
+    #[arg(short = 'n', long, value_parser = parse_limit, value_name = "LIMIT")]
     pub(crate) limit: Option<usize>,
+    
     #[arg(short = 'd', long = "date", value_parser = parse_date_filter, value_name = "DATE")]
     pub(crate) date: Vec<DateFilter>,
+    
     #[arg(long = "date-since", visible_alias = "ds", value_parser = iso_date, value_name = "DATE")]
     pub(crate) date_since: Option<String>,
+    
     #[arg(long = "date-until", visible_alias = "du", value_parser = iso_date, value_name = "DATE")]
     pub(crate) date_until: Option<String>,
+    
     #[arg(long = "commit-since", visible_alias = "cs", value_name = "COMMIT")]
     pub(crate) commit_since: Option<String>,
+    
     #[arg(long = "commit-until", visible_alias = "cu", value_name = "COMMIT")]
     pub(crate) commit_until: Option<String>,
-    #[arg(short = 'c', long = "commits", value_delimiter = ',', value_name = "IDS")]
+    
+    #[arg(short = 'c', long = "commits", value_delimiter = ',', value_name = "SHA_LIST")]
     pub(crate) commits: Vec<String>,
+    
     #[arg(long = "author", visible_alias = "au", value_name = "NAME")]
     pub(crate) author: Option<String>,
-    #[arg(short = 'm', long, value_name = "TERM")]
+    
+    #[arg(short = 'm', long, value_name = "MESSAGE")]
     pub(crate) message: Option<String>,
-    #[arg(long, value_name = "TERM")]
+    
+    /// Highlight only -- never drops a row. Lit wherever it appears: sha,
+    /// author, date, subject, file paths.
+    #[arg(long = "search", value_name = "SEARCH")]
     pub(crate) search: Option<String>,
 
-    #[arg(long, visible_alias = "topo-order")]
-    pub(crate) topo: bool,
+    #[arg(long, visible_aliases = ["topo", "to"])]
+    pub(crate) topo_order: bool,
+    
     #[arg(long)]
     pub(crate) merges: bool,
-    #[arg(long, visible_alias = "oldest-first")]
+    
+    #[arg(long, visible_aliases = ["oldest-first", "of", "rev"])]
     pub(crate) reverse: bool,
+    
     #[arg(long = "no-cherry", visible_alias = "nc")]
     pub(crate) no_cherry: bool,
+    
     #[arg(long = "pick-id", visible_alias = "pi")]
     pub(crate) pick: bool,
+    
     #[arg(short = 'f', long)]
     pub(crate) files: bool,
-    #[arg(long)]
+    
+    #[arg(long, visible_alias = "sq")]
     pub(crate) squash: bool,
-    #[arg(long)]
+    
+    #[arg(long, visible_alias = "un")]
     pub(crate) union: bool,
+    
     #[arg(long)]
     pub(crate) time: bool,
+    
     #[arg(long = "date-human", visible_alias = "dh")]
     pub(crate) date_human: bool,
 
     /// The count is optional -- a bare `--wrap` means "the whole subject".
-    #[arg(short = 'w', long, value_parser = parse_wrap, num_args = 0..=1, default_missing_value = "full", value_name = "N")]
-    pub(crate) wrap: Option<Wrap>,
-    #[arg(long = "subject-width", visible_alias = "subjw", value_parser = parse_subjectw, value_name = "COLS")]
-    pub(crate) subjectw: Option<SubjectWidth>,
-    #[arg(long = "branch-width", visible_alias = "branchw", value_parser = parse_branchw, value_name = "COLS")]
-    pub(crate) branchw: Option<BranchWidth>,
+    #[arg(short = 'w', long, visible_alias = "ws", value_parser = parse_wrap, num_args = 0..=1, default_missing_value = "full", value_name = "N")]
+    pub(crate) wrap_subject: Option<Wrap>,
+    
+    #[arg(long = "subject-width", visible_aliases = ["subjw", "sw"], value_parser = parse_subjectw, value_name = "COLS")]
+    pub(crate) subject_width: Option<SubjectWidth>,
+
+    #[arg(long = "branch-width", visible_aliases = ["branchw", "bw"], value_parser = parse_branchw, value_name = "COLS")]
+    pub(crate) branch_width: Option<BranchWidth>,
+    
     /// The path is optional -- a bare `--md` means the timestamped default name.
     #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PATH")]
     pub(crate) md: Option<String>,
@@ -314,14 +338,20 @@ pub(crate) struct CommonCommitsFlags {
 pub(crate) struct CommitsFlags {
     #[arg(value_name = "TARGET")]
     pub(crate) target: Option<String>,
+    
     #[command(flatten)]
     pub(crate) common: CommonCommitsFlags,
 
     #[arg(short = 'a', long)]
     pub(crate) all: bool,
+
+    /// Show every file a commit touched, not only the paths --filename
+    /// matched. Off by default: the filter named a path, so the block answers
+    /// with that path.
     #[arg(long = "all-files", visible_alias = "af")]
     pub(crate) all_files: bool,
-    #[arg(long = "filename", visible_alias = "fn", value_name = "TERM")]
+    
+    #[arg(long = "filename", visible_alias = "fn", value_name = "FILENAME")]
     pub(crate) filename: Option<String>,
 }
 
@@ -368,7 +398,7 @@ impl CommonCommitsFlags {
             search: self.search,
             filename: None,
             all_files: false,
-            topo: self.topo,
+            topo: self.topo_order,
             merges: self.merges,
             fmt: DateFmt { human: self.date_human, time: self.time },
             md: self.md.map(|s| if s.is_empty() { None } else { Some(s) }),
@@ -379,9 +409,9 @@ impl CommonCommitsFlags {
             all: false,
             files: self.files,
             squash: self.squash,
-            wrap: self.wrap,
-            subjectw: self.subjectw,
-            branchw: self.branchw,
+            wrap: self.wrap_subject,
+            subjectw: self.subject_width,
+            branchw: self.branch_width,
             pathw: None,
             no_follow: false,
         }

@@ -7,7 +7,7 @@ pub(crate) struct RemoveArgs {
     pub target: Option<String>,
 
     /// Alternative spelling of the positional target; errors if both given.
-    #[arg(short = 't', long = "target", value_name = "TARGET_LIST")]
+    #[arg(short = 't', long = "target", value_name = "TARGET")]
     pub target_flag: Option<String>,
 
     /// Skip the confirmation prompt.

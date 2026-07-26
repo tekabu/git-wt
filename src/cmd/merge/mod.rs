@@ -87,9 +87,17 @@ const NEEDS_SOURCE: &str = "merge needs a source: 'git-wt merge <SOURCE>' \
 #[cfg(test)]
 fn clap_err_line(e: clap::error::Error) -> String {
     let s = e.to_string();
+    // A plain clap error is one line, but `conflicts_with_all`'s "cannot be
+    // used with:" renders the offending flags as an indented list on the
+    // lines after -- stopping at line 1 (as this used to) silently dropped
+    // all of them, leaving just the bare "...cannot be used with:" preamble.
+    // Everything through the first blank line (before the Usage: block) is
+    // the actual message; join it into one line so a substring check still
+    // works the same way it does for the single-line case.
     s.lines()
-        .next()
-        .unwrap_or(&s)
+        .take_while(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
         .trim_start_matches("error: ")
         .to_string()
 }

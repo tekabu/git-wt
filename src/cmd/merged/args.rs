@@ -4,7 +4,7 @@ use clap::{ArgAction, Args};
 #[derive(Args, Debug)]
 pub(crate) struct MergedArgs {
     /// The worktree(s) to use as reference, e.g. `1` or `1,2`.
-    pub targets: Option<String>,
+    pub worktree_or_branch_list: Option<String>,
 
     /// Alternative spelling of the positional target; errors if both given.
     #[arg(short = 't', long = "target", value_name = "TARGET_LIST")]

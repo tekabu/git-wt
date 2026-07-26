@@ -1,8 +1,10 @@
 use clap::Args;
 
-use crate::cmd::args::{BranchTargets, WorktreeFlag};
+use crate::cmd::args::WorktreeFlag;
 
-/// Switch to a worktree.
+/// Switch to a worktree. Resolves to exactly one, so unlike every list-
+/// accepting verb, there is no `-b/--branch` here to append a second target
+/// with -- only the positional and `-w/--worktree` name it, both singular.
 #[derive(Args, Debug)]
 pub(crate) struct SwitchArgs {
     /// Worktree number or branch name; see 'git-wt list' to pick one.
@@ -10,9 +12,6 @@ pub(crate) struct SwitchArgs {
 
     #[command(flatten)]
     pub target_flag: WorktreeFlag,
-
-    #[command(flatten)]
-    pub branch: BranchTargets,
 }
 
 /// Print a worktree's path.

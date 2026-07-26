@@ -50,9 +50,7 @@ pub(crate) fn cmd_remove(
     }
     argv.push(&path_s);
 
-    git_run(root, &argv).map_err(|e| {
-        e
-    })?;
+    git_run(root, &argv)?;
 
     git_run(root, &["worktree", "prune"])?;
 

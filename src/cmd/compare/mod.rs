@@ -52,7 +52,7 @@ pub(crate) fn cmd_compare(cwd: &Path, args: &CompareArgs) -> Result<(), String> 
     if !args.meld.meld {
         let status = git_cmd(cwd, &[])
             .arg("diff")
-            .arg(&r#ref)
+            .arg(r#ref)
             .arg("--")
             .args(files)
             .status()

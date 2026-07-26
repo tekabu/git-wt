@@ -87,7 +87,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
              --live compares the files on disk"
         ));
     }
-    if let (true, Some(l)) = (hunks, listing.as_deref()) {
+    if let (true, Some(l)) = (hunks, listing) {
         return Err(format!(
             "'--hunks' and '{l}' cannot combine: --hunks prints line numbers per file, \
              {l} prints a listing"
@@ -100,7 +100,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
                 .into(),
         );
     }
-    if let (true, Some(l)) = (args.meld.meld, listing.as_deref()) {
+    if let (true, Some(l)) = (args.meld.meld, listing) {
         return Err(format!(
             "'--meld' and '{l}' cannot combine: {l} prints a listing, --meld opens a diff viewer"
         ));
@@ -128,13 +128,10 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         for &i in &[idx, other] {
             if is_dirty(&trees[i].path) {
                 eprintln!(
-                    "{} #{} {} has uncommitted changes; this diff is committed state only \
-                     (try 'git-wt {},{} diff --live')",
+                    "{} #{} {} has uncommitted changes; this diff is committed state only",
                     paint("warning:", YELLOW, on_err),
                     i + 1,
                     label(&trees[i]),
-                    idx + 1,
-                    other + 1
                 );
             }
         }
@@ -146,7 +143,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
             &trees[idx].path,
             &trees[other].path,
             &paths,
-            !matches!(listing.as_deref(), Some("--name-only") | Some("--name-status")),
+            !matches!(listing, Some("--name-only") | Some("--name-status")),
             only,
         )?;
         if let Some(side) = &only_side {
@@ -162,7 +159,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
             "diff {a} ↔ {b}   live — literal contents, .gitignore honored{}",
             only_note(&only_side)
         );
-        return render(&files, &head, listing.as_deref(), hunks);
+        return render(&files, &head, listing, hunks);
     }
     if args.meld.meld {
         let files = keep_only(ref_diff(root, &format!("{a}{dots}{b}"), &paths)?, only);

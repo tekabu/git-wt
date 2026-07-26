@@ -67,18 +67,103 @@ pub(crate) fn cmd_meld(root: &Path, trees: &[Worktree], idxs: &[usize], args: &M
     }
 
     let paths: Vec<&Path> = idxs.iter().map(|&i| trees[i].path.as_path()).collect();
-    let on = color_enabled(std::io::stderr().is_terminal());
     let names: Vec<String> = idxs.iter().map(|&i| label(&trees[i])).collect();
+    run_meld_plain(&paths, &names)
+}
+
+/// Open plain (non-`--diff`) meld on already-resolved directories. Shared by
+/// `cmd_meld`'s worktree-index path and `cmd_meld_position`'s
+/// `--left`/`--right`/`--center` path -- same call, different source for
+/// the paths.
+fn run_meld_plain(paths: &[&Path], names: &[String]) -> Result<(), String> {
+    let on = color_enabled(std::io::stderr().is_terminal());
     eprintln!("{} {}", paint("meld", GREEN, on), names.join("  ↔  "));
 
     let status = Command::new("meld")
-        .args(&paths)
+        .args(paths)
         .status()
         .map_err(|e| format!("failed to run meld: {e}"))?;
     if !status.success() {
         return Err("meld exited with an error".into());
     }
     Ok(())
+}
+
+/// One `--left`/`--right`/`--center` slot: a worktree number resolves like
+/// everywhere else; anything else is taken as a literal filesystem path
+/// (verified to exist as a directory) rather than a branch name -- unlike
+/// the positional/`-x` list, `MeldPosition` never does branch lookups.
+fn resolve_position_slot(trees: &[Worktree], s: &str) -> Result<(PathBuf, String), String> {
+    if let Ok(n) = s.parse::<usize>() {
+        if n >= 1 && n <= trees.len() {
+            let w = &trees[n - 1];
+            return Ok((w.path.clone(), label(w)));
+        }
+        return Err(format!("no worktree #{n}; there are {} (see 'git-wt list')", trees.len()));
+    }
+    let path = PathBuf::from(s);
+    if !path.is_dir() {
+        return Err(format!("no such worktree or directory '{s}'"));
+    }
+    Ok((path.clone(), s.to_string()))
+}
+
+/// `--left`/`--right`/`--center`: an alternative to naming worktrees by
+/// position in a list. Plain meld only -- `--diff`/`--3way`/`--base` all
+/// need a git ref to work from, which a raw filesystem path (a valid
+/// `--left`/`--right`/`--center` value) doesn't have, so those stay on the
+/// list-based path where every slot is a real worktree.
+///
+/// `--center` alone (no `--right`) is treated as `--right`: a two-way meld
+/// where the "middle" slot doubles as the right side, rather than an error
+/// for a missing right.
+pub(crate) fn cmd_meld_position(
+    trees: &[Worktree],
+    left: &str,
+    right: Option<&str>,
+    center: Option<&str>,
+    args: &MeldArgs,
+) -> Result<(), String> {
+    let mut bad = Vec::new();
+    if args.diff.diff {
+        bad.push("--diff");
+    }
+    if args.three_way.three_way {
+        bad.push("--3way");
+    }
+    if args.base.base.is_some() {
+        bad.push("--base");
+    }
+    if !bad.is_empty() {
+        let listed = bad.join(", ");
+        return Err(format!(
+            "{listed} needs worktrees with a git ref to compare, which --left/--right/--center \
+             don't guarantee (a raw path has none) -- use the worktree-list form instead"
+        ));
+    }
+
+    require_meld()?;
+
+    let (right, center) = match (right, center) {
+        (Some(r), Some(c)) => (r, Some(c)),
+        (Some(r), None) => (r, None),
+        (None, Some(c)) => (c, None),
+        (None, None) => return Err("meld needs --right or --center along with --left".into()),
+    };
+
+    let left = resolve_position_slot(trees, left)?;
+    let right = resolve_position_slot(trees, right)?;
+    let center = center.map(|c| resolve_position_slot(trees, c)).transpose()?;
+
+    let mut slots = vec![left];
+    if let Some(c) = center {
+        slots.push(c);
+    }
+    slots.push(right);
+
+    let paths: Vec<&Path> = slots.iter().map(|(p, _)| p.as_path()).collect();
+    let names: Vec<String> = slots.iter().map(|(_, n)| n.clone()).collect();
+    run_meld_plain(&paths, &names)
 }
 
 pub(crate) fn cmd_meld_filtered(
@@ -264,7 +349,7 @@ mod tests {
         let mut a = MeldArgs::default();
         let mut it = args.iter();
         while let Some(tok) = it.next() {
-            match tok.as_ref() {
+            match *tok {
                 "--diff" => a.diff.diff = true,
                 "..." => a.range = Some("...".into()),
                 ".." => a.range = Some("..".into()),

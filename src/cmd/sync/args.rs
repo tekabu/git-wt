@@ -1,22 +1,33 @@
 use clap::Args;
 
 use crate::cmd::args::{
-    Autostash, BranchTargets, FetchTags, Force, ForceWithLease, Prune, PullFfOnly, PullRebase,
-    DryRun, PushTags, SetUpstream, SyncAll, TargetListFlag,
+    Autostash, ExtraRef, FetchTags, Force, ForceWithLease, Prune, PullFfOnly, PullRebase,
+    DryRun, PushTags, SetUpstream, SyncAll,
 };
 
 /// Fields every sync verb shares: the target list and the worktree-list
 /// append flag, same shape as every other multi-target command.
+///
+/// No `-t/--target`: it was a pure alternate spelling of the positional
+/// (verified byte-identical error text on a bad worktree number), and the
+/// positional alone already does what it did -- name the list directly,
+/// with no default-to-current-worktree fallback. `-x/--reference` (alias
+/// `--ref`) doesn't replace it; `-x` is additive only (always layers on top
+/// of the positional or the current-worktree default), so it can't express
+/// "just this worktree, not current" -- only the bare positional can, same
+/// as before.
+///
+/// `-x`, not the old `-b/--branch`: same `resolve_worktree_or_branch_list`-
+/// based resolution either way (worktree number or an existing worktree's
+/// branch name -- no sha fallback here, see `ExtraRef`'s own doc comment),
+/// just the shared struct instead of a fourth copy.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct SyncCommon {
     /// Worktree list; omit with --all to target every worktree.
-    pub targets: Option<String>,
+    pub worktree_or_branch_list: Option<String>,
 
     #[command(flatten)]
-    pub target_flag: TargetListFlag,
-
-    #[command(flatten)]
-    pub branch: BranchTargets,
+    pub branch: ExtraRef,
 
     #[command(flatten)]
     pub all: SyncAll,

@@ -377,16 +377,16 @@ didx="$("$BIN" list | awk '$2=="feature/login"{print $1}')"
 ( cd "$APP" && echo m > onlymain.txt && git add -A && git commit -qm mainside )
 ( cd "$CODE/myapp-feature-login" && echo l > onlylogin.txt && git add -A && git commit -qm loginside )
 
-check "diff --name-only shows adds"  exit=0 out="onlylogin.txt" -- diff "1,$didx" --name-only
+check "diff --name-only shows adds"  exit=0 out="onlylogin.txt" -- diff "$didx" --name-only
 # '..' is both directions: main's file shows as a deletion, login's as an add.
-check "diff .. keeps main-only file" exit=0 out="onlymain.txt" -- diff "1,$didx" .. --name-only
+check "diff .. keeps main-only file" exit=0 out="onlymain.txt" -- diff "$didx" .. --name-only
 # The default is '...' -- "since the fork" -- so main's own later commit drops
 # out, and the listing matches what '1,N merge' would actually bring in. A '..'
 # default would report main's commit as a deletion the merge never makes.
 for spelling in "" "..."; do
   # shellcheck disable=SC2086 # empty spelling must vanish, not pass ''
-  dots3="$("$BIN" diff "1,$didx" $spelling --name-only 2>/dev/null)"
-  dcmd="$(fmt_cmd diff "1,$didx" $spelling --name-only)"
+  dots3="$("$BIN" diff "$didx" $spelling --name-only 2>/dev/null)"
+  dcmd="$(fmt_cmd diff "$didx" $spelling --name-only)"
   name="diff ${spelling:-(default)} hides main-only file"
   case "$dots3" in
     *onlymain.txt*)
@@ -397,13 +397,13 @@ for spelling in "" "..."; do
       report FAIL HAPPY "$name" "$dcmd" "wanted login's file, got '$dots3'" ;;
   esac
 done
-check "diff --stat"                  exit=0 out="1 +" -- diff "1,$didx" --stat
-check "diff --name-status"           exit=0 out="A" -- diff "1,$didx" --name-status
+check "diff --stat"                  exit=0 out="1 +" -- diff "$didx" --stat
+check "diff --name-status"           exit=0 out="A" -- diff "$didx" --name-status
 # Exact output, not a substring: the unfiltered diff also *contains*
 # 'onlylogin.txt', so a substring assertion here would pass even if the
 # path were dropped on the floor. "Limits" means the other files are gone.
-pspec="$("$BIN" diff "1,$didx" -p onlylogin.txt --name-only 2>/dev/null)"
-pcmd="$(fmt_cmd diff "1,$didx" -p onlylogin.txt --name-only)"
+pspec="$("$BIN" diff "$didx" -p onlylogin.txt --name-only 2>/dev/null)"
+pcmd="$(fmt_cmd diff "$didx" -p onlylogin.txt --name-only)"
 if [ "$pspec" = "onlylogin.txt" ]; then
   report PASS HAPPY "diff -p limits to the path" "$pcmd"
 else
@@ -413,45 +413,69 @@ fi
 # clap eats the literal '--' itself (its own end-of-options marker); the path
 # after it lands as diff's one stray 'range' token, and cmd_diff recognizes it
 # as a real file and gives the same '-p' hint a bare path gets.
-check "diff -- is retired"           exit=1 err="paths go in '-p/--path'" -- diff "1,$didx" --name-only -- onlylogin.txt
-check "bare path points at -p"       exit=1 err="paths go in '-p/--path'" -- diff "1,$didx" onlylogin.txt
+check "diff -- is retired"           exit=1 err="paths go in '-p/--path'" -- diff "$didx" --name-only -- onlylogin.txt
+check "bare path points at -p"       exit=1 err="paths go in '-p/--path'" -- diff "$didx" onlylogin.txt
 # -A/-B keep the files one side has and the other lacks. Under the default
 # '...' range main's side does not exist at all, so 'onlymain.txt' needs '..'
 # to appear -- and there it is a delete, which is what -A keeps.
-aonly="$("$BIN" diff "1,$didx" -A .. --name-only 2>/dev/null)"
-acmd="$(fmt_cmd diff "1,$didx" -A .. --name-only)"
+aonly="$("$BIN" diff "$didx" -A .. --name-only 2>/dev/null)"
+acmd="$(fmt_cmd diff "$didx" -A .. --name-only)"
 if [ "$aonly" = "onlymain.txt" ]; then
   report PASS HAPPY "diff -A keeps main-only file" "$acmd"
 else
   report FAIL HAPPY "diff -A keeps main-only file" "$acmd" "wanted exactly 'onlymain.txt', got '$aonly'"
 fi
-bonly="$("$BIN" diff "1,$didx" -B .. --name-only 2>/dev/null)"
-bcmd="$(fmt_cmd diff "1,$didx" -B .. --name-only)"
+bonly="$("$BIN" diff "$didx" -B .. --name-only 2>/dev/null)"
+bcmd="$(fmt_cmd diff "$didx" -B .. --name-only)"
 if [ "$bonly" = "onlylogin.txt" ]; then
   report PASS HAPPY "diff -B keeps login-only file" "$bcmd"
 else
   report FAIL HAPPY "diff -B keeps login-only file" "$bcmd" "wanted exactly 'onlylogin.txt', got '$bonly'"
 fi
-check "diff -A names the side"       exit=0 out="only in main" -- diff "1,$didx" -A --hunks ..
-check "diff -A -B cannot combine"    exit=1 err="cannot combine" -- diff "1,$didx" -A -B
-check "diff --a-only long form"      exit=0 out="onlymain.txt" -- diff "1,$didx" --a-only .. --name-only
-check "diff needs two worktrees"     exit=1 err="diff takes exactly two worktrees" -- diff 1
+check "diff -A names the side"       exit=0 out="only in main" -- diff "$didx" -A --hunks ..
+check "diff -A -B cannot combine"    exit=1 err="cannot combine" -- diff "$didx" -A -B
+check "diff --a-only long form"      exit=0 out="onlymain.txt" -- diff "$didx" --a-only .. --name-only
+# Grammar mirrors merge's: the positional/-s is always the source, never the
+# destination -- the destination is only -d/--destination, defaulting to the
+# current worktree (worktree 1, main, throughout this section).
+check "diff needs a source"          exit=1 err="diff needs a source: 'git-wt diff <SOURCE>' (or '-s <SOURCE>')" -- diff
+check "diff self via default dest"   exit=1 err="worktree #1 against itself is always empty" -- diff 1
 # The old 'N diff M' grammar: the trailing target is now junk in the action slot.
 check "diff old form errors"         exit=2 err="unexpected argument 'diff' found" -- switch 1 diff "$didx"
-check "diff non-numeric target"      exit=1 err="no worktree on branch 'x'" -- diff "1,x"
-check "diff bad index errors"        exit=1 err="no worktree #99" -- diff "1,99"
-check "diff against itself errors"   exit=1 err="worktree #1 listed twice" -- diff "1,1"
-# meld takes 3; diff cannot, since 'git diff' compares exactly two things.
-check "diff rejects three targets"   exit=1 err="worktree #1 listed twice" -- diff "1,$didx,1"
+check "diff non-numeric target"      exit=1 err="no worktree on branch 'x'" -- diff x
+check "diff bad index errors"        exit=1 err="no worktree #99" -- diff 99
+check "diff -d takes exactly one target" exit=1 err="diff's '-d/--destination' takes exactly one target" -- diff "$didx" -d "1,$didx"
+check "diff -s takes exactly one source" exit=1 err="diff's '-s/--source' takes exactly one source branch" -- diff -s "1,$didx"
+check "diff rejects a source list"   exit=1 err="diff takes one source, got the list '1,$didx'; the destination is '-d/--destination'" -- diff "1,$didx"
+check "diff source given twice"      exit=1 err="source given twice" -- diff "$didx" -s "$didx"
 # -w is a real git flag but not one of diff's own; clap rejects it directly
 # now that diff has no catch-all tail to swallow it into.
-check "diff rejects other git flags" exit=2 err="unexpected argument '-w' found" -- diff "1,$didx" -w
+check "diff rejects other git flags" exit=2 err="unexpected argument '-w' found" -- diff "$didx" -w
 
 # Uncommitted work is invisible to a ref diff, so it must be called out.
 echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"
-check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- diff "1,$didx" --name-only
-check "dirty warning points at live" exit=0 err="git-wt 1,$didx diff --live" -- diff "1,$didx" --name-only
+check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- diff "$didx" --name-only
 rm -f "$CODE/myapp-feature-login/uncommitted.txt"
+
+# Not inside a worktree at all, with no -d given: the destination has nothing
+# to default to. GIT_DIR points git-wt at the repo from a cwd ($ROOT, the
+# scratch dir holding every worktree) that is outside every worktree's own
+# path, so current_worktree_index() finds nothing to default to.
+nowt_err="$(cd "$ROOT" && GIT_DIR="$APP/.git" "$BIN" diff "$didx" 2>&1 >/dev/null)"
+nowt_cmd="$(fmt_cmd diff "$didx")  # cwd outside any worktree"
+case "$nowt_err" in
+  *"not inside a worktree; use 'git-wt diff <SOURCE> -d <DEST>'"*)
+    report PASS UNHAPPY "diff outside a worktree needs -d" "$nowt_cmd" ;;
+  *)
+    report FAIL UNHAPPY "diff outside a worktree needs -d" "$nowt_cmd" "got '$nowt_err'" ;;
+esac
+nowt_out="$(cd "$ROOT" && GIT_DIR="$APP/.git" "$BIN" diff "$didx" -d 1 --name-only 2>/dev/null)"
+nowt_okcmd="$(fmt_cmd diff "$didx" -d 1 --name-only)  # cwd outside any worktree"
+if [ "$nowt_out" = "onlylogin.txt" ]; then
+  report PASS HAPPY "diff -d from outside works" "$nowt_okcmd"
+else
+  report FAIL HAPPY "diff -d from outside works" "$nowt_okcmd" "wanted exactly 'onlylogin.txt', got '$nowt_out'"
+fi
 
 # --- commits ----------------------------------------------------------------
 # Same divergence the diff cases built: 'mainside' on main, 'loginside' on
@@ -514,7 +538,7 @@ check "commits -fn takes a value"    exit=0 out="init" -- commits "1,$didx" -afn
 check "commits -nf refused"          exit=2 err="bad count 'f'" -- commits "1,$didx" -nf 20
 # A bundle of letters that name nothing: the first unknown short is the one
 # reported.
-check "commits -xz names the first"  exit=2 err="unexpected argument '-x' found" -- commits "1,$didx" -xz
+check "commits -zy names the first"  exit=2 err="unexpected argument '-z' found" -- commits "1,$didx" -zy
 # The default really drops the shared root -- not merely 'not asserted'.
 droot="$("$BIN" commits "1,$didx" 2>/dev/null | grep -cw init || true)"
 dcmd2="$(fmt_cmd commits "1,$didx")"
@@ -728,9 +752,9 @@ hlcheck "--commit-until lights its sha" "$(printf '\033')\[1;38;5;214m$hlsha" \
 hlcheck "--message lights the matched word" "$(printf '\033')\[1;38;5;214mmainside" \
   "$(fmt_cmd commits '1,$didx' --message mainside)" commits "1,$didx" --message mainside
 # A path match is lit inside the file block, which stays dim around it.
-hlcheck "--filename lights the path" "$(printf '\033')\[1;38;5;214monlymain.txt" \
-  "$(fmt_cmd commits '1,$didx' --filename onlymain.txt --all)" \
-  commits "1,$didx" --filename onlymain.txt --all
+hlcheck "--path lights the path" "$(printf '\033')\[1;38;5;214monlymain.txt" \
+  "$(fmt_cmd commits '1,$didx' --path onlymain.txt --all)" \
+  commits "1,$didx" --path onlymain.txt --all
 
 # Nothing is lit without a filter: the table is not an answer to anything.
 plainhl="$(hl commits "1,$didx")"
@@ -758,8 +782,8 @@ check "commits --commit-since bad commit"  exit=1 err="--commit-since: no commit
 check "commits --commit-until needs a value" exit=2 err="a value is required for '--commit-until <COMMIT>'" -- commits "1,$didx" --commit-until
 # --commits names the rows outright, and resolves every id before filtering.
 check "commits --commits one sha"     exit=0 out="$mainsha" -- commits "1,$didx" --commits "$mainsha"
-check "commits -c short flag"         exit=0 out="$mainsha" -- commits "1,$didx" -c "$mainsha"
-check "commits --commits bundled -ac" exit=0 out="$mainsha" -- commits "1,$didx" -ac "$mainsha"
+check "commits -i short flag"         exit=0 out="$mainsha" -- commits "1,$didx" -i "$mainsha"
+check "commits --commits bundled -ai" exit=0 out="$mainsha" -- commits "1,$didx" -ai "$mainsha"
 check "commits --commits bad sha"     exit=1 err="--commits: no commit 'zzz9'" -- commits "1,$didx" --commits zzz9
 # clap's value_delimiter splits the list, so an empty part is never seen as a
 # malformed list -- each part is just resolved in turn, and the first one that
@@ -884,7 +908,7 @@ check "commits --author case-folds"   exit=0 out="mainside" -- commits "1,$didx"
 check "commits --author no match"     exit=0 err="no commits match those filters" -- commits "1,$didx" --author zzzz
 check "commits --author needs a name" exit=2 err="a value is required for '--author <NAME>'" -- commits "1,$didx" --author
 
-# --message is a substring over the subject and the body; --filename is a
+# --message is a substring over the subject and the body; --path is a
 # substring over the paths a commit touched.
 check "commits --message subject"     exit=0 out="mainside" -- commits "1,$didx" --message mainside
 check "commits --message case-folds"  exit=0 out="mainside" -- commits "1,$didx" --message MAINSIDE
@@ -896,7 +920,7 @@ check "commits --message needs a term" exit=2 err="a value is required for '--me
 # every subject, so the filter is a no-op rather than an error. Asserted as it
 # behaves; if it should be refused, that is a src change, not a test one.
 check "commits --message empty is a no-op" exit=0 out="mainside" -- commits "1,$didx" --message ""
-check "commits --filename needs a term" exit=2 err="a value is required for '--filename <FILENAME>'" -- commits "1,$didx" --filename
+check "commits --path needs a term" exit=2 err="a value is required for '--path <PATH_LIST>" -- commits "1,$didx" --path
 # The block is cut to the matched paths by default; --all-files widens it back.
 #
 # Two files in one commit, only one of them matching the term: without the
@@ -907,18 +931,18 @@ check "commits --filename needs a term" exit=2 err="a value is required for '--f
   && git add -A && git commit -qm twofileblock )
 
 # Default: the matched path is kept and the other one is cut.
-check "commits --filename trims block" exit=0 out="blockmatch.txt" -- commits "1,$didx" --filename blockmatch --all
-trim="$("$BIN" commits "1,$didx" --filename blockmatch --all 2>/dev/null | grep -c "blockother.txt")"
-tcmd="$(fmt_cmd commits "1,$didx" --filename blockmatch --all)"
+check "commits --path trims block" exit=0 out="blockmatch.txt" -- commits "1,$didx" --path blockmatch --all
+trim="$("$BIN" commits "1,$didx" --path blockmatch --all 2>/dev/null | grep -c "blockother.txt")"
+tcmd="$(fmt_cmd commits "1,$didx" --path blockmatch --all)"
 if [ "$trim" = 0 ]; then
-  report PASS HAPPY "commits --filename cuts the rest" "$tcmd"
+  report PASS HAPPY "commits --path cuts the rest" "$tcmd"
 else
-  report FAIL HAPPY "commits --filename cuts the rest" "$tcmd" "unmatched file survived the trim"
+  report FAIL HAPPY "commits --path cuts the rest" "$tcmd" "unmatched file survived the trim"
 fi
 # --all-files widens: the unmatched file comes back. This is the assertion the
 # one-file fixture could not make -- it fails if the flag is inverted.
-check "commits --all-files widens"     exit=0 out="blockother.txt" -- commits "1,$didx" --filename blockmatch --all --all-files
-check "commits --all-files keeps match" exit=0 out="blockmatch.txt" -- commits "1,$didx" --filename blockmatch --all --all-files
+check "commits --all-files widens"     exit=0 out="blockother.txt" -- commits "1,$didx" --path blockmatch --all --all-files
+check "commits --all-files keeps match" exit=0 out="blockmatch.txt" -- commits "1,$didx" --path blockmatch --all --all-files
 check "commits --all-files alone errors" exit=1 err="--all-files needs" -- commits "1,$didx" --all-files
 
 check "commits rejects a dup target" exit=1 err="listed twice" -- commits "1,1"
@@ -950,26 +974,26 @@ echo brandnew > "$LIVE/untracked.txt"                    # untracked -> a real a
 mkdir -p "$LIVE/ignoreme" && echo junk > "$LIVE/ignoreme/x.o"
 
 # Both on one commit: the ref diff is empty, and that is the whole problem.
-refout="$("$BIN" diff "1,$lidx" --name-only 2>/dev/null)"
-rcmd="$(fmt_cmd diff "1,$lidx" --name-only)"
+refout="$("$BIN" diff "$lidx" --name-only 2>/dev/null)"
+rcmd="$(fmt_cmd diff "$lidx" --name-only)"
 if [ -z "$refout" ]; then
   report PASS HAPPY "ref diff blind on same commit" "$rcmd  # empty, as designed"
 else
   report FAIL HAPPY "ref diff blind on same commit" "$rcmd" "wanted empty, got '$refout'"
 fi
 
-check "live sees uncommitted edit"   exit=0 out="shared.txt" -- diff "1,$lidx" --live --name-only
-check "live sees untracked as add"   exit=0 out="A	untracked.txt" -- diff "1,$lidx" --live --name-status
-check "live counts hunks"            exit=0 out="+2" -- diff "1,$lidx" --live
-check "live summary counts lines"    exit=0 out="2 files changed, 3 insertions(+), 1 deletion(-)" -- diff "1,$lidx" --live
-check "live hunks show line numbers" exit=0 out="modified 1" -- diff "1,$lidx" --live --hunks
-check "live --stat still works"      exit=0 out="3 ++-" -- diff "1,$lidx" --live --stat
-check "live suppresses dirty warn"   exit=0 err="" -- diff "1,$lidx" --live --name-only
+check "live sees uncommitted edit"   exit=0 out="shared.txt" -- diff "$lidx" --live --name-only
+check "live sees untracked as add"   exit=0 out="A	untracked.txt" -- diff "$lidx" --live --name-status
+check "live counts hunks"            exit=0 out="+2" -- diff "$lidx" --live
+check "live summary counts lines"    exit=0 out="2 files changed, 3 insertions(+), 1 deletion(-)" -- diff "$lidx" --live
+check "live hunks show line numbers" exit=0 out="modified 1" -- diff "$lidx" --live --hunks
+check "live --stat still works"      exit=0 out="3 ++-" -- diff "$lidx" --live --stat
+check "live suppresses dirty warn"   exit=0 err="" -- diff "$lidx" --live --name-only
 
 # The pairing this whole flag exists for: literal on-disk files, one side only.
 # 'untracked.txt' has no commit anywhere, so no ref diff can report it.
-lbonly="$("$BIN" diff "1,$lidx" --live -B --name-only 2>/dev/null)"
-lbcmd="$(fmt_cmd diff "1,$lidx" --live -B --name-only)"
+lbonly="$("$BIN" diff "$lidx" --live -B --name-only 2>/dev/null)"
+lbcmd="$(fmt_cmd diff "$lidx" --live -B --name-only)"
 if [ "$lbonly" = "untracked.txt" ]; then
   report PASS HAPPY "live -B keeps side-only add" "$lbcmd"
 else
@@ -977,19 +1001,19 @@ else
 fi
 # Nothing is missing from the live side, and that answer belongs on stderr so
 # a pipe sees an empty list rather than prose.
-check "live -A empty says so"        exit=0 out="" err="no files only in" -- diff "1,$lidx" --live -A --name-only
+check "live -A empty says so"        exit=0 out="" err="no files only in" -- diff "$lidx" --live -A --name-only
 
 # .gitignore is the reason live can't just be 'diff -rq': without it, build
 # output drowns the signal.
-ligr="$("$BIN" diff "1,$lidx" --live --name-only 2>/dev/null)"
-gcmd="$(fmt_cmd diff "1,$lidx" --live --name-only)"
+ligr="$("$BIN" diff "$lidx" --live --name-only 2>/dev/null)"
+gcmd="$(fmt_cmd diff "$lidx" --live --name-only)"
 case "$ligr" in
   *ignoreme*) report FAIL HAPPY "live honors .gitignore" "$gcmd" "ignored file listed: '$ligr'" ;;
   *)          report PASS HAPPY "live honors .gitignore" "$gcmd" ;;
 esac
 
-lspec="$("$BIN" diff "1,$lidx" --live -p shared.txt --name-only 2>/dev/null)"
-lpcmd="$(fmt_cmd diff "1,$lidx" --live -p shared.txt --name-only)"
+lspec="$("$BIN" diff "$lidx" --live -p shared.txt --name-only 2>/dev/null)"
+lpcmd="$(fmt_cmd diff "$lidx" --live -p shared.txt --name-only)"
 if [ "$lspec" = "shared.txt" ]; then
   report PASS HAPPY "live -p limits to the path" "$lpcmd"
 else
@@ -998,44 +1022,44 @@ fi
 
 # A deleted-on-disk file is a delete, and its hunk must not read as '+0'.
 rm "$LIVE/shared.txt"
-check "live reports on-disk delete"  exit=0 out="D	shared.txt" -- diff "1,$lidx" --live --name-status
-check "live delete is not an add"    exit=0 out="deleted 3" -- diff "1,$lidx" --live --hunks
+check "live reports on-disk delete"  exit=0 out="D	shared.txt" -- diff "$lidx" --live --name-status
+check "live delete is not an add"    exit=0 out="deleted 3" -- diff "$lidx" --live --hunks
 printf 'one\nTWO\nthree\nfour\n' > "$LIVE/shared.txt"
 
 # Identical contents: stdout stays empty so a pipe sees nothing, and the note
 # that this is a real answer (not the empty-ref-diff bug) goes to stderr.
-check "live identical is empty out"  exit=0 out="" err="no differences" -- diff "1,$lidx" --live -p .gitignore
+check "live identical is empty out"  exit=0 out="" err="no differences" -- diff "$lidx" --live -p .gitignore
 
-check "live identical says so once"  exit=0 err="no differences" -- diff "1,$lidx" --live -p .gitignore --name-only
+check "live identical says so once"  exit=0 err="no differences" -- diff "$lidx" --live -p .gitignore --name-only
 # -w is not one of diff's own flags; clap rejects it directly.
-check "live bad flag rejected"       exit=2 err="unexpected argument '-w' found" -- diff "1,$lidx" --live -w
+check "live bad flag rejected"       exit=2 err="unexpected argument '-w' found" -- diff "$lidx" --live -w
 # 'live' and 'hunks' are plain words that name no file, so diff's one 'range'
 # positional catches them and rejects them as neither a range nor a path.
-check "bare 'live' word rejected"    exit=1 err="range must be '..' or '...'" -- diff "1,$lidx" live --name-only
-check "bare 'hunks' word rejected"   exit=1 err="range must be '..' or '...'" -- diff "1,$didx" hunks
+check "bare 'live' word rejected"    exit=1 err="range must be '..' or '...'" -- diff "$lidx" live --name-only
+check "bare 'hunks' word rejected"   exit=1 err="range must be '..' or '...'" -- diff "$didx" hunks
 
 # git's trailing '-- PATH...' has no catch-all to land in anymore: clap eats
 # the literal '--' as its own end-of-options marker, and the path after it
 # becomes diff's one 'range' token, same as a bare path with no '--' at all --
 # so both spellings get the same '-p' hint now.
-check "live -- is retired"           exit=1 err="paths go in '-p/--path'" -- diff "1,$lidx" --live --name-only -- shared.txt
-check "bare path after --live"       exit=1 err="paths go in '-p/--path'" -- diff "1,$lidx" --live --name-only shared.txt
+check "live -- is retired"           exit=1 err="paths go in '-p/--path'" -- diff "$lidx" --live --name-only -- shared.txt
+check "bare path after --live"       exit=1 err="paths go in '-p/--path'" -- diff "$lidx" --live --name-only shared.txt
 # '-p/--path' is that limit in plain words: a flag, so it can sit anywhere a
 # flag can, and a comma list instead of a trailing run of words.
-check "-p limits the diff"           exit=0 out="shared.txt" -- diff "1,$lidx" --live -p shared.txt --name-only
-check "--path long form"             exit=0 out="shared.txt" -- diff "1,$lidx" --live --path shared.txt --name-only
-check "-p takes a comma list"        exit=0 out="untracked.txt" -- diff "1,$lidx" --live -p shared.txt,untracked.txt --name-only
-check "-p checks the path too"       exit=1 err="no file matches 'nope/'" -- diff "1,$lidx" --live -p nope/ --name-only
-check "-p empty element errors"      exit=1 err="bad path list" -- diff "1,$lidx" --live -p "shared.txt," --name-only
-check "-p with a retired -- too"     exit=1 err="paths go in '-p/--path'" -- diff "1,$lidx" --live -p shared.txt --name-only -- shared.txt
+check "-p limits the diff"           exit=0 out="shared.txt" -- diff "$lidx" --live -p shared.txt --name-only
+check "--path long form"             exit=0 out="shared.txt" -- diff "$lidx" --live --path shared.txt --name-only
+check "-p takes a comma list"        exit=0 out="untracked.txt" -- diff "$lidx" --live -p shared.txt,untracked.txt --name-only
+check "-p checks the path too"       exit=1 err="no file matches 'nope/'" -- diff "$lidx" --live -p nope/ --name-only
+check "-p empty element errors"      exit=1 err="bad path list" -- diff "$lidx" --live -p "shared.txt," --name-only
+check "-p with a retired -- too"     exit=1 err="paths go in '-p/--path'" -- diff "$lidx" --live -p shared.txt --name-only -- shared.txt
 # A glob is git's own matching, and one that hits nothing is still a mistake.
-check "glob path matches"            exit=0 out="shared.txt" -- diff "1,$lidx" --live -p "*.txt" --name-only
-check "glob with no hit errors"      exit=1 err="no file matches '*.zzz'" -- diff "1,$lidx" --live -p "*.zzz" --name-only
+check "glob path matches"            exit=0 out="shared.txt" -- diff "$lidx" --live -p "*.txt" --name-only
+check "glob with no hit errors"      exit=1 err="no file matches '*.zzz'" -- diff "$lidx" --live -p "*.zzz" --name-only
 
-check "live rejects .. range"        exit=1 err="'--live' and '..' cannot combine" -- diff "1,$lidx" --live ..
-check "live rejects ... range"       exit=1 err="'--live' and '...' cannot combine" -- diff "1,$lidx" --live ...
-check "hunks rejects --stat"         exit=1 err="cannot combine" -- diff "1,$lidx" --hunks --stat
-check "hunks works without live"     exit=0 out="committed state" -- diff "1,$didx" --hunks
+check "live rejects .. range"        exit=1 err="'--live' and '..' cannot combine" -- diff "$lidx" --live ..
+check "live rejects ... range"       exit=1 err="'--live' and '...' cannot combine" -- diff "$lidx" --live ...
+check "hunks rejects --stat"         exit=1 err="cannot combine" -- diff "$lidx" --hunks --stat
+check "hunks works without live"     exit=0 out="committed state" -- diff "$didx" --hunks
 
 # --- list --files -----------------------------------------------------------
 # The live worktree is already dirty in all three interesting ways: a tracked
@@ -1098,7 +1122,7 @@ check "meld over 3 errors"            exit=1 err="at most 3 worktrees, got 4" --
 check "meld dup tree errors"          exit=1 err="worktree #1 listed twice" -- meld 1,1
 check "meld bad index errors"         exit=1 err="no worktree #99" -- meld 1,99
 check "meld non-numeric list errors"  exit=1 err="no worktree on branch 'x'" -- meld 1,x
-check "meld takes no options"         exit=2 err="unexpected argument '-x' found" -- meld 1,2 -x
+check "meld takes no options"         exit=2 err="unexpected argument '-z' found" -- meld 1,2 -z
 check "meld --diff needs 2 trees"     exit=1 err="takes exactly 2 worktrees" -- meld 1,2,3 --diff
 check "meld --diff ... range works"   exit=0 out="onlylogin.txt" -- meld "1,$didx" --diff ...
 check "meld --diff ... omits main"    exit=0 err="" -- meld "1,$didx" --diff ...
@@ -1106,6 +1130,20 @@ check "meld --diff 2-way works"       exit=0 out="onlymain.txt" -- meld "1,$didx
 check "meld --diff 2-way has both"    exit=0 out="onlylogin.txt" -- meld "1,$didx" --diff
 check "meld --diff empty diff"        exit=0 err="no files differ" -- meld "1,1" --diff
 check "meld --3way and --base clash"  exit=1 err="alternatives" -- meld 1,2 --diff --3way --base main
+
+# --left/--right/--center: an alternative to naming worktrees by position in
+# a list. Each takes a worktree number or a raw filesystem path.
+check "meld --left/--right two-way"     exit=0 out="ARGV: $mpath $lpath" -- meld --left 1 --right "$lidx"
+check "meld --left/--right/--center 3-way" exit=0 out="ARGV: $lpath $mpath $rpath" -- meld --left "$lidx" --center 1 --right "$ridx"
+# --center without --right folds into a two-way, the center slot doubling as
+# the right side.
+check "meld --center folds into two-way" exit=0 out="ARGV: $mpath $lpath" -- meld --left 1 --center "$lidx"
+check "meld --left alone errors"        exit=1 err="meld needs --right or --center along with --left" -- meld --left 1
+# --left/--right/--center and the worktree list are alternatives.
+check "meld --left + positional errors" exit=1 err="meld's '--left'/'--right'/'--center' and the worktree list" -- meld --left 1 --right "$lidx" "1,$lidx"
+# A raw filesystem path is as valid a slot as a worktree number.
+check "meld --left takes a raw path"    exit=0 out="ARGV: $FAKEBIN $lpath" -- meld --left "$FAKEBIN" --right "$lidx"
+
 check "bare target list rejected"       exit=1 err="switch takes a single worktree, not '1,2'" -- 1,2
 check "remove rejects a list"           exit=1 err="remove takes one worktree, got 2" -- remove 1,2
 
@@ -1129,7 +1167,7 @@ esac
 # the diff section committed on main, and everything they dirty is restored at
 # the end of the section so the later suites still see a clean tree.
 #
-# The meld stub installed above is still on PATH, which is what '-m' asserts on.
+# The meld stub installed above is still on PATH, which is what '-M' asserts on.
 cmp_sha="$(git rev-parse --short HEAD~1)"
 git tag cmptag HEAD~1
 # The binary reports its cwd resolved (/tmp is a symlink to /private/tmp on
@@ -1142,53 +1180,54 @@ cmp_cwd="$(pwd -P)"
 # disk rather than HEAD.
 echo edited >> onlymain.txt
 
-# '-r' takes every ref shape, which is the whole point of it not being a
-# branch-only flag.
-check "compare -r branch"            exit=0 out="+edited" -- compare -f onlymain.txt -r main
-check "compare -r HEAD~1"            exit=0 out="+edited" -- compare -f onlymain.txt -r HEAD~1
-check "compare -r sha"               exit=0 out="+edited" -- compare -f onlymain.txt -r "$cmp_sha"
-check "compare -r tag"               exit=0 out="+edited" -- compare -f onlymain.txt -r cmptag
-check "compare -r remote ref"        exit=0 out="+edited" -- compare -f onlymain.txt -r origin/remote-only
-check "compare --ref long form"      exit=0 out="+edited" -- compare --file onlymain.txt --ref main
-check "compare names the file"       exit=0 out="onlymain.txt" -- compare -f onlymain.txt -r main
+# '-x/--reference' (alias '--ref') takes every ref shape, which is the whole
+# point of it not being a branch-only flag.
+check "compare -x branch"            exit=0 out="+edited" -- compare -p onlymain.txt -x main
+check "compare -x HEAD~1"            exit=0 out="+edited" -- compare -p onlymain.txt -x HEAD~1
+check "compare -x sha"               exit=0 out="+edited" -- compare -p onlymain.txt -x "$cmp_sha"
+check "compare -x tag"               exit=0 out="+edited" -- compare -p onlymain.txt -x cmptag
+check "compare -x remote ref"        exit=0 out="+edited" -- compare -p onlymain.txt -x origin/remote-only
+check "compare --ref long form"      exit=0 out="+edited" -- compare --path onlymain.txt --ref main
+check "compare names the file"       exit=0 out="onlymain.txt" -- compare -p onlymain.txt -x main
 
 # A comma list is many files, one invocation. cmp2.txt is staged rather than
 # committed so main's history stays exactly as the merge/merged suites expect;
 # staging is enough for 'git diff <ref>' to see it.
 echo two > cmp2.txt && git add cmp2.txt
-check "compare -f takes a file list" exit=0 out="cmp2.txt" -- compare -f onlymain.txt,cmp2.txt -r main
-check "compare file list keeps both" exit=0 out="onlymain.txt" -- compare -f onlymain.txt,cmp2.txt -r main
+check "compare -p takes a file list" exit=0 out="cmp2.txt" -- compare -p onlymain.txt,cmp2.txt -x main
+check "compare file list keeps both" exit=0 out="onlymain.txt" -- compare -p onlymain.txt,cmp2.txt -x main
 
 # -m hands meld one '--diff local ref-copy' pair per file, local side first.
-check "compare -m pairs local first" exit=0 out="ARGV: --diff $cmp_cwd/onlymain.txt" -- compare -f onlymain.txt -r main -m
-check "compare -m pairs every file"  exit=0 out="--diff $cmp_cwd/cmp2.txt" -- compare -f onlymain.txt,cmp2.txt -r main -m
-check "compare -m names the ref"     exit=0 err="compare main" -- compare -f onlymain.txt -r main -m
+check "compare -m pairs local first" exit=0 out="ARGV: --diff $cmp_cwd/onlymain.txt" -- compare -p onlymain.txt -x main -M
+check "compare -m pairs every file"  exit=0 out="--diff $cmp_cwd/cmp2.txt" -- compare -p onlymain.txt,cmp2.txt -x main -M
+check "compare -m names the ref"     exit=0 err="compare main" -- compare -p onlymain.txt -x main -M
 
 git rm -q --cached cmp2.txt && rm -f cmp2.txt
 git checkout -q -- onlymain.txt
 
 # Back to a clean tree: comparing against HEAD is no diff at all, and still a
 # success. Exact, not a substring -- 'out=' with an empty value asserts nothing.
-cmp_same="$("$BIN" compare -f onlymain.txt -r HEAD 2>/dev/null)"
-cmp_cmd="$(fmt_cmd compare -f onlymain.txt -r HEAD)"
+cmp_same="$("$BIN" compare -p onlymain.txt -x HEAD 2>/dev/null)"
+cmp_cmd="$(fmt_cmd compare -p onlymain.txt -x HEAD)"
 if [ -z "$cmp_same" ]; then
   report PASS HAPPY "compare at HEAD prints nothing" "$cmp_cmd"
 else
   report FAIL HAPPY "compare at HEAD prints nothing" "$cmp_cmd" "wanted no output, got '$cmp_same'"
 fi
 
-check "compare bad ref errors"       exit=1 err="no such ref 'nope'" -- compare -f onlymain.txt -r nope
-check "compare bad file errors"      exit=1 err="no such file 'nope.txt'" -- compare -f nope.txt -r main
-check "compare empty list part"      exit=1 err="bad file list" -- compare -f "onlymain.txt,,cmp2.txt" -r main
-check "compare needs a ref"          exit=2 err="--ref <REF>" -- compare -f onlymain.txt
-check "compare needs a file"         exit=2 err="--file <FILE_LIST>" -- compare -r main
-# -c/--commit is retired: -r is the only ref flag.
-check "compare -c is retired"        exit=2 err="unexpected argument '-c'" -- compare -f onlymain.txt -c main
-check "compare --commit is retired"  exit=2 err="unexpected argument '--commit'" -- compare -f onlymain.txt --commit main
+check "compare bad ref errors"       exit=1 err="no such ref 'nope'" -- compare -p onlymain.txt -x nope
+check "compare bad file errors"      exit=1 err="no such file 'nope.txt'" -- compare -p nope.txt -x main
+check "compare empty list part"      exit=1 err="bad file list" -- compare -p "onlymain.txt,,cmp2.txt" -x main
+check "compare needs a ref"          exit=1 err="compare needs a ref: '-x/--reference <REF>'" -- compare -p onlymain.txt
+check "compare needs a file"         exit=1 err="compare needs at least one file: '-p/--path <FILE_LIST>'" -- compare -x main
+check "compare -x takes exactly one" exit=1 err="compare takes exactly one ref, got 2" -- compare -p onlymain.txt -x main,cmptag
+# -c/--commit is retired: -x/--reference is the only ref flag.
+check "compare -c is retired"        exit=2 err="unexpected argument '-c'" -- compare -p onlymain.txt -c main
+check "compare --commit is retired"  exit=2 err="unexpected argument '--commit'" -- compare -p onlymain.txt --commit main
 # compare declares no -b/--branch at all now, so clap itself rejects it --
 # pre-verb (no longer a global) or post-verb (not one of compare's own flags).
-check "compare rejects pre-verb -b"  exit=2 err="unexpected argument '-b' found" -- -b main compare -f onlymain.txt -r main
-check "compare rejects post-verb -b" exit=2 err="unexpected argument '-b' found" -- compare -f onlymain.txt -r main -b main
+check "compare rejects pre-verb -b"  exit=2 err="unexpected argument '-b' found" -- -b main compare -p onlymain.txt -x main
+check "compare rejects post-verb -b" exit=2 err="unexpected argument '-b' found" -- compare -p onlymain.txt -x main -b main
 
 git tag -d cmptag >/dev/null 2>&1
 

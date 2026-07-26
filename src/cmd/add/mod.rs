@@ -212,13 +212,13 @@ pub(crate) fn pick_branch(root: &Path) -> Result<String, String> {
 
     if !checked_out.is_empty() {
         eprintln!("Already checked out (not selectable):");
-        let w = checked_out
+        let name_w = checked_out
             .iter()
             .map(|(b, _)| b.chars().count())
             .max()
             .unwrap_or(0);
         for (b, p) in &checked_out {
-            eprintln!("  {:<w$}  {}", b, p.display(), w = w);
+            eprintln!("  {:<name_w$}  {}", b, p.display(), name_w = name_w);
         }
         eprintln!("{}", "─".repeat(48));
     }
@@ -301,17 +301,17 @@ pub(crate) fn fzf_pick(root: &Path, items: &[&str]) -> Result<Option<String>, St
 pub(crate) fn number_pick(items: &[(&str, &str)]) -> Result<String, String> {
     let color = color_enabled(std::io::stderr().is_terminal());
     eprintln!("Available branches (most recent first):");
-    let w = items.len().to_string().len();
-    let bw = items.iter().map(|(b, _)| b.chars().count()).max().unwrap_or(0);
+    let idx_w = items.len().to_string().len();
+    let name_w = items.iter().map(|(b, _)| b.chars().count()).max().unwrap_or(0);
     for (i, (b, age)) in items.iter().enumerate() {
         let meta = paint(age, DIM, color && !age.is_empty());
         eprintln!(
-            "  {:>w$}  {:<bw$}  {}",
+            "  {:>idx_w$}  {:<name_w$}  {}",
             i + 1,
             b,
             meta,
-            w = w,
-            bw = bw
+            idx_w = idx_w,
+            name_w = name_w
         );
     }
     eprint!("Select a branch [1-{}], or Enter to cancel: ", items.len());

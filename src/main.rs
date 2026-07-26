@@ -10,7 +10,7 @@ mod ui;
 mod worktree;
 
 use crate::cli::{
-    check_index, effective_target, gather_targets, resolve_target_list, typed_verb,
+    check_index, effective_target, gather_targets, resolve_worktree_or_branch_list, typed_verb,
     warn_if_alias_shadows_branch, worktree_on_branch, Cli, Commands,
 };
 use clap::{CommandFactory, Parser};
@@ -82,13 +82,12 @@ fn run() -> Result<(), String> {
         }
         Some(c) => c,
         None => {
-            if let Some(t) = cli.targets {
+            if let Some(t) = cli.worktree_or_branch_list {
                 return cmd_switch(
                     &root,
                     crate::cmd::switch::args::SwitchArgs {
                         target: Some(t),
                         target_flag: Default::default(),
-                        branch: Default::default(),
                     },
                 );
             }
@@ -99,8 +98,8 @@ fn run() -> Result<(), String> {
     // Grammar is verb-first: the optional positional target list comes after
     // the subcommand. Any target captured at the top level means the user
     // wrote target-first.
-    if cli.targets.is_some() {
-        return Err("unexpected argument for the verb\nTry 'git-wt --help'".into());
+    if cli.worktree_or_branch_list.is_some() {
+        return Err("unexpected argument for the verb".into());
     }
 
     // The one-letter alias each of these matched, if that's the spelling the
@@ -117,17 +116,14 @@ fn run() -> Result<(), String> {
             cmd_add(&root, args)
         }
 
-        Commands::List(args) => {
-            if cli.targets.is_some() {
-                return Err("'list' does not take worktree targets".into());
-            }
-            cmd_list(&root, args)
-        }
+        Commands::List(args) => cmd_list(&root, args),
 
         Commands::Switch(args) => {
-            let branch = args.branch.branch.clone();
             let target = effective_target(args.target, args.target_flag.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &branch, false, false)?;
+            // No `-b` to append with, but the target itself could still be a
+            // comma-separated list (e.g. a stray '1,2'), so the cardinality
+            // check stays.
+            let idxs = resolve_targets(&trees, target.as_ref(), &[], false, false)?;
             if idxs.len() > 1 {
                 return Err(format!(
                     "switch takes one worktree, got {}",
@@ -137,14 +133,7 @@ fn run() -> Result<(), String> {
             if typed_alias("s") {
                 warn_if_alias_shadows_branch(&trees, "s", "switch");
             }
-            let mut args = crate::cmd::switch::args::SwitchArgs {
-                target,
-                target_flag: Default::default(),
-                branch: Default::default(),
-            };
-            if args.target.is_none() && !branch.is_empty() {
-                args.target = Some(branch.join(","));
-            }
+            let args = crate::cmd::switch::args::SwitchArgs { target, target_flag: Default::default() };
             cmd_switch(&root, args)
         }
 
@@ -158,7 +147,9 @@ fn run() -> Result<(), String> {
 
         Commands::Remove(args) => {
             let target = effective_target(args.target.clone(), args.target_flag.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch.branch, true, false)?;
+            // No `-b` to append with, but the target itself could still be a
+            // comma-separated list, so the cardinality check stays.
+            let idxs = resolve_targets(&trees, target.as_ref(), &[], true, false)?;
             if idxs.len() > 1 {
                 return Err(format!("remove takes one worktree, got {}", idxs.len()));
             }
@@ -166,7 +157,6 @@ fn run() -> Result<(), String> {
             let args = crate::cmd::remove::args::RemoveArgs {
                 target,
                 target_flag: Default::default(),
-                branch: Default::default(),
                 ..args
             };
             cmd_remove(&root, &trees, idx, args)
@@ -191,20 +181,75 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Diff(args) => {
-            let target = effective_target(args.targets.clone(), args.target_flag.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch.branch, true, false)?;
-            if idxs.len() != 2 {
+            // Grammar mirrors merge's: the bare positional is the source --
+            // the other worktree to compare -- never the destination. The
+            // destination is never positional, only `-d/--destination`,
+            // defaulting to the current worktree.
+            if args.sd.destination_flag.as_deref().is_some_and(|t| t.contains(',')) {
+                return Err("diff's '-d/--destination' takes exactly one target".into());
+            }
+            let positional = args.targets.clone();
+            if let Some(t) = positional.as_deref().filter(|t| t.contains(',')) {
                 return Err(format!(
-                    "diff takes exactly two worktrees, got {}",
-                    idxs.len()
+                    "diff takes one source, got the list '{t}'; the destination is '-d/--destination'"
                 ));
             }
-            cmd_diff(&root, &trees, &idxs, &args)
+            if let Some(s) = args.sd.source_flag.as_deref() {
+                if s.contains(',') {
+                    return Err("diff's '-s/--source' takes exactly one source branch".into());
+                }
+                if let Some(w) = positional.as_deref() {
+                    return Err(format!(
+                        "source given twice: '{w}' and '-s/--source {s}'; use one or the other"
+                    ));
+                }
+            }
+            let dest_idx = match args.sd.destination_flag.as_deref() {
+                Some(t) => {
+                    let ns = resolve_worktree_or_branch_list(&trees, &[t.to_string()])?;
+                    check_index(ns[0], trees.len())?
+                }
+                None => current_worktree_index(&trees)
+                    .ok_or("not inside a worktree; use 'git-wt diff <SOURCE> -d <DEST>'")?,
+            };
+            let tok = args
+                .sd
+                .source_flag
+                .clone()
+                .or(positional)
+                .ok_or("diff needs a source: 'git-wt diff <SOURCE>' (or '-s <SOURCE>')")?;
+            let ns = resolve_worktree_or_branch_list(&trees, &[tok])?;
+            let src_idx = check_index(ns[0], trees.len())?;
+            cmd_diff(&root, &trees, &[dest_idx, src_idx], &args)
         }
 
         Commands::Meld(args) => {
-            let target = effective_target(args.targets.clone(), args.target_flag.target_flag.as_ref())?;
-            let idxs = resolve_targets(&trees, target.as_ref(), &args.branch.branch, true, true)?;
+            let has_position = args.position.left.is_some()
+                || args.position.right.is_some()
+                || args.position.center.is_some();
+            let has_list = args.worktree_or_branch_list.is_some() || !args.branch.extra_ref.is_empty();
+            if has_position && has_list {
+                return Err(
+                    "meld's '--left'/'--right'/'--center' and the worktree list \
+                     (positional/-x) are alternatives; use one or the other"
+                        .into(),
+                );
+            }
+            if has_position {
+                let left = args
+                    .position
+                    .left
+                    .as_deref()
+                    .ok_or("meld needs '--left' along with '--right'/'--center'")?;
+                return crate::cmd::meld::cmd_meld_position(
+                    &trees,
+                    left,
+                    args.position.right.as_deref(),
+                    args.position.center.as_deref(),
+                    &args,
+                );
+            }
+            let idxs = resolve_targets(&trees, args.worktree_or_branch_list.as_ref(), &args.branch.extra_ref, true, true)?;
             if idxs.len() < 2 {
                 return Err(format!(
                     "meld needs 2 or 3 worktrees, got {}",
@@ -259,7 +304,7 @@ fn run() -> Result<(), String> {
 
             let dest_idx = match args.sd.destination_flag.as_deref() {
                 Some(t) => {
-                    let ns = resolve_target_list(&trees, &[t.to_string()])?;
+                    let ns = resolve_worktree_or_branch_list(&trees, &[t.to_string()])?;
                     check_index(ns[0], trees.len())?
                 }
                 None => current_worktree_index(&trees)
@@ -276,7 +321,7 @@ fn run() -> Result<(), String> {
                 None => None,
                 Some(tok) => {
                     let idx = if tok.parse::<usize>().is_ok() {
-                        let ns = resolve_target_list(&trees, &[tok.clone()])?;
+                        let ns = resolve_worktree_or_branch_list(&trees, std::slice::from_ref(&tok))?;
                         Some(check_index(ns[0], trees.len())?)
                     } else {
                         worktree_on_branch(&trees, tok.strip_prefix("heads/").unwrap_or(&tok))
@@ -330,7 +375,7 @@ fn run() -> Result<(), String> {
             }
             let dest_idx = match args.sd.destination_flag.take().as_deref() {
                 Some(t) => {
-                    let ns = resolve_target_list(&trees, &[t.to_string()])?;
+                    let ns = resolve_worktree_or_branch_list(&trees, &[t.to_string()])?;
                     check_index(ns[0], trees.len())?
                 }
                 None => current_worktree_index(&trees)
@@ -343,7 +388,7 @@ fn run() -> Result<(), String> {
                 .or(args.source)
                 .ok_or("review needs a source: 'git-wt review <SOURCE>' (or '-s <SOURCE>')")?;
             let idx = if tok.parse::<usize>().is_ok() {
-                let ns = resolve_target_list(&trees, &[tok.clone()])?;
+                let ns = resolve_worktree_or_branch_list(&trees, std::slice::from_ref(&tok))?;
                 Some(check_index(ns[0], trees.len())?)
             } else {
                 worktree_on_branch(&trees, tok.strip_prefix("heads/").unwrap_or(&tok))
@@ -366,7 +411,7 @@ fn run() -> Result<(), String> {
             if typed_alias("m") {
                 warn_if_alias_shadows_branch(&trees, "m", "merged");
             }
-            let target = effective_target(args.targets.clone(), args.target_flag.as_ref())?;
+            let target = effective_target(args.worktree_or_branch_list.clone(), args.target_flag.as_ref())?;
             let idxs = resolve_targets(&trees, target.as_ref(), &args.branch, false, false)?;
             if args.others {
                 let idx = if idxs.len() == 1 {
@@ -423,7 +468,7 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Commits(args) => {
-            let target = effective_target(args.target.clone(), args.target_flag.target_flag.as_ref())?;
+            let target = effective_target(args.worktree_or_branch_list.clone(), args.target_flag.target_flag.as_ref())?;
             let idxs = resolve_targets(&trees, target.as_ref(), &args.common.branch.extra_ref, true, false)?;
             if idxs.is_empty() {
                 return Err("not inside a worktree; use 'git-wt commits <N>[,...]'".into());
@@ -442,7 +487,7 @@ fn run() -> Result<(), String> {
             let target_token = match args.leading.first() {
                 Some(first)
                     if gather_targets(Some(first), &[])
-                        .and_then(|p| resolve_target_list(&trees, &p))
+                        .and_then(|p| resolve_worktree_or_branch_list(&trees, &p))
                         .is_ok() =>
                 {
                     Some(first.clone())
@@ -482,14 +527,13 @@ fn run_sync(
     common: crate::cmd::sync::args::SyncCommon,
     parsed: crate::cmd::sync::SyncParsedArgs,
 ) -> Result<(), String> {
-    let target = effective_target(common.targets, common.target_flag.target_flag.as_ref())?;
-    if parsed.all && (target.is_some() || !common.branch.branch.is_empty()) {
+    if parsed.all && (common.worktree_or_branch_list.is_some() || !common.branch.extra_ref.is_empty()) {
         return Err("'--all' is every worktree, so a target list has nothing to add".into());
     }
     let idxs = if parsed.all {
         (0..trees.len()).collect()
     } else {
-        let mut idxs = resolve_targets(trees, target.as_ref(), &common.branch.branch, true, false)?;
+        let mut idxs = resolve_targets(trees, common.worktree_or_branch_list.as_ref(), &common.branch.extra_ref, true, false)?;
         if idxs.is_empty() {
             let cur = current_worktree_index(trees).ok_or_else(|| {
                 format!("not inside a worktree; use 'git-wt <N> {}'", parsed.op.word())
@@ -535,7 +579,7 @@ fn resolve_targets(
     let mut idxs = Vec::new();
     if let Some(t) = targets {
         let parts: Vec<String> = t.split(',').map(String::from).collect();
-        let ns = resolve_target_list(trees, &parts)?;
+        let ns = resolve_worktree_or_branch_list(trees, &parts)?;
         for n in ns {
             let i = check_index(n, trees.len())?;
             if allow_duplicates || !idxs.contains(&i) {
@@ -552,7 +596,7 @@ fn resolve_targets(
         if bparts.iter().any(|p| p.is_empty()) {
             return Err("bad worktree list; want numbers or branches, e.g. '1,2' or 'main,2'".into());
         }
-        let ns = resolve_target_list(trees, &bparts)?;
+        let ns = resolve_worktree_or_branch_list(trees, &bparts)?;
         for n in ns {
             let i = check_index(n, trees.len())?;
             if allow_duplicates || !idxs.contains(&i) {

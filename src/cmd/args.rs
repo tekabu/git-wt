@@ -132,13 +132,36 @@ pub(crate) struct Meld {
 // `commits`/`log`/`review` yet -- still `CommonCommitsFlags`'s own fields
 // there, kept in sync by hand until each verb is switched over one at a time.
 
-/// Extra worktree targets, appended to the target list. `commits`/`log` take
-/// it; `review` refuses it at runtime (`main.rs`: "review has no
-/// '-x/--reference'") since it has its own `-s/--source` for the one thing
-/// `-x` would otherwise append to. Each entry is a branch name, a worktree
-/// number, or a commit sha -- anything `git rev-parse` resolves -- not just
-/// a branch, hence `reference` rather than `branch` in the long form.
-#[derive(Args, Debug, Default)]
+/// `-x/--reference` (alias `--ref`), one struct, four different jobs
+/// depending on who flattens it -- every current meaning, in one place so
+/// nobody has to chase them through each verb's own file:
+///
+/// - **`commits`/`log`** (`CommonCommitsFlags.branch`): *appends* to the
+///   worktree/branch list the positional/`-w` already named. Retired the
+///   old `-b/--branch` here (`docs/note.txt`'s planned rename).
+/// - **`meld`**: same append role, into the 2-3-worktree list `cmd_meld`
+///   compares. Retired `meld`'s own old `-b/--branch` too.
+/// - **`sync`**'s `fetch`/`pull`/`push` (`SyncCommon.branch`): same append
+///   role again, into the worktree list `run_sync` acts on. Retired the
+///   third copy of `-b/--branch`.
+/// - **`compare`**: *not* append -- this is `compare`'s only source of a
+///   ref at all (no positional), and `cmd_compare` enforces "exactly one"
+///   itself (clap can't, since this struct is list-shaped) rather than via
+///   `required = true` the way the retired `CompareRef` did.
+/// - **`review`**: refused at runtime (`main.rs`: "review has no
+///   '-x/--reference'") -- it has its own `-s/--source` for the one thing
+///   `-x` would otherwise append to, and nothing else to append *to*.
+///
+/// The long form says `reference`, not `branch`, because of a real split in
+/// how the value gets resolved, not just a naming choice: `compare` resolves
+/// its own value directly via `git rev-parse`, which accepts anything git
+/// does -- a bare sha included. Every other consumer above goes through the
+/// shared `resolve_worktree_or_branch_list` (`cli.rs`), which only ever
+/// tries a worktree number or an *existing worktree's* branch name -- a bare
+/// sha errors there ("no worktree on branch '<sha>'"), it does not fall
+/// through to a raw git rev. So "or a commit sha" is true for `compare`
+/// alone, not the other four.
+#[derive(Args, Clone, Debug, Default)]
 pub(crate) struct ExtraRef {
     #[arg(
         short = 'x',
@@ -290,17 +313,24 @@ pub(crate) struct PickId {
     pub(crate) pick: bool,
 }
 
-/// Add the changed files under each displayed commit -- and, when a filter
-/// narrowed the commits shown, whether that block widens back to every file
-/// those commits touched instead of just the matches. Retired `ShowFiles`'
-/// bare `-f/--files` (show the block, no widen option) -- one flag now
-/// covers both jobs: unset means "no filter, block already whole" or
-/// "filtered, block trimmed to the matches"; set means "show the block, and
-/// widen it if a filter would have trimmed it." `commits`/`log`/`review` all
-/// declare this identically now.
+/// Add the changed files under each displayed commit. Just the toggle --
+/// whether the block appears at all. `-f` is free within `commits`/`log`/
+/// `review`'s own vocabulary (nothing else there uses it), so this gets its
+/// old short back.
 #[derive(Args, Debug, Default)]
-pub(crate) struct AllFiles {
-    #[arg(long = "all-files", visible_aliases = ["af", "show-files", "show-all-files", "sf"])]
+pub(crate) struct ShowFiles {
+    #[arg(short = 'f', long = "files", visible_aliases = ["show-files", "sf"])]
+    pub(crate) files: bool,
+}
+
+/// When a filter (`-p/--path`) narrowed the commits shown and trimmed their
+/// file blocks to just the matches, widen each block back to every file
+/// those commits touched instead. Distinct job from `ShowFiles`: this one
+/// never turns the block *on* by itself -- it only says what's in it once
+/// something else already has (`ShowFiles`, or `--path` implying it).
+#[derive(Args, Debug, Default)]
+pub(crate) struct ShowAllFiles {
+    #[arg(long = "all-files", visible_alias = "af")]
     pub(crate) all_files: bool,
 }
 
@@ -336,13 +366,13 @@ pub(crate) struct SubjectWrap {
 }
 
 #[derive(Args, Debug, Default)]
-pub(crate) struct SubjectWidthArg { // todo: rename to SubjectWidth
+pub(crate) struct SubjectWidthArg {
     #[arg(long = "subject-width", visible_aliases = ["subjw", "sw"], value_parser = parse_subjectw, value_name = "COLS")]
     pub(crate) subject_width: Option<SubjectWidth>,
 }
 
 #[derive(Args, Debug, Default)]
-pub(crate) struct BranchWidthArg { // todo: rename to BranchWidth
+pub(crate) struct BranchWidthArg {
     #[arg(long = "branch-width", visible_aliases = ["branchw", "bw"], value_parser = parse_branchw, value_name = "COLS")]
     pub(crate) branch_width: Option<BranchWidth>,
 }
@@ -361,18 +391,21 @@ pub(crate) struct MdExport {
 /// call refuses it, since a review's range is fixed at `dest..src`.
 #[derive(Args, Debug, Default)]
 pub(crate) struct AllRows {
-    #[arg(short = 'a', long, visible_aliases = ["all", "ar"])]
+    #[arg(short = 'a', long = "all", visible_alias = "ar")]
     pub(crate) show_all_rows: bool,
 }
 
 /// Only rows touching a path containing any of these, case-folded.
 /// Comma- or space-separated, same acceptance as `CommitsShaFilter`'s `-i`.
-/// `-p/--path`, the only user of `-p` in this file -- `AddParentdir`'s and
-/// `Prune`'s shorts were retired to make room; `diff`'s own `DiffPathFilter`
-/// is retired outright in favor of this one, its "exactly one path" rule
-/// now `cmd_diff`'s own check rather than clap's `Option<String>` shape.
-/// Whether a caller wants "directory only" or "full filename only" matching
-/// is likewise left to that caller -- this struct only collects the list.
+/// `-p/--path`; `AddParentdir`'s and `Prune`'s shorts were retired to make
+/// room within this vocabulary. `list`'s `ShowPathCol` also uses `-p/--path`
+/// -- a different concept (column toggle vs. path-list filter) that never
+/// shares a `Command` with this one, so it's a safe second user, not a
+/// collision. `diff`'s own `DiffPathFilter` is retired outright in favor of
+/// this one, its "exactly one path" rule now `cmd_diff`'s own check rather
+/// than clap's `Option<String>` shape. Whether a caller wants "directory
+/// only" or "full filename only" matching is likewise left to that caller --
+/// this struct only collects the list.
 #[derive(Args, Debug, Default)]
 pub(crate) struct PathFilter {
     #[arg(
@@ -404,60 +437,39 @@ pub(crate) struct NoMerges {
 // meanings never share one flattened `Command`, which is called out wherever
 // it's worth a reader knowing.
 
-/// Today's literal `-b/--branch`, identical across `switch`/`remove`/`diff`/
-/// `meld`/`sync`'s `SyncCommon`. Distinct from `ExtraRef` above, which is
-/// already the *renamed* future shape earmarked for `commits`/`log` --
-/// this one is what those five verbs still actually run today.
-#[derive(Args, Clone, Debug, Default)]
-pub(crate) struct BranchTargets {
-    #[arg(short, long, action = ArgAction::Append, value_name = "TARGET_LIST")]
-    pub(crate) branch: Vec<String>,
-}
-
-/// `-t/--target`, list-flavored (`diff`/`meld`/`sync` take a range/list of
-/// worktrees, not one). Distinct from `WorktreeFlag`'s `-w/--worktree`
-/// (`switch`/`path`/`remove`/`commits`/`log`'s singular-target spelling) --
-/// different letter, different `value_name` reflecting the real difference
-/// (one target vs. a list).
-#[derive(Args, Clone, Debug, Default)]
-pub(crate) struct TargetListFlag {
-    #[arg(short = 't', long = "target", value_name = "TARGET_LIST")]
-    pub(crate) target_flag: Option<String>,
-}
-
 // -- add --
 
 #[derive(Args, Debug, Default)]
-pub(crate) struct AddName { // todo: rename to Name, add comment in implementations
+pub(crate) struct AddName {
     #[arg(short, long)]
     pub(crate) name: Option<String>,
 }
 
 #[derive(Args, Debug, Default)]
-pub(crate) struct AddDirname { // todo: rename to DirName, add comment in implementations
+pub(crate) struct AddDirname {
     #[arg(long)]
-    pub(crate) dirname: Option<String>, // todo: rename to dir_name
+    pub(crate) dirname: Option<String>,
 }
 
 /// `--parentdir`, long-only -- `-p` was retired here so `PathFilter` could
 /// be the one user of the letter.
 #[derive(Args, Debug, Default)]
-pub(crate) struct AddParentdir { // todo: rename to ParentDirName, add comment in implementations
+pub(crate) struct AddParentdir {
     #[arg(long)]
-    pub(crate) parentdir: Option<String>, // todo: rename to parent_dir_name
+    pub(crate) parentdir: Option<String>,
 }
 
 #[derive(Args, Debug, Default)]
-pub(crate) struct AddFromRef { // todo: rename to FromRef, add comment in implementations
+pub(crate) struct AddFromRef {
     #[arg(long)]
-    pub(crate) from: Option<String>, // todo: rename to from_ref
+    pub(crate) from: Option<String>,
 }
 
 /// Hidden shell-wrapper hint; the binary itself never reads it. `-s`
 /// collides letter-wise with `SourceDest`'s `-s/--source` and `list`'s
 /// `-s/--short` -- different verbs, never combined.
 #[derive(Args, Debug, Default)]
-pub(crate) struct AddStayHidden { // todo: rename to StayHidden, add comment in implementations
+pub(crate) struct AddStayHidden {
     #[arg(short, long, hide = true)]
     pub(crate) stay: bool,
 }
@@ -467,10 +479,9 @@ pub(crate) struct AddStayHidden { // todo: rename to StayHidden, add comment in 
 #[derive(Args, Debug, Default)]
 pub(crate) struct ColSelect {
     #[arg(short, long, value_name = "COLS")] // todo: space and comma sep, add alias cs
-    pub(crate) col: Option<String>, // todo: rename to col_select
+    pub(crate) col: Option<String>,
 }
 
-// todo: where LongOutput implemented
 #[derive(Args, Debug, Default)]
 pub(crate) struct LongOutput {
     #[arg(short, long)]
@@ -479,18 +490,22 @@ pub(crate) struct LongOutput {
 
 /// `-s/--short`. Same letter as `SourceDest`'s `-s/--source` and `add`'s
 /// `-s/--stay` -- different verbs, never combined.
-/// todo: where ShortOutput implemented
 #[derive(Args, Debug, Default)]
 pub(crate) struct ShortOutput {
     #[arg(short, long)]
     pub(crate) short: bool,
 }
 
-/// `--show_path`/`--sp`: include the directory/path *column*. Long-only --
-/// `-p` belongs to `PathFilter` alone now.
+/// `-p/--path`: include the directory/path *column*. Shared by `list` and
+/// `merged` (its `--others` table's own path column, previously a bare
+/// `-p/--show-path`). Safe to reuse `-p` despite `PathFilter` also claiming
+/// it: neither `list` nor `merged` ever shares a `Command` with `commits`/
+/// `log`/`review`/`diff`/`compare`, so the two never collide -- different
+/// concept (a column toggle here, a path-list filter there), never the same
+/// verb.
 #[derive(Args, Debug, Default)]
 pub(crate) struct ShowPathCol {
-    #[arg(long = "show_path", visible_alias = "sp")]
+    #[arg(short = 'p', long = "path")]
     pub(crate) show_path: bool,
 }
 
@@ -507,7 +522,7 @@ pub(crate) struct ListFiles {
 
 #[derive(Args, Debug, Default)]
 pub(crate) struct Pager {
-    #[arg(long)] // todo: add alias pager
+    #[arg(long, visible_alias = "pager")]
     pub(crate) less: bool,
 }
 
@@ -540,7 +555,7 @@ pub(crate) struct RemoveForceLegacy { // todo: remove this use Force, wire to ve
 // -- diff --
 
 #[derive(Args, Debug, Default)]
-pub(crate) struct LiveDiff { // todo: rename to Live, add comment in implementations
+pub(crate) struct LiveDiff {
     #[arg(long, overrides_with = "live")]
     pub(crate) live: bool,
 }
@@ -602,6 +617,25 @@ pub(crate) struct ThreeWay {
 pub(crate) struct MeldBase {
     #[arg(long, value_name = "REF")]
     pub(crate) base: Option<String>,
+}
+
+/// Explicit slot assignment, an alternative to naming worktrees by position
+/// in the list: each of `--left`/`--right`/`--center` takes a worktree
+/// number *or* a raw filesystem path (not just a worktree -- meld can
+/// compare an arbitrary directory this way). `--center` is optional; when
+/// it's given and `--right` isn't, `cmd_meld` treats `--center`'s value as
+/// `--right` instead (a two-way meld with the "middle" slot doubling as the
+/// right side) rather than erroring for a missing right.
+#[derive(Args, Clone, Debug, Default)]
+pub(crate) struct MeldPosition {
+    #[arg(long, value_name = "PATH_OR_N")]
+    pub(crate) left: Option<String>,
+
+    #[arg(long, value_name = "PATH_OR_N")]
+    pub(crate) right: Option<String>,
+
+    #[arg(long, value_name = "PATH_OR_N")]
+    pub(crate) center: Option<String>,
 }
 
 // -- compare --
@@ -694,6 +728,17 @@ pub(crate) struct DryRun {
     pub(crate) dry_run: bool,
 }
 
+// -- merged --
+
+/// List every worktree and whether it is already merged into the target,
+/// instead of the single reference-vs-source check. `merged`-only; nothing
+/// else in this file uses `-o`.
+#[derive(Args, Debug, Default)]
+pub(crate) struct MergedOthers {
+    #[arg(short, long)]
+    pub(crate) others: bool,
+}
+
 // -- doctor --
 
 /// `-r/--repair`. `compare` no longer sits on `-r` (its ref moved to
@@ -745,6 +790,7 @@ mod collision_tests {
         #[command(flatten)] reverse: Reverse,
         #[command(flatten)] no_cherry: NoCherry,
         #[command(flatten)] pick: PickId,
+        #[command(flatten)] files: ShowFiles,
         #[command(flatten)] squash: Squash,
         #[command(flatten)] union: UnionRows,
         #[command(flatten)] time: ShowTime,
@@ -754,7 +800,7 @@ mod collision_tests {
         #[command(flatten)] branch_width: BranchWidthArg,
         #[command(flatten)] md: MdExport,
         #[command(flatten)] all: AllRows,
-        #[command(flatten)] all_files: AllFiles,
+        #[command(flatten)] all_files: ShowAllFiles,
         #[command(flatten)] filename: PathFilter,
         #[command(flatten)] no_merges: NoMerges,
     }
@@ -776,6 +822,7 @@ mod collision_tests {
         #[command(flatten)] reverse: Reverse,
         #[command(flatten)] no_cherry: NoCherry,
         #[command(flatten)] pick: PickId,
+        #[command(flatten)] files: ShowFiles,
         #[command(flatten)] squash: Squash,
         #[command(flatten)] union: UnionRows,
         #[command(flatten)] time: ShowTime,
@@ -785,7 +832,7 @@ mod collision_tests {
         #[command(flatten)] branch_width: BranchWidthArg,
         #[command(flatten)] md: MdExport,
         #[command(flatten)] all: AllRows,
-        #[command(flatten)] all_files: AllFiles,
+        #[command(flatten)] all_files: ShowAllFiles,
         #[command(flatten)] filename: PathFilter,
     }
 
@@ -806,6 +853,7 @@ mod collision_tests {
         #[command(flatten)] reverse: Reverse,
         #[command(flatten)] no_cherry: NoCherry,
         #[command(flatten)] pick: PickId,
+        #[command(flatten)] files: ShowFiles,
         #[command(flatten)] squash: Squash,
         #[command(flatten)] union: UnionRows,
         #[command(flatten)] time: ShowTime,
@@ -816,7 +864,6 @@ mod collision_tests {
         #[command(flatten)] md: MdExport,
         #[command(flatten)] no_follow: NoFollow,
         #[command(flatten)] pathw: PathWidthArg,
-        #[command(flatten)] all_files: AllFiles,
     }
 
     #[test]

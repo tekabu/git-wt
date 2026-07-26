@@ -1,18 +1,25 @@
 use clap::Args;
 
 use crate::cmd::args::{
-    AOnlyFiles, BOnlyFiles, BranchTargets, DiffStat, HunkNumbers, LiveDiff, Meld,
-    NameOnly, NameStatus, PathFilter, TargetListFlag,
+    AOnlyFiles, BOnlyFiles, DiffStat, HunkNumbers, LiveDiff, Meld, NameOnly, NameStatus,
+    PathFilter, SourceDest,
 };
 
-/// Diff two worktrees.
+/// Diff two worktrees. Grammar deliberately mirrors `merge`'s: the one bare
+/// positional is always the *source* -- the other side to compare against
+/// -- and the destination is never positional, only `-d/--destination`,
+/// defaulting to the current worktree. No `-t/--target` (dropped: this
+/// isn't a list of two-or-more, it's exactly a source and a dest, same as
+/// `merge`) and no `-b/--branch` either (nothing left to append to, same
+/// reason `merge` has none).
 #[derive(Args, Debug)]
 pub(crate) struct DiffArgs {
-    /// The two worktrees to compare, e.g. `1,2`.
+    /// The other worktree to compare against; defaults to the current one
+    /// if `-d/--destination` also isn't given.
     pub targets: Option<String>,
 
     #[command(flatten)]
-    pub target_flag: TargetListFlag,
+    pub sd: SourceDest,
 
     #[command(flatten)]
     pub live: LiveDiff,
@@ -40,9 +47,6 @@ pub(crate) struct DiffArgs {
 
     #[command(flatten)]
     pub stat: DiffStat,
-
-    #[command(flatten)]
-    pub branch: BranchTargets,
 
     /// `..` (tip-vs-tip) or `...` (fork, the default); a single stray word
     /// here otherwise is a bad range or a path someone spelled the git way

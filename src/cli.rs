@@ -35,7 +35,7 @@ pub(crate) struct Cli {
     /// When no verb is given, the target list selects a worktree to switch to
     /// (shows the worktree list when omitted).
     #[arg(value_name = "TARGET_LIST")]
-    pub(crate) targets: Option<String>,
+    pub(crate) worktree_or_branch_list: Option<String>,
 
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
@@ -111,9 +111,9 @@ pub(crate) enum Commands {
 /// Ok(None) when the token is not one at all (so the caller keeps looking), and
 /// an error when it clearly meant to be one but is malformed (`1,,2`).
 ///
-/// Parts are returned as written; `resolve_target_list` turns them into the
+/// Parts are returned as written; `resolve_worktree_or_branch_list` turns them into the
 /// worktree numbers the rest of the grammar runs on.
-pub(crate) fn parse_target_list(tok: &str) -> Result<Option<Vec<String>>, String> {
+pub(crate) fn parse_worktree_or_branch_list(tok: &str) -> Result<Option<Vec<String>>, String> {
     if !tok.contains(',') {
         return Ok(None);
     }
@@ -135,7 +135,7 @@ pub(crate) fn parse_target_list(tok: &str) -> Result<Option<Vec<String>>, String
 /// A bare number in range is that worktree, even when a branch shares the name;
 /// `heads/2` is still the way to mean the branch. Anything else is matched
 /// against the checked-out branches.
-pub(crate) fn resolve_target_list(trees: &[Worktree], parts: &[String]) -> Result<Vec<usize>, String> {
+pub(crate) fn resolve_worktree_or_branch_list(trees: &[Worktree], parts: &[String]) -> Result<Vec<usize>, String> {
     let mut out = Vec::new();
     for part in parts {
         if let Ok(n) = part.parse::<usize>() {
@@ -193,7 +193,7 @@ pub(crate) fn worktree_on_branch(trees: &[Worktree], branch: &str) -> Option<usi
 
 /// The worktree number a lone leading token names, when it names one at all.
 ///
-/// The single-target twin of `resolve_target_list`, and deliberately quieter:
+/// The single-target twin of `resolve_worktree_or_branch_list`, and deliberately quieter:
 /// a lone word reaches here only after every verb has failed to match, so a
 /// miss is not "no such branch" but "not a target either".
 pub(crate) fn resolve_target(trees: &[Worktree], tok: &str) -> Option<usize> {
@@ -289,10 +289,10 @@ mod tests {
     #[test]
     fn target_list_tokenizes_without_judging_the_parts() {
         assert_eq!(
-            parse_target_list("1,main"),
+            parse_worktree_or_branch_list("1,main"),
             Ok(Some(vec!["1".into(), "main".into()]))
         );
-        assert_eq!(parse_target_list("main"), Ok(None));
+        assert_eq!(parse_worktree_or_branch_list("main"), Ok(None));
     }
 
     #[test]
@@ -300,20 +300,20 @@ mod tests {
         let want = Err("bad worktree list '1,,2'; want numbers or branches, \
                         e.g. '1,2' or 'main,2'"
             .into());
-        assert_eq!(parse_target_list("1,,2"), want);
-        assert!(parse_target_list("1,").is_err());
-        assert!(parse_target_list(",1").is_err());
+        assert_eq!(parse_worktree_or_branch_list("1,,2"), want);
+        assert!(parse_worktree_or_branch_list("1,").is_err());
+        assert!(parse_worktree_or_branch_list(",1").is_err());
     }
 
     #[test]
     fn a_branch_resolves_to_its_worktree_number() {
         let trees = trees_on(&["main", "feat/x", "feat/y"]);
         assert_eq!(
-            resolve_target_list(&trees, &["main".into(), "feat/y".into()]),
+            resolve_worktree_or_branch_list(&trees, &["main".into(), "feat/y".into()]),
             Ok(vec![1, 3])
         );
         assert_eq!(
-            resolve_target_list(&trees, &["2".into(), "main".into()]),
+            resolve_worktree_or_branch_list(&trees, &["2".into(), "main".into()]),
             Ok(vec![2, 1])
         );
     }
@@ -321,15 +321,15 @@ mod tests {
     #[test]
     fn a_bare_number_is_the_worktree_not_a_branch_of_that_name() {
         let trees = trees_on(&["main", "feat/x", "2"]);
-        assert_eq!(resolve_target_list(&trees, &["2".into()]), Ok(vec![2]));
-        assert_eq!(resolve_target_list(&trees, &["heads/2".into()]), Ok(vec![3]));
+        assert_eq!(resolve_worktree_or_branch_list(&trees, &["2".into()]), Ok(vec![2]));
+        assert_eq!(resolve_worktree_or_branch_list(&trees, &["heads/2".into()]), Ok(vec![3]));
     }
 
     #[test]
     fn an_out_of_range_number_stays_a_number() {
         let trees = trees_on(&["main", "feat/x"]);
-        assert_eq!(resolve_target_list(&trees, &["9".into()]), Ok(vec![9]));
-        assert_eq!(resolve_target_list(&trees, &["+9".into()]), Ok(vec![9]));
+        assert_eq!(resolve_worktree_or_branch_list(&trees, &["9".into()]), Ok(vec![9]));
+        assert_eq!(resolve_worktree_or_branch_list(&trees, &["+9".into()]), Ok(vec![9]));
         assert_eq!(
             check_index(9, trees.len()),
             Err("no worktree #9; there are 2 (see 'git-wt list')".into())
@@ -340,7 +340,7 @@ mod tests {
     fn a_branch_no_worktree_holds_is_rejected() {
         let trees = trees_on(&["main", "feat/x"]);
         assert_eq!(
-            resolve_target_list(&trees, &["main".into(), "feat/gone".into()]),
+            resolve_worktree_or_branch_list(&trees, &["main".into(), "feat/gone".into()]),
             Err("no worktree on branch 'feat/gone' (see 'git-wt list')".into())
         );
     }
@@ -391,7 +391,7 @@ mod tests {
         let mut trees = trees_on(&["main", "feat/x"]);
         trees[1].branch = None;
         trees[1].detached = true;
-        assert!(resolve_target_list(&trees, &["feat/x".into()]).is_err());
-        assert_eq!(resolve_target_list(&trees, &["2".into()]), Ok(vec![2]));
+        assert!(resolve_worktree_or_branch_list(&trees, &["feat/x".into()]).is_err());
+        assert_eq!(resolve_worktree_or_branch_list(&trees, &["2".into()]), Ok(vec![2]));
     }
 }

@@ -292,6 +292,9 @@ pub(crate) struct CommonCommitsFlags {
     pub(crate) pick: crate::cmd::args::PickId,
 
     #[command(flatten)]
+    pub(crate) files: crate::cmd::args::ShowFiles,
+
+    #[command(flatten)]
     pub(crate) squash: crate::cmd::args::Squash,
 
     #[command(flatten)]
@@ -319,8 +322,9 @@ pub(crate) struct CommonCommitsFlags {
 /// `commits`' own flags, on top of what it shares with `log`.
 #[derive(Args, Debug)]
 pub(crate) struct CommitsFlags {
+    /// Worktree number(s) or branch name(s), comma- or space-separated.
     #[arg(value_name = "TARGET")]
-    pub(crate) target: Option<String>,
+    pub(crate) worktree_or_branch_list: Option<String>,
 
     #[command(flatten)]
     pub(crate) target_flag: crate::cmd::args::WorktreeFlag,
@@ -332,7 +336,7 @@ pub(crate) struct CommitsFlags {
     pub(crate) all: crate::cmd::args::AllRows,
 
     #[command(flatten)]
-    pub(crate) all_files: crate::cmd::args::AllFiles,
+    pub(crate) all_files: crate::cmd::args::ShowAllFiles,
 
     #[command(flatten)]
     pub(crate) filename: crate::cmd::args::PathFilter,
@@ -361,12 +365,6 @@ pub(crate) struct LogFlags {
 
     #[command(flatten)]
     pub(crate) pathw: crate::cmd::args::PathWidthArg,
-
-    /// `log` has no `--filename`/`--all` to widen past (the path positional
-    /// already answers that), so this only ever means "show the files
-    /// block" here -- the same job `ShowFiles`' retired bare `-f` did.
-    #[command(flatten)]
-    pub(crate) all_files: crate::cmd::args::AllFiles,
 }
 
 impl CommonCommitsFlags {
@@ -401,6 +399,7 @@ impl CommonCommitsFlags {
             pick: self.pick.pick,
             union: self.union.union,
             all: false,
+            files: self.files.files,
             squash: self.squash.squash,
             wrap: self.wrap_subject.wrap_subject,
             subjectw: self.subject_width.subject_width,
@@ -426,7 +425,6 @@ impl LogFlags {
         let mut raw = self.common.into_raw();
         raw.no_follow = self.no_follow.no_follow;
         raw.pathw = self.pathw.pathw;
-        raw.all_files = self.all_files.all_files;
         finalize_commits_args(Mode::Log, raw)
     }
 }
@@ -459,7 +457,7 @@ pub(crate) struct ReviewFlags {
     #[command(flatten)]
     pub(crate) all: crate::cmd::args::AllRows,
     #[command(flatten)]
-    pub(crate) all_files: crate::cmd::args::AllFiles,
+    pub(crate) all_files: crate::cmd::args::ShowAllFiles,
     #[command(flatten)]
     pub(crate) filename: crate::cmd::args::PathFilter,
 }
@@ -504,6 +502,7 @@ pub(crate) struct RawCommitsArgs {
     pub(crate) pick: bool,
     pub(crate) union: bool,
     pub(crate) all: bool,
+    pub(crate) files: bool,
     pub(crate) squash: bool,
     pub(crate) wrap: Option<Wrap>,
     pub(crate) subjectw: Option<SubjectWidth>,
@@ -516,8 +515,8 @@ pub(crate) struct RawCommitsArgs {
 /// loop above, and the clap-declared `commits`/`log` structs) has to run
 /// once its own flags are collected: `--review`'s row-source refusal,
 /// `--pick-id`/`--no-cherry`, the implied `--all` a lower bound sets, the
-/// `--message` implication on `wrap`, and `files`/`all_files` both derived
-/// from the one `--all-files` flag (see `AllFiles`'s doc comment).
+/// `--message`/`--path` implications on `wrap`/`files`, and `--all-files`'s
+/// "needs something to widen" check.
 ///
 /// Extracted from `parse_commits_args_with` so a struct built straight from
 /// typed clap fields gets the same rules as one built token by token,
@@ -526,7 +525,7 @@ pub(crate) fn finalize_commits_args(mode: Mode, raw: RawCommitsArgs) -> Result<C
     let review = mode == Mode::Review;
     let RawCommitsArgs {
         limit, dates, commit_since, commit_until, commits, author, message, search, filename,
-        all_files, topo, merges, fmt, md, reverse, no_cherry, pick, union, mut all,
+        all_files, topo, merges, fmt, md, reverse, no_cherry, pick, union, mut all, mut files,
         squash, wrap, subjectw, branchw, pathw, no_follow,
     } = raw;
     if review {
@@ -554,10 +553,10 @@ pub(crate) fn finalize_commits_args(mode: Mode, raw: RawCommitsArgs) -> Result<C
     all = all || (names_a_floor && !union);
 
     let wrap = wrap.unwrap_or(if message.is_some() { Wrap::Full } else { Wrap::Lines(1) });
-    // `all_files` alone (no filter) is "show the block, unfiltered" -- what
-    // bare `-f/--files` used to mean before `ShowFiles` retired into this
-    // one flag. With a filter, it means "show it, but widen past the match."
-    let files = all_files || !filename.is_empty();
+    files = files || !filename.is_empty();
+    if all_files && filename.is_empty() {
+        return Err(ALL_FILES_MSG.into());
+    }
 
     Ok(CommitsArgs {
         limit, dates, commit_since, commit_until, commits, author, message, search, filename, all_files,
@@ -630,6 +629,8 @@ pub(crate) const WRAP_BAD: &str = "--wrap needs a line count of 1 or more, or 'f
 pub(crate) const SUBJW_BAD: &str = "--subject-width needs a column count, or 'full', e.g. '--subject-width 80'";
 pub(crate) const BRANCHW_BAD: &str = "--branch-width needs a column count, or 'full', e.g. '--branch-width 20'";
 pub(crate) const PATHW_BAD: &str = "--path-width needs a column count, or 'full', e.g. '--path-width 60'";
+pub(crate) const ALL_FILES_MSG: &str =
+    "--all-files needs a '-p/--path PATH_LIST' to widen: on its own the file block is already whole";
 
 /// Parse `>=2026-01-01`, `<=2026-06-30`, `=2026-01-01`, or a bare date (`=`).
 pub(crate) fn parse_date_filter(s: &str) -> Result<DateFilter, String> {
@@ -801,10 +802,7 @@ mod tests {
         assert!(commits(&["--all"]).unwrap().all);
         assert!(!commits(&["--path", "ui.rs"]).unwrap().filename.is_empty());
         assert!(commits(&["--path", "ui.rs", "--all-files"]).unwrap().all_files);
-        // Bare `--all-files` (no filter) is "show the block, unfiltered" now
-        // -- what `ShowFiles`' retired bare `-f` used to mean -- so it's a
-        // valid, non-erroring call on its own.
-        assert!(commits(&["--all-files"]).unwrap().files);
+        assert!(commits(&["--all-files"]).unwrap_err().contains("--path"));
         assert!(commits(&["--pick-id", "--no-cherry"]).unwrap_err().contains("drop one of them"));
         assert!(commits(&["--all", "--union"]).unwrap_err().contains("--union"));
     }
@@ -818,23 +816,20 @@ mod tests {
     #[test]
     fn commits_optional_value_flags() {
         assert_eq!(commits(&[]).unwrap().wrap, Wrap::Lines(1));
-        assert_eq!(commits(&["--wrap"]).unwrap().wrap, Wrap::Full);
-        assert_eq!(commits(&["--wrap", "2"]).unwrap().wrap, Wrap::Lines(2));
+        assert_eq!(commits(&["--wrap-subject"]).unwrap().wrap, Wrap::Full);
+        assert_eq!(commits(&["--wrap-subject", "2"]).unwrap().wrap, Wrap::Lines(2));
         assert_eq!(commits(&["--md"]).unwrap().md, Some(None));
         assert_eq!(commits(&["--md", "out.md"]).unwrap().md, Some(Some("out.md".into())));
     }
 
     #[test]
     fn log_does_not_know_the_flags_the_path_already_answers() {
-        for w in ["--path", "--all", "-a"] {
+        for w in ["--path", "--all", "-a", "--all-files"] {
             assert!(log(&[w]).is_err(), "{w}");
         }
         assert!(commits(&["--all"]).unwrap().all);
         assert!(log(&["--union"]).unwrap().union);
-        // `log` has no filter to widen past, so `--all-files` (aliased
-        // `--sf`/`--show-files`) only ever means "show the block" here --
-        // the job `ShowFiles`' retired bare `-f` used to do.
-        assert!(log(&["--all-files"]).unwrap().files);
+        assert!(log(&["-f"]).unwrap().files);
     }
 
     #[test]

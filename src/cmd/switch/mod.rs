@@ -2,7 +2,7 @@ pub(crate) mod args;
 
 use std::path::Path;
 
-use crate::cli::{check_index, parse_target_list, resolve_target_list};
+use crate::cli::{check_index, parse_worktree_or_branch_list, resolve_worktree_or_branch_list};
 use crate::cmd::switch::args::{PathArgs, SwitchArgs};
 use crate::worktree::{label, worktrees};
 
@@ -31,8 +31,8 @@ pub(crate) fn cmd_path(root: &Path, args: PathArgs) -> Result<(), String> {
 
 fn print_path(root: &Path, tok: &str) -> Result<(), String> {
     let trees = worktrees(root)?;
-    if let Some(parts) = parse_target_list(tok)? {
-        let ns = resolve_target_list(&trees, &parts)?;
+    if let Some(parts) = parse_worktree_or_branch_list(tok)? {
+        let ns = resolve_worktree_or_branch_list(&trees, &parts)?;
         if ns.len() != 1 {
             return Err(format!("switch takes a single worktree, not '{tok}'"));
         }
@@ -41,7 +41,7 @@ fn print_path(root: &Path, tok: &str) -> Result<(), String> {
         println!("{}", trees[idx].path.display());
         return Ok(());
     }
-    if let Some(n) = tok.parse::<usize>().ok() {
+    if let Ok(n) = tok.parse::<usize>() {
         let idx = check_index(n, trees.len())?;
         eprintln!("{}", label(&trees[idx]));
         println!("{}", trees[idx].path.display());

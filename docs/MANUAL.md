@@ -913,7 +913,11 @@ directory there (old sibling-directory worktrees from before that became
 the default, or ones parked anywhere else), via 'git worktree move' so
 the admin link is rewritten correctly rather than a plain 'mv'. Each
 worktree keeps its existing directory name, just under the new parent.
-A destination that already exists is skipped, reported, left untouched.
+A destination name already taken (by another worktree being migrated, or
+an unrelated directory) is disambiguated with a `-2`, `-3`, ... suffix
+rather than left behind. A worktree 'git worktree move' itself refuses
+(e.g. locked) is reported and left in place; 'migrate' exits nonzero if
+any worktree failed to move.
 
 # STDOUT
 

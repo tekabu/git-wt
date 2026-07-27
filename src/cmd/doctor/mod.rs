@@ -136,7 +136,6 @@ fn migrate(root: &Path, trees: &[Worktree], color: bool) -> Result<(), String> {
     let target_c = canon(&target_dir);
 
     let mut moved = 0;
-    let mut skipped = 0;
     let mut failed = 0;
 
     for w in trees {
@@ -149,18 +148,25 @@ fn migrate(root: &Path, trees: &[Worktree], color: bool) -> Result<(), String> {
         }
 
         let leaf = leaf_of(&w.path);
-        let new_path = target_dir.join(&leaf);
         // `symlink_metadata` (unlike `exists`) also catches a broken symlink
-        // sitting at the destination, which `exists` silently misses.
-        if new_path.symlink_metadata().is_ok() {
+        // sitting at the destination, which `exists` silently misses. A
+        // free destination is found by suffixing `-2`, `-3`, ... rather than
+        // skipping outright, since a collision here is between two worktrees
+        // both being migrated (already-migrated ones were excluded above),
+        // not one worktree already in place.
+        let mut new_path = target_dir.join(&leaf);
+        let mut n = 2;
+        while new_path.symlink_metadata().is_ok() {
+            new_path = target_dir.join(format!("{leaf}-{n}"));
+            n += 1;
+        }
+        if n > 2 {
             eprintln!(
-                "{} {} -- {} already exists",
-                paint("skip", YELLOW, color),
+                "{} {} -- {leaf} taken, using {}",
+                paint("rename", YELLOW, color),
                 w.path.display(),
-                new_path.display()
+                leaf_of(&new_path)
             );
-            skipped += 1;
-            continue;
         }
 
         std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
@@ -179,10 +185,13 @@ fn migrate(root: &Path, trees: &[Worktree], color: bool) -> Result<(), String> {
     }
 
     println!();
-    if moved == 0 && skipped == 0 && failed == 0 {
+    if moved == 0 && failed == 0 {
         println!("{}", paint("nothing to migrate -- all worktrees already under .worktrees/", GREEN, color));
-    } else {
-        println!("{moved} moved, {skipped} skipped, {failed} failed");
+        return Ok(());
+    }
+    println!("{moved} moved, {failed} failed");
+    if failed > 0 {
+        return Err(format!("{failed} worktree(s) failed to migrate (see above)"));
     }
     Ok(())
 }
@@ -348,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_skips_a_destination_that_already_exists() {
+    fn migrate_dedups_a_colliding_leaf_name() {
         let (root, sibling) = repo_with_sibling_worktree("git-wt-migrate-collision-test");
 
         // Occupy the destination with an unrelated directory first.
@@ -358,11 +367,29 @@ mod tests {
         let trees = worktrees(&root).unwrap();
         migrate(&root, &trees, false).unwrap();
 
-        // Untouched: still at the old sibling path, not moved into the
-        // occupied destination.
-        assert!(sibling.is_dir());
+        // Moved anyway, under a disambiguated name rather than left behind.
+        assert!(!sibling.exists(), "expected {sibling:?} to be gone");
+        assert!(dest.is_dir(), "the unrelated directory must be left alone");
+        let renamed = root.join(".worktrees").join("repo-feat-2");
+        assert!(renamed.is_dir(), "expected {renamed:?} to exist");
+
         let fresh = worktrees(&root).unwrap();
-        assert!(fresh.iter().any(|w| canon(&w.path) == canon(&sibling)));
+        assert!(fresh.iter().any(|w| canon(&w.path) == canon(&renamed)));
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn migrate_errors_when_a_move_fails() {
+        let (root, sibling) = repo_with_sibling_worktree("git-wt-migrate-failure-test");
+
+        // Lock the worktree so `git worktree move` refuses it.
+        git(&root, &["worktree", "lock", sibling.to_str().unwrap()]);
+
+        let trees = worktrees(&root).unwrap();
+        let err = migrate(&root, &trees, false).unwrap_err();
+        assert!(err.contains("failed"), "{err}");
+        assert!(sibling.is_dir(), "a locked worktree must stay put");
 
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }

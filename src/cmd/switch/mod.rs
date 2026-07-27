@@ -36,21 +36,21 @@ fn print_path(root: &Path, tok: &str) -> Result<(), String> {
         if ns.len() != 1 {
             return Err(format!("switch takes a single worktree, not '{tok}'"));
         }
-        let idx = check_index(ns[0], trees.len())?;
+        let idx = check_index(ns[0], &trees)?;
         eprintln!("{}", label(&trees[idx]));
         println!("{}", trees[idx].path.display());
         return Ok(());
     }
     if let Ok(n) = tok.parse::<usize>() {
-        let idx = check_index(n, trees.len())?;
+        let idx = check_index(n, &trees)?;
         eprintln!("{}", label(&trees[idx]));
         println!("{}", trees[idx].path.display());
         return Ok(());
     }
     // Branch name.
-    let idx = crate::cli::resolve_target(&trees, tok)
+    let id = crate::cli::resolve_target(&trees, tok)
         .ok_or_else(|| format!("no worktree named '{tok}'"))?;
-    let idx = check_index(idx, trees.len())?;
+    let idx = check_index(id, &trees)?;
     eprintln!("{}", label(&trees[idx]));
     println!("{}", trees[idx].path.display());
     Ok(())

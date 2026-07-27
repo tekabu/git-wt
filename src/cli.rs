@@ -129,8 +129,9 @@ pub(crate) fn parse_worktree_or_branch_list(tok: &str) -> Result<Option<Vec<Stri
     Ok(Some(out))
 }
 
-/// Turn each part of a target list into a 1-based worktree number, so
-/// everything downstream keeps working on numbers alone.
+/// Turn each part of a target list into a worktree's stable number (its
+/// `Worktree::id`, not its position), so everything downstream keeps working
+/// on numbers alone.
 ///
 /// A bare number in range is that worktree, even when a branch shares the name;
 /// `heads/2` is still the way to mean the branch. Anything else is matched
@@ -146,7 +147,7 @@ pub(crate) fn resolve_worktree_or_branch_list(trees: &[Worktree], parts: &[Strin
         let hit = worktree_on_branch(trees, want).ok_or_else(|| {
             format!("no worktree on branch '{want}' (see 'git-wt list')")
         })?;
-        out.push(hit + 1);
+        out.push(trees[hit].id as usize);
     }
     Ok(out)
 }
@@ -191,7 +192,8 @@ pub(crate) fn worktree_on_branch(trees: &[Worktree], branch: &str) -> Option<usi
     trees.iter().position(|w| w.branch.as_deref() == Some(branch))
 }
 
-/// The worktree number a lone leading token names, when it names one at all.
+/// The worktree number (its `Worktree::id`) a lone leading token names, when
+/// it names one at all.
 ///
 /// The single-target twin of `resolve_worktree_or_branch_list`, and deliberately quieter:
 /// a lone word reaches here only after every verb has failed to match, so a
@@ -201,7 +203,7 @@ pub(crate) fn resolve_target(trees: &[Worktree], tok: &str) -> Option<usize> {
         return None; // A number is the caller's own path, already handled.
     }
     let want = tok.strip_prefix("heads/").unwrap_or(tok);
-    worktree_on_branch(trees, want).map(|i| i + 1)
+    worktree_on_branch(trees, want).map(|i| trees[i].id as usize)
 }
 
 /// Warn on stderr when a bare one-letter alias is also the name of a
@@ -245,15 +247,18 @@ fn typed_verb_from(argv: impl IntoIterator<Item = String>) -> Option<String> {
     argv.into_iter().find(|a| !a.starts_with('-'))
 }
 
-/// Map a 1-based index to a 0-based one, or an error.
-pub(crate) fn check_index(n: usize, len: usize) -> Result<usize, String> {
+/// Resolve a worktree number (`Worktree::id`) to its position in `trees`, or
+/// an error naming the miss. Not an index bounds check despite the name --
+/// ids aren't positions, so this is a lookup by id.
+pub(crate) fn check_index(n: usize, trees: &[Worktree]) -> Result<usize, String> {
     if n == 0 {
         return Err("no worktree #0".into());
     }
-    if n > len {
-        return Err(format!("no worktree #{n}; there are {len} (see 'git-wt list')"));
-    }
-    Ok(n - 1)
+    let n32 = u32::try_from(n).ok();
+    trees
+        .iter()
+        .position(|w| n32.is_some_and(|n| w.id == n))
+        .ok_or_else(|| format!("no worktree #{n}; there are {} (see 'git-wt list')", trees.len()))
 }
 
 #[cfg(test)]
@@ -263,11 +268,12 @@ mod tests {
 
     #[test]
     fn check_index_bounds() {
-        assert_eq!(check_index(1, 3), Ok(0));
-        assert_eq!(check_index(3, 3), Ok(2));
-        assert_eq!(check_index(0, 3), Err("no worktree #0".into()));
+        let trees = trees_on(&["a", "b", "c"]);
+        assert_eq!(check_index(1, &trees), Ok(0));
+        assert_eq!(check_index(3, &trees), Ok(2));
+        assert_eq!(check_index(0, &trees), Err("no worktree #0".into()));
         assert_eq!(
-            check_index(4, 3),
+            check_index(4, &trees),
             Err("no worktree #4; there are 3 (see 'git-wt list')".into())
         );
     }
@@ -275,7 +281,9 @@ mod tests {
     fn trees_on(branches: &[&str]) -> Vec<Worktree> {
         branches
             .iter()
-            .map(|b| Worktree {
+            .enumerate()
+            .map(|(i, b)| Worktree {
+                id: (i + 1) as u32,
                 path: PathBuf::from(format!("/tmp/{b}")),
                 branch: Some((*b).to_string()),
                 detached: false,
@@ -331,7 +339,7 @@ mod tests {
         assert_eq!(resolve_worktree_or_branch_list(&trees, &["9".into()]), Ok(vec![9]));
         assert_eq!(resolve_worktree_or_branch_list(&trees, &["+9".into()]), Ok(vec![9]));
         assert_eq!(
-            check_index(9, trees.len()),
+            check_index(9, &trees),
             Err("no worktree #9; there are 2 (see 'git-wt list')".into())
         );
     }

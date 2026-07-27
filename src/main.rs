@@ -6,6 +6,7 @@
 mod cli;
 mod cmd;
 mod git;
+mod ids;
 mod ui;
 mod worktree;
 
@@ -207,7 +208,7 @@ fn run() -> Result<(), String> {
             let dest_idx = match args.sd.destination_flag.as_deref() {
                 Some(t) => {
                     let ns = resolve_worktree_or_branch_list(&trees, &[t.to_string()])?;
-                    check_index(ns[0], trees.len())?
+                    check_index(ns[0], &trees)?
                 }
                 None => current_worktree_index(&trees)
                     .ok_or("not inside a worktree; use 'git-wt diff <SOURCE> -d <DEST>'")?,
@@ -219,7 +220,7 @@ fn run() -> Result<(), String> {
                 .or(positional)
                 .ok_or("diff needs a source: 'git-wt diff <SOURCE>' (or '-s <SOURCE>')")?;
             let ns = resolve_worktree_or_branch_list(&trees, &[tok])?;
-            let src_idx = check_index(ns[0], trees.len())?;
+            let src_idx = check_index(ns[0], &trees)?;
             cmd_diff(&root, &trees, &[dest_idx, src_idx], &args)
         }
 
@@ -305,7 +306,7 @@ fn run() -> Result<(), String> {
             let dest_idx = match args.sd.destination_flag.as_deref() {
                 Some(t) => {
                     let ns = resolve_worktree_or_branch_list(&trees, &[t.to_string()])?;
-                    check_index(ns[0], trees.len())?
+                    check_index(ns[0], &trees)?
                 }
                 None => current_worktree_index(&trees)
                     .ok_or("not inside a worktree; use 'git-wt merge <SOURCE> -d <DEST>'")?,
@@ -322,7 +323,7 @@ fn run() -> Result<(), String> {
                 Some(tok) => {
                     let idx = if tok.parse::<usize>().is_ok() {
                         let ns = resolve_worktree_or_branch_list(&trees, std::slice::from_ref(&tok))?;
-                        Some(check_index(ns[0], trees.len())?)
+                        Some(check_index(ns[0], &trees)?)
                     } else {
                         worktree_on_branch(&trees, tok.strip_prefix("heads/").unwrap_or(&tok))
                     };
@@ -330,7 +331,7 @@ fn run() -> Result<(), String> {
                         Some(i) if i == dest_idx => {
                             return Err(format!(
                                 "worktree #{} is both the source and the target",
-                                i + 1
+                                trees[i].id
                             ))
                         }
                         Some(i) => Some(ref_of(&trees[i])?),
@@ -376,7 +377,7 @@ fn run() -> Result<(), String> {
             let dest_idx = match args.sd.destination_flag.take().as_deref() {
                 Some(t) => {
                     let ns = resolve_worktree_or_branch_list(&trees, &[t.to_string()])?;
-                    check_index(ns[0], trees.len())?
+                    check_index(ns[0], &trees)?
                 }
                 None => current_worktree_index(&trees)
                     .ok_or("not inside a worktree; use 'git-wt review <SOURCE> -d <DEST>'")?,
@@ -389,7 +390,7 @@ fn run() -> Result<(), String> {
                 .ok_or("review needs a source: 'git-wt review <SOURCE>' (or '-s <SOURCE>')")?;
             let idx = if tok.parse::<usize>().is_ok() {
                 let ns = resolve_worktree_or_branch_list(&trees, std::slice::from_ref(&tok))?;
-                Some(check_index(ns[0], trees.len())?)
+                Some(check_index(ns[0], &trees)?)
             } else {
                 worktree_on_branch(&trees, tok.strip_prefix("heads/").unwrap_or(&tok))
             };
@@ -397,7 +398,7 @@ fn run() -> Result<(), String> {
                 Some(i) if i == dest_idx => {
                     return Err(format!(
                         "worktree #{} is both the source and the target",
-                        i + 1
+                        trees[i].id
                     ))
                 }
                 Some(i) => ref_of(&trees[i])?,
@@ -431,7 +432,7 @@ fn run() -> Result<(), String> {
                 let dest = ref_of(&trees[idxs[0]])?;
                 let src = ref_of(&trees[idxs[1]])?;
                 if src == dest {
-                    return Err(format!("'{src}' is already checked out in worktree {}", idxs[0] + 1));
+                    return Err(format!("'{src}' is already checked out in worktree {}", trees[idxs[0]].id));
                 }
                 return cmd_merged(&root, &src, &dest);
             }
@@ -447,7 +448,7 @@ fn run() -> Result<(), String> {
                 let dest = ref_of(&trees[idx])?;
                 let src = resolve_source(&root, &trees, &raw_src)?;
                 if src == dest {
-                    return Err(format!("'{raw_src}' is already checked out in worktree {}", idx + 1));
+                    return Err(format!("'{raw_src}' is already checked out in worktree {}", trees[idx].id));
                 }
                 return cmd_merged(&root, &src, &dest);
             }
@@ -581,7 +582,7 @@ fn resolve_targets(
         let parts: Vec<String> = t.split(',').map(String::from).collect();
         let ns = resolve_worktree_or_branch_list(trees, &parts)?;
         for n in ns {
-            let i = check_index(n, trees.len())?;
+            let i = check_index(n, trees)?;
             if allow_duplicates || !idxs.contains(&i) {
                 idxs.push(i);
             }
@@ -598,7 +599,7 @@ fn resolve_targets(
         }
         let ns = resolve_worktree_or_branch_list(trees, &bparts)?;
         for n in ns {
-            let i = check_index(n, trees.len())?;
+            let i = check_index(n, trees)?;
             if allow_duplicates || !idxs.contains(&i) {
                 idxs.push(i);
             }
@@ -621,7 +622,7 @@ fn resolve_source(
     tok: &str,
 ) -> Result<String, String> {
     if let Ok(n) = tok.parse::<usize>() {
-        let i = check_index(n, trees.len())?;
+        let i = check_index(n, trees)?;
         if trees[i].branch.is_none() {
             return Err(format!("no worktree or branch '{tok}'"));
         }

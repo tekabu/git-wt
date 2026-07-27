@@ -217,7 +217,7 @@ pub(crate) fn cmd_merge(
     let src_branch = resolve_merge_source(root, trees, source)?;
 
     if dest.branch.as_deref() == Some(src_branch.as_str()) {
-        return Err(format!("'{src_branch}' is already checked out in worktree {}", idx + 1));
+        return Err(format!("'{src_branch}' is already checked out in worktree {}", dest.id));
     }
 
     if args.dry_run {
@@ -261,7 +261,7 @@ pub(crate) fn cmd_merge(
         if has_tracked_changes(&porcelain) {
             return Err(format!(
                 "worktree {} has uncommitted changes",
-                idx + 1
+                dest.id
             ));
         }
     }

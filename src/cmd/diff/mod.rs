@@ -21,7 +21,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
         }
     };
     if other == idx {
-        return Err(format!("worktree #{} against itself is always empty", idx + 1));
+        return Err(format!("worktree #{} against itself is always empty", trees[idx].id));
     }
 
     let a = ref_of(&trees[idx])?;
@@ -130,7 +130,7 @@ pub(crate) fn cmd_diff(root: &Path, trees: &[Worktree], idxs: &[usize], args: &D
                 eprintln!(
                     "{} #{} {} has uncommitted changes; this diff is committed state only",
                     paint("warning:", YELLOW, on_err),
-                    i + 1,
+                    trees[i].id,
                     label(&trees[i]),
                 );
             }

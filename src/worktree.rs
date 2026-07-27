@@ -5,6 +5,9 @@ use crate::ui::{GREEN, RED, YELLOW};
 
 /// A worktree as reported by `git worktree list --porcelain`.
 pub(crate) struct Worktree {
+    /// Stable worktree number, assigned by `crate::ids::assign`. Zero until
+    /// then; every worktree returned by `worktrees()` has a real one.
+    pub(crate) id: u32,
     pub(crate) path: PathBuf,
     /// Short branch name, or None when detached/bare.
     pub(crate) branch: Option<String>,
@@ -222,6 +225,7 @@ pub(crate) fn worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
                 trees.push(w);
             }
             cur = Some(Worktree {
+                id: 0,
                 path: PathBuf::from(p),
                 branch: None,
                 detached: false,
@@ -250,6 +254,7 @@ pub(crate) fn worktrees(root: &Path) -> Result<Vec<Worktree>, String> {
     if let Some(w) = cur {
         trees.push(w);
     }
+    crate::ids::assign(root, &mut trees);
     Ok(trees)
 }
 

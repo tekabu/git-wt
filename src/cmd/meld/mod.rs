@@ -20,7 +20,7 @@ pub(crate) fn cmd_meld(root: &Path, trees: &[Worktree], idxs: &[usize], args: &M
     if !args.diff.diff {
         for (i, a) in idxs.iter().enumerate() {
             if idxs[i + 1..].contains(a) {
-                return Err(format!("worktree #{} listed twice", a + 1));
+                return Err(format!("worktree #{} listed twice", trees[*a].id));
             }
         }
         let mut bad = Vec::new();
@@ -374,6 +374,7 @@ mod tests {
                 std::path::Path::new("."),
                 &[
                     crate::worktree::Worktree {
+                        id: 1,
                         path: std::path::PathBuf::from("/a"),
                         branch: Some("a".into()),
                         detached: false,
@@ -382,6 +383,7 @@ mod tests {
                         prunable: None,
                     },
                     crate::worktree::Worktree {
+                        id: 2,
                         path: std::path::PathBuf::from("/b"),
                         branch: Some("b".into()),
                         detached: false,

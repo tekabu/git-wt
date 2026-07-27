@@ -198,7 +198,10 @@ pub(crate) fn cmd_list_impl(
     merged_ref: Option<&str>,
     use_pager: bool,
 ) -> Result<(), String> {
-    let trees = worktrees(root)?;
+    let mut trees = worktrees(root)?;
+    // `worktrees()` keeps git's own listing order (main first); id order reads
+    // better here, so sort this display-only copy by the stable number.
+    trees.sort_by_key(|w| w.id);
     let cur_idx = current_worktree_index(&trees);
 
     let rows: Vec<(usize, &Worktree)> = trees.iter().enumerate().collect();
@@ -229,7 +232,7 @@ pub(crate) fn cmd_list_impl(
     let need_push = cols.contains(&9) || cols.contains(&10);
     let header = !explicit && stdout_tty && mode != ListMode::Short;
 
-    let numw = trees.len().to_string().len();
+    let numw = trees.iter().map(|w| w.id).max().unwrap_or(0).to_string().len();
 
     let need_here = need_merged || ((need_merged_ref || need_merged_at) && merged_ref.is_none());
     let here = if need_here { current_ref() } else { String::new() };
@@ -269,10 +272,10 @@ pub(crate) fn cmd_list_impl(
     let cells: Vec<Vec<String>> = rows
         .iter()
         .zip(&meta)
-        .map(|((i, w), (st, last, merged, merged_r, merged_a, push, pull))| {
+        .map(|((_, w), (st, last, merged, merged_r, merged_a, push, pull))| {
             cols.iter()
                 .map(|c| match c {
-                    1 => format!("{:>numw$}", i + 1, numw = numw),
+                    1 => format!("{:>numw$}", w.id, numw = numw),
                     2 => label(w),
                     3 => w.path.display().to_string(),
                     4 => status_text(*st).to_string(),

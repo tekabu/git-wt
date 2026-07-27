@@ -158,7 +158,7 @@ pub(crate) fn cmd_sync(
 ) -> Result<(), String> {
     for (i, a) in idxs.iter().enumerate() {
         if idxs[i + 1..].contains(a) {
-            return Err(format!("worktree #{} listed twice", a + 1));
+            return Err(format!("worktree #{} listed twice", trees[*a].id));
         }
     }
 
@@ -352,6 +352,7 @@ mod tests {
     #[test]
     fn sync_skips_what_the_verb_cannot_mean() {
         let bare = Worktree {
+            id: 1,
             path: PathBuf::from("/code/myapp.git"),
             branch: None,
             detached: false,
@@ -360,6 +361,7 @@ mod tests {
             prunable: None,
         };
         let detached = Worktree {
+            id: 2,
             path: PathBuf::from("/code/myapp-x"),
             branch: None,
             detached: true,
@@ -368,6 +370,7 @@ mod tests {
             prunable: None,
         };
         let normal = Worktree {
+            id: 3,
             path: PathBuf::from("/code/myapp"),
             branch: Some("main".into()),
             detached: false,

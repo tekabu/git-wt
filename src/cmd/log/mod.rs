@@ -32,7 +32,7 @@ pub(crate) fn cmd_log(
     }
     for (i, a) in idxs.iter().enumerate() {
         if idxs[i + 1..].contains(a) {
-            return Err(format!("worktree #{} listed twice", a + 1));
+            return Err(format!("worktree #{} listed twice", trees[*a].id));
         }
     }
 
@@ -286,7 +286,7 @@ pub(crate) fn cmd_log(
         let tail = crate::cli::raw_tail_after_verb();
         let cmd = format!(
             "git-wt {} log {}{}{}",
-            idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
+            idxs.iter().map(|i| trees[*i].id.to_string()).collect::<Vec<_>>().join(","),
             paths.join(" "),
             if tail.is_empty() { "" } else { " " },
             tail

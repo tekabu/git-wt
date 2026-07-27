@@ -75,7 +75,7 @@ pub(crate) fn scan(w: &Worktree) -> Vec<Issue> {
 
 fn print_report(trees: &[Worktree], color: bool) -> usize {
     let mut total = 0;
-    for (i, w) in trees.iter().enumerate() {
+    for w in trees.iter() {
         let issues = scan(w);
         if issues.is_empty() {
             continue;
@@ -83,7 +83,7 @@ fn print_report(trees: &[Worktree], color: bool) -> usize {
         total += issues.len();
         println!(
             "{}  {}  {}",
-            paint(&(i + 1).to_string(), DIM, color),
+            paint(&w.id.to_string(), DIM, color),
             label(w),
             w.path.display()
         );
@@ -164,6 +164,7 @@ mod tests {
 
     fn wt(path: &str) -> Worktree {
         Worktree {
+            id: 1,
             path: PathBuf::from(path),
             branch: Some("main".into()),
             detached: false,

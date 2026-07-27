@@ -99,6 +99,7 @@ mod tests {
 
     fn wt(path: &str) -> Worktree {
         Worktree {
+            id: 1,
             path: PathBuf::from(path),
             branch: Some("main".into()),
             detached: false,

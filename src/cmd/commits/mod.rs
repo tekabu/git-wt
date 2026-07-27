@@ -91,7 +91,7 @@ fn commits_view(
     }
     for (i, a) in idxs.iter().enumerate() {
         if idxs[i + 1..].contains(a) {
-            return Err(format!("worktree #{} listed twice", a + 1));
+            return Err(format!("worktree #{} listed twice", trees[*a].id));
         }
     }
     // Ten rows unless told otherwise: --all and --union both name "give me
@@ -438,7 +438,7 @@ fn commits_view(
             ),
             None => format!(
                 "git-wt {} commits{}{}",
-                idxs.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
+                idxs.iter().map(|i| trees[*i].id.to_string()).collect::<Vec<_>>().join(","),
                 if cmd_tail.is_empty() { "" } else { " " },
                 cmd_tail
             ),

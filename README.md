@@ -1,12 +1,12 @@
 # git-wt
 
-Create and manage git worktrees in sibling directories named
-`<repo-folder>-<branch>`.
+Create and manage git worktrees under the main worktree's `.worktrees/`
+directory, named `<repo-folder>-<branch>`.
 
 Installed on PATH as `git-wt`, so it also works as `git wt`.
 
 ```
-~/code/myapp  +  feature/login  ->  ~/code/myapp-feature-login
+~/code/myapp  +  feature/login  ->  ~/code/myapp/.worktrees/myapp-feature-login
 ```
 
 Full command reference: [docs/COMMANDS.md](docs/COMMANDS.md).

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::cmd::doctor::args::DoctorArgs;
 use crate::git::{git_quiet, git_run};
 use crate::ui::{color_enabled, paint, DIM, GREEN, RED, YELLOW};
-use crate::worktree::{label, worktrees, Worktree};
+use crate::worktree::{canon, label, leaf_of, worktrees, Worktree};
 
 pub(crate) struct Issue {
     pub(crate) summary: String,
@@ -94,10 +94,15 @@ fn print_report(trees: &[Worktree], color: bool) -> usize {
     total
 }
 
-fn sibling_candidates(root: &Path) -> Vec<PathBuf> {
-    let Some(parent) = root.parent() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(parent) else { return Vec::new() };
-    entries
+/// Directories that might hold an orphaned (unregistered) worktree: the
+/// repo root's sibling directory (the old default parent) and its
+/// `.worktrees/` directory (the current one).
+fn orphan_candidates(root: &Path) -> Vec<PathBuf> {
+    let dirs = [root.parent().map(Path::to_path_buf), Some(root.join(".worktrees"))];
+    dirs.into_iter()
+        .flatten()
+        .filter_map(|dir| std::fs::read_dir(&dir).ok())
+        .flatten()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p != root && p.join(".git").is_file())
@@ -106,7 +111,7 @@ fn sibling_candidates(root: &Path) -> Vec<PathBuf> {
 
 fn repair(root: &Path, trees: &[Worktree]) -> Result<(), String> {
     let mut candidates: Vec<PathBuf> = trees.iter().filter(|w| !w.bare).map(|w| w.path.clone()).collect();
-    for c in sibling_candidates(root) {
+    for c in orphan_candidates(root) {
         if !candidates.contains(&c) {
             candidates.push(c);
         }
@@ -122,8 +127,72 @@ fn repair(root: &Path, trees: &[Worktree]) -> Result<(), String> {
     Ok(())
 }
 
+/// Move every worktree not already under `<root>/.worktrees/` there, via
+/// `git worktree move` (updates the admin link, unlike a plain `mv`). The
+/// main worktree (`root` itself) is never a candidate.
+fn migrate(root: &Path, trees: &[Worktree], color: bool) -> Result<(), String> {
+    let target_dir = root.join(".worktrees");
+    let root_c = canon(root);
+    let target_c = canon(&target_dir);
+
+    let mut moved = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+
+    for w in trees {
+        if w.bare {
+            continue;
+        }
+        let wt_c = canon(&w.path);
+        if wt_c == root_c || wt_c.starts_with(&target_c) {
+            continue;
+        }
+
+        let leaf = leaf_of(&w.path);
+        let new_path = target_dir.join(&leaf);
+        // `symlink_metadata` (unlike `exists`) also catches a broken symlink
+        // sitting at the destination, which `exists` silently misses.
+        if new_path.symlink_metadata().is_ok() {
+            eprintln!(
+                "{} {} -- {} already exists",
+                paint("skip", YELLOW, color),
+                w.path.display(),
+                new_path.display()
+            );
+            skipped += 1;
+            continue;
+        }
+
+        std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+        let old_s = w.path.to_string_lossy().to_string();
+        let new_s = new_path.to_string_lossy().to_string();
+        match git_run(root, &["worktree", "move", &old_s, &new_s]) {
+            Ok(_) => {
+                println!("{} {old_s} -> {new_s}", paint("moved", GREEN, color));
+                moved += 1;
+            }
+            Err(e) => {
+                eprintln!("{} {old_s}: {e}", paint("failed", RED, color));
+                failed += 1;
+            }
+        }
+    }
+
+    println!();
+    if moved == 0 && skipped == 0 && failed == 0 {
+        println!("{}", paint("nothing to migrate -- all worktrees already under .worktrees/", GREEN, color));
+    } else {
+        println!("{moved} moved, {skipped} skipped, {failed} failed");
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_doctor(root: &Path, trees: &[Worktree], args: DoctorArgs) -> Result<(), String> {
     let color = color_enabled(std::io::stdout().is_terminal());
+
+    if args.migrate.migrate {
+        return migrate(root, trees, color);
+    }
 
     let total = print_report(trees, color);
     if total == 0 {
@@ -205,5 +274,127 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].summary, "locked: reviewing");
         assert_eq!(issues[0].severity, YELLOW);
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    }
+
+    /// A throwaway repo with one linked worktree at `<root>/../<root's
+    /// leaf>-feat`, the pre-`.worktrees` default location. Returns
+    /// `(root, sibling worktree path)`; the caller removes the whole tree.
+    fn repo_with_sibling_worktree(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let root = base.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "--quiet", "--initial-branch=main"]);
+        git(&root, &["config", "user.email", "t@test"]);
+        git(&root, &["config", "user.name", "t"]);
+        git(&root, &["commit", "--quiet", "--allow-empty", "-m", "init"]);
+
+        let sibling = base.join("repo-feat");
+        git(&root, &["worktree", "add", "--quiet", "-b", "feat", sibling.to_str().unwrap()]);
+
+        (root, sibling)
+    }
+
+    #[test]
+    fn migrate_moves_a_sibling_worktree_under_dot_worktrees() {
+        let (root, sibling) = repo_with_sibling_worktree("git-wt-migrate-test");
+
+        let trees = worktrees(&root).unwrap();
+        migrate(&root, &trees, false).unwrap();
+
+        let new_path = root.join(".worktrees").join("repo-feat");
+        assert!(new_path.is_dir(), "expected {new_path:?} to exist");
+        assert!(!sibling.exists(), "expected {sibling:?} to be gone");
+
+        let fresh = worktrees(&root).unwrap();
+        let paths: Vec<_> = fresh.iter().map(|w| w.path.clone()).collect();
+        assert!(
+            fresh.iter().any(|w| canon(&w.path) == canon(&new_path)),
+            "git's own worktree list should reflect the move: {paths:?}"
+        );
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn migrate_is_a_no_op_the_second_time() {
+        let (root, _sibling) = repo_with_sibling_worktree("git-wt-migrate-idempotent-test");
+
+        let trees = worktrees(&root).unwrap();
+        migrate(&root, &trees, false).unwrap();
+
+        let fresh = worktrees(&root).unwrap();
+        // Second pass finds nothing left outside `.worktrees/`: no path
+        // should change, and nothing should error.
+        migrate(&root, &fresh, false).unwrap();
+        let still = worktrees(&root).unwrap();
+        assert_eq!(
+            fresh.iter().map(|w| w.path.clone()).collect::<Vec<_>>(),
+            still.iter().map(|w| w.path.clone()).collect::<Vec<_>>(),
+        );
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn migrate_skips_a_destination_that_already_exists() {
+        let (root, sibling) = repo_with_sibling_worktree("git-wt-migrate-collision-test");
+
+        // Occupy the destination with an unrelated directory first.
+        let dest = root.join(".worktrees").join("repo-feat");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let trees = worktrees(&root).unwrap();
+        migrate(&root, &trees, false).unwrap();
+
+        // Untouched: still at the old sibling path, not moved into the
+        // occupied destination.
+        assert!(sibling.is_dir());
+        let fresh = worktrees(&root).unwrap();
+        assert!(fresh.iter().any(|w| canon(&w.path) == canon(&sibling)));
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn orphan_candidates_finds_dot_worktrees_entries() {
+        let base = std::env::temp_dir().join(format!(
+            "git-wt-orphan-candidates-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "--quiet", "--initial-branch=main"]);
+        git(&root, &["config", "user.email", "t@test"]);
+        git(&root, &["config", "user.name", "t"]);
+        git(&root, &["commit", "--quiet", "--allow-empty", "-m", "init"]);
+
+        // A worktree admin ".git" file dropped straight in `.worktrees/`
+        // without ever being registered via `git worktree add`, standing
+        // in for one `worktree add` created and something later un-registered
+        // (e.g. `.git` file survived a manual directory move).
+        let orphan = root.join(".worktrees").join("orphan");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join(".git"), "gitdir: /nowhere\n").unwrap();
+
+        let found = orphan_candidates(&root);
+        assert!(
+            found.iter().any(|p| p == &orphan),
+            "expected {orphan:?} in {found:?}"
+        );
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

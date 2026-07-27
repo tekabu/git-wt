@@ -9,7 +9,7 @@ use crate::git::{git_quiet, git_run, git_stdout};
 use crate::ui::{color_enabled, confirm, paint, DIM, GREEN};
 use crate::worktree::{current_ref, leaf_of, sanitize, sh_quote, worktrees};
 
-/// Create a new worktree in a sibling directory.
+/// Create a new worktree under the main worktree's `.worktrees` directory.
 pub(crate) fn cmd_add(root: &Path, args: AddArgs) -> Result<(), String> {
     if args.name.name.is_some() && args.dirname.dirname.is_some() {
         return Err("--name and --dirname conflict".into());
@@ -149,7 +149,7 @@ pub(crate) fn resolve_add_path(
         .ok_or("cannot determine repo folder name")?
         .to_string_lossy()
         .to_string();
-    let default_parent = root.parent().ok_or("repo root has no parent directory")?;
+    let default_parent = root.join(".worktrees");
 
     if let Some(d) = dirname {
         if d.contains('/') {
@@ -168,8 +168,20 @@ pub(crate) fn resolve_add_path(
         }
     }
 
+    // A relative `--parentdir` is resolved against the repo root explicitly
+    // here, rather than left relative for git to resolve against its own
+    // `cwd` (which happens to also be `root`) -- so the meaning doesn't
+    // depend on that incidental detail of how the `git worktree add`
+    // subprocess is invoked.
     let parent = match parentdir {
-        Some(p) => PathBuf::from(p),
+        Some(p) => {
+            let p = Path::new(p);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            }
+        }
         None => default_parent.to_path_buf(),
     };
     let leaf = match (name, dirname) {
@@ -337,11 +349,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_path_default_is_sibling() {
+    fn add_path_default_is_under_worktrees_dir() {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, None)
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp-feat-x"));
+        assert_eq!(p, PathBuf::from("/code/myapp/.worktrees/myapp-feat-x"));
     }
 
     #[test]
@@ -349,7 +361,7 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", Some("test"), None, None)
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp-test"));
+        assert_eq!(p, PathBuf::from("/code/myapp/.worktrees/myapp-test"));
     }
 
     #[test]
@@ -357,7 +369,7 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("test"), None)
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/test"));
+        assert_eq!(p, PathBuf::from("/code/myapp/.worktrees/test"));
     }
 
     #[test]
@@ -366,6 +378,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(p, PathBuf::from("/work/myapp-feat-x"));
+    }
+
+    #[test]
+    fn add_path_relative_parentdir_is_root_relative() {
+        let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, Some("scratch"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/code/myapp/scratch/myapp-feat-x"));
     }
 
     #[test]
@@ -387,6 +407,6 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("sub/test"), None)
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/sub/test"));
+        assert_eq!(p, PathBuf::from("/code/myapp/.worktrees/sub/test"));
     }
 }

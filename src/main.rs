@@ -1,5 +1,5 @@
-//! git-wt — create and manage git worktrees in sibling directories named
-//! `<repo-folder>-<sanitized-branch>`.
+//! git-wt — create and manage git worktrees under `<repo>/.worktrees/`,
+//! named `<repo-folder>-<sanitized-branch>`.
 //!
 //! Installed on PATH as `git-wt`, so it is also reachable as `git wt`.
 

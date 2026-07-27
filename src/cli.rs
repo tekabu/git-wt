@@ -15,12 +15,12 @@ use crate::cmd::switch::args::{PathArgs, SwitchArgs};
 use crate::cmd::sync::args::{FetchArgs, PullArgs, PushArgs};
 use crate::worktree::{Worktree};
 
-/// git-wt — create and manage git worktrees in sibling directories.
+/// git-wt — create and manage git worktrees under `<repo>/.worktrees/`.
 #[derive(Parser, Debug)]
 #[command(
     name = "git-wt",
     version,
-    about = "Worktrees in sibling directories named <repo>-<branch>",
+    about = "Worktrees under <repo>/.worktrees/, named <repo>-<branch>",
     disable_help_flag = true
 )]
 pub(crate) struct Cli {

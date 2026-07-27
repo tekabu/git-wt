@@ -61,7 +61,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
 
-    if cli.help || cli.full {
+    if cli.help {
         if cli.full {
             print!("{}", include_str!("../docs/MANUAL.md"));
         } else {
@@ -100,7 +100,7 @@ fn run() -> Result<(), String> {
                     long: cli.list_long,
                     short: cli.list_short,
                     show_path: cli.list_show_path,
-                    files: Default::default(),
+                    files: cli.list_files,
                     less: cli.list_pager,
                 },
             );

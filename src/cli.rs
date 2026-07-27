@@ -1,6 +1,7 @@
 use clap::{ArgAction, Parser, Subcommand};
 
 use crate::cmd::add::args::AddArgs;
+use crate::cmd::args::{ColSelect, LongOutput, Pager, ShortOutput, ShowPathCol};
 use crate::cmd::commits::args::{CommitsFlags, LogFlags};
 use crate::cmd::compare::args::CompareArgs;
 use crate::cmd::diff::args::DiffArgs;
@@ -31,6 +32,21 @@ pub(crate) struct Cli {
     /// Print the full manual instead of the flag summary; alone or with -h.
     #[arg(short = 'f', long = "full", action = ArgAction::SetTrue)]
     pub(crate) full: bool,
+
+    // Bare `wt` == `wt ls`, so ls's own column/output flags are accepted at
+    // the top level too. `-f/--files` is the one ls flag that can't come
+    // along: `-f` is already claimed above for the full manual, and that
+    // meaning predates this flattening. Reach it via `wt ls -f`.
+    #[command(flatten)]
+    pub(crate) list_col: ColSelect,
+    #[command(flatten)]
+    pub(crate) list_long: LongOutput,
+    #[command(flatten)]
+    pub(crate) list_short: ShortOutput,
+    #[command(flatten)]
+    pub(crate) list_show_path: ShowPathCol,
+    #[command(flatten)]
+    pub(crate) list_pager: Pager,
 
     /// When no verb is given, the target list selects a worktree to switch to
     /// (shows the worktree list when omitted).

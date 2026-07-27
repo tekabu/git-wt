@@ -92,7 +92,18 @@ fn run() -> Result<(), String> {
                     },
                 );
             }
-            return cmd_list(&root, crate::cmd::list::args::ListArgs::default());
+            return cmd_list(
+                &root,
+                crate::cmd::list::args::ListArgs {
+                    search: None,
+                    col: cli.list_col,
+                    long: cli.list_long,
+                    short: cli.list_short,
+                    show_path: cli.list_show_path,
+                    files: Default::default(),
+                    less: cli.list_pager,
+                },
+            );
         }
     };
 

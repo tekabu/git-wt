@@ -7,9 +7,9 @@ use std::process::{Command, Stdio};
 use crate::cmd::add::args::AddArgs;
 use crate::git::{git_quiet, git_run, git_stdout};
 use crate::ui::{color_enabled, confirm, paint, DIM, GREEN};
-use crate::worktree::{current_ref, leaf_of, sanitize, sh_quote, worktrees};
+use crate::worktree::{current_ref, default_worktrees_dir, leaf_of, sanitize, sh_quote, worktrees};
 
-/// Create a new worktree under the main worktree's `.worktrees` directory.
+/// Create a new worktree under the repo's default `<repo>-worktrees` directory.
 pub(crate) fn cmd_add(root: &Path, args: AddArgs) -> Result<(), String> {
     if args.name.name.is_some() && args.dirname.dirname.is_some() {
         return Err("--name and --dirname conflict".into());
@@ -144,12 +144,7 @@ pub(crate) fn resolve_add_path(
     dirname: Option<&str>,
     parentdir: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
-    let repo = root
-        .file_name()
-        .ok_or("cannot determine repo folder name")?
-        .to_string_lossy()
-        .to_string();
-    let default_parent = root.join(".worktrees");
+    let default_parent = default_worktrees_dir(root);
 
     if let Some(d) = dirname {
         if d.contains('/') {
@@ -185,9 +180,9 @@ pub(crate) fn resolve_add_path(
         None => default_parent.to_path_buf(),
     };
     let leaf = match (name, dirname) {
-        (Some(n), _) => format!("{repo}-{}", sanitize(n)),
+        (Some(n), _) => sanitize(n),
         (_, Some(d)) => sanitize(d),
-        _ => format!("{repo}-{}", sanitize(branch)),
+        _ => sanitize(branch),
     };
     Ok(Some(parent.join(leaf)))
 }
@@ -353,7 +348,7 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, None)
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp/.worktrees/myapp-feat-x"));
+        assert_eq!(p, PathBuf::from("/code/myapp-worktrees/feat-x"));
     }
 
     #[test]
@@ -361,7 +356,7 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", Some("test"), None, None)
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp/.worktrees/myapp-test"));
+        assert_eq!(p, PathBuf::from("/code/myapp-worktrees/test"));
     }
 
     #[test]
@@ -369,7 +364,7 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("test"), None)
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp/.worktrees/test"));
+        assert_eq!(p, PathBuf::from("/code/myapp-worktrees/test"));
     }
 
     #[test]
@@ -377,7 +372,7 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, Some("/work"))
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/work/myapp-feat-x"));
+        assert_eq!(p, PathBuf::from("/work/feat-x"));
     }
 
     #[test]
@@ -385,7 +380,7 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, None, Some("scratch"))
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp/scratch/myapp-feat-x"));
+        assert_eq!(p, PathBuf::from("/code/myapp/scratch/feat-x"));
     }
 
     #[test]
@@ -407,6 +402,6 @@ mod tests {
         let p = resolve_add_path(Path::new("/code/myapp"), "feat/x", None, Some("sub/test"), None)
             .unwrap()
             .unwrap();
-        assert_eq!(p, PathBuf::from("/code/myapp/.worktrees/sub/test"));
+        assert_eq!(p, PathBuf::from("/code/myapp-worktrees/sub/test"));
     }
 }

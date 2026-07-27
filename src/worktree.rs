@@ -132,6 +132,18 @@ pub(crate) fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
+/// Where worktrees consolidate by default: a sibling of the repo named
+/// `<repo>-worktrees`, not a subdirectory of it. A subdirectory sits inside
+/// the repo's own tree, so it becomes fair game for the repo's `git add -A`
+/// and has to be excluded by hand; a sibling needs no cooperation from the
+/// repo's own `.gitignore` at all.
+pub(crate) fn default_worktrees_dir(root: &Path) -> PathBuf {
+    let repo = leaf_of(root);
+    root.parent()
+        .unwrap_or(root)
+        .join(format!("{repo}-worktrees"))
+}
+
 /// Last path component (directory leaf) as a display string, or the whole path
 /// when it has none.
 pub(crate) fn leaf_of(p: &Path) -> String {

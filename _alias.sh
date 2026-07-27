@@ -68,7 +68,7 @@ $alias_name() {
   done
 
   case "\${1:-}" in
-    ""|help|list|ls|version|path|show|fetch|pull|p|push|diff|meld|commits|c|log|l|merge|merged|m|doctor)
+    ""|help|list|ls|version|path|show|fetch|pull|p|push|diff|meld|commits|c|log|l|merge|merged|m|doctor|doc)
       # No args at all defaults to the worktree list (git-wt's own default);
       # never treated as a switch, so it never tries to cd.
       git-wt "\$@"; return \$? ;;

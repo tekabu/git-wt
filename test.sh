@@ -132,6 +132,7 @@ export PATH="$nofzf"
 ROOT="$(mktemp -d "/tmp/git-wt-test.XXXXXX")"
 CODE="$ROOT/code"
 APP="$CODE/myapp"
+WT="$CODE/myapp-worktrees"
 trap 'rm -rf "$ROOT"' EXIT
 
 mkdir -p "$APP"
@@ -152,6 +153,10 @@ git branch dirty
 git branch pathtest
 git branch staybr
 git branch insidebr
+git branch bulk-a
+git branch bulk-b
+git branch bulk-c
+git branch bulk-d
 
 # A bare origin with a branch that exists ONLY on the remote, so `add` can
 # exercise the tracking-branch path.
@@ -301,7 +306,7 @@ check "list no-match errors"         exit=0 out="" -- list zzz
 
 # --- add --------------------------------------------------------------------
 # The created path is printed on stdout (so scripts can capture it).
-check "add existing local branch"    exit=0 out="$CODE/myapp-feature-login" -- add feature/login
+check "add existing local branch"    exit=0 out="$WT/feature-login" -- add feature/login
 # worktree now exists at index 2
 check "list shows new worktree"      exit=0 out="feature/login" -- list
 check "list filter keeps index"      exit=0 out="2  feature/login" -- list logi
@@ -312,17 +317,17 @@ check "list --col bad number"        exit=1 err="no column 11" -- list --col 11
 check "list --col non-numeric"       exit=1 err="bad column 'x'" -- list --col x
 check "bare --col means list"        exit=0 out="main" -- list --col 2
 check "bare -c short flag means list" exit=0 out="main" -- list -c 1,2
-check "add --name suffix"            exit=0 out="$CODE/myapp-review" -- add feature/logout --name review
-check "add --dirname whole leaf"     exit=0 out="$CODE/scratch2" -- add feature/api --dirname scratch2
-check "add tracks remote-only"       exit=0 out="$CODE/myapp-remote-only" err="Tracking remote branch 'origin/remote-only'" -- add remote-only
-check "add --dirname as path"        exit=0 out="$CODE/sub/deep" -- add pathtest --dirname sub/deep
-check "add --from a ref (new branch)" exit=0 out="$CODE/ff1" err="Creating new branch 'newfrom' from 'feature/login'" in=y -- add newfrom --from feature/login --dirname ff1
+check "add --name suffix"            exit=0 out="$WT/review" -- add feature/logout --name review
+check "add --dirname whole leaf"     exit=0 out="$WT/scratch2" -- add feature/api --dirname scratch2
+check "add tracks remote-only"       exit=0 out="$WT/remote-only" err="Tracking remote branch 'origin/remote-only'" -- add remote-only
+check "add --dirname as path"        exit=0 out="$WT/sub/deep" -- add pathtest --dirname sub/deep
+check "add --from a ref (new branch)" exit=0 out="$WT/ff1" err="Creating new branch 'newfrom' from 'feature/login'" in=y -- add newfrom --from feature/login --dirname ff1
 check "add dup dir refused"          exit=1 err="already exists" -- add feature/login
 check "add name+dirname conflict"    exit=1 err="--name and --dirname conflict" -- add x -n a --dirname b
 check "add --name empty"             exit=1 err="--name cannot be empty" -- add x -n ""
 check "add --from needs ref"         exit=2 err="a value is required for '--from <FROM>'" -- add x --from
 check "add new branch declined"      exit=0 err="Aborted." in=n -- add nope --dirname np1
-check "add --stay accepted"          exit=0 out="$CODE/stay1" -- add staybr --dirname stay1 --stay
+check "add --stay accepted"          exit=0 out="$WT/stay1" -- add staybr --dirname stay1 --stay
 # Picker hides checked-out branches under a separate section and offers the rest.
 # Cancel the picker (empty stdin) so it prints the section but creates nothing.
 check "picker lists checked-out sep"  exit=1 err="Already checked out (not selectable):" -- add
@@ -343,7 +348,7 @@ else
 fi
 
 # --from actually based the new branch on the given ref, not current HEAD.
-ffhead="$(git -C "$CODE/ff1" rev-parse HEAD)"
+ffhead="$(git -C "$WT/ff1" rev-parse HEAD)"
 ffwant="$(git -C "$APP" rev-parse feature/login)"
 if [ "$ffhead" = "$ffwant" ]; then
   report PASS HAPPY "add --from base commit matches ref" "git rev-parse HEAD  # in ff1"
@@ -375,7 +380,7 @@ check "typo verb rejected"             exit=1 err="no worktree named 'lsit'" -- 
 # login-only 'onlylogin.txt'. That split is what tells '..' from '...'.
 didx="$("$BIN" list | awk '$2=="feature/login"{print $1}')"
 ( cd "$APP" && echo m > onlymain.txt && git add -A && git commit -qm mainside )
-( cd "$CODE/myapp-feature-login" && echo l > onlylogin.txt && git add -A && git commit -qm loginside )
+( cd "$WT/feature-login" && echo l > onlylogin.txt && git add -A && git commit -qm loginside )
 
 check "diff --name-only shows adds"  exit=0 out="onlylogin.txt" -- diff "$didx" --name-only
 # '..' is both directions: main's file shows as a deletion, login's as an add.
@@ -453,9 +458,9 @@ check "diff source given twice"      exit=1 err="source given twice" -- diff "$d
 check "diff rejects other git flags" exit=2 err="unexpected argument '-w' found" -- diff "$didx" -w
 
 # Uncommitted work is invisible to a ref diff, so it must be called out.
-echo scratch > "$CODE/myapp-feature-login/uncommitted.txt"
+echo scratch > "$WT/feature-login/uncommitted.txt"
 check "diff warns on dirty worktree" exit=0 err="has uncommitted changes" -- diff "$didx" --name-only
-rm -f "$CODE/myapp-feature-login/uncommitted.txt"
+rm -f "$WT/feature-login/uncommitted.txt"
 
 # Not inside a worktree at all, with no -d given: the destination has nothing
 # to default to. GIT_DIR points git-wt at the repo from a cwd ($ROOT, the
@@ -870,8 +875,8 @@ check "commits --md bad dir errors"  exit=1 err="cannot write" -- commits "1,$di
 # already has work of its own, so the pick lands on a different parent and is
 # a real copy -- picked onto the same parent, every input matches and git
 # reproduces the original's sha instead.
-( cd "$CODE/myapp-feature-login" && echo picked > picked.txt && git add -A && git commit -q -m "cherrypicked-work" )
-psha="$(cd "$CODE/myapp-feature-login" && git rev-parse HEAD)"
+( cd "$WT/feature-login" && echo picked > picked.txt && git add -A && git commit -q -m "cherrypicked-work" )
+psha="$(cd "$WT/feature-login" && git rev-parse HEAD)"
 ( cd "$APP" && git cherry-pick "$psha" >/dev/null 2>&1 )
 # LC_ALL=C, or sort collates '✓' and '≈' as equal -- they are symbols, which a
 # UTF-8 locale ignores when comparing -- and -u folds the two rows into one.
@@ -957,7 +962,7 @@ check "bare commits uses current"    exit=0 out="mainside" -- commits
 # The case no ref diff can answer: put BOTH worktrees on the same commit, then
 # change one on disk only. 'git diff <a>..<b>' is provably empty here -- both
 # refs resolve to the same tree -- so any output at all proves live read disk.
-LIVE="$CODE/myapp-live"
+LIVE="$WT/myapp-live"
 "$BIN" add livebr --dirname myapp-live --from main >/dev/null 2>&1 <<< y
 ( cd "$APP" && git checkout -q main )
 lidx="$("$BIN" list | awk '$2=="livebr"{print $1}')"
@@ -1145,7 +1150,6 @@ check "meld --left + positional errors" exit=1 err="meld's '--left'/'--right'/'-
 check "meld --left takes a raw path"    exit=0 out="ARGV: $FAKEBIN $lpath" -- meld --left "$FAKEBIN" --right "$lidx"
 
 check "bare target list rejected"       exit=1 err="switch takes a single worktree, not '1,2'" -- 1,2
-check "remove rejects a list"           exit=1 err="remove takes one worktree, got 2" -- remove 1,2
 
 # meld missing from PATH: a PATH holding only git proves the check fires
 # regardless of whether the host has a real meld installed.
@@ -1239,7 +1243,7 @@ check "remove other prints nothing"  exit=0 out="" -- remove 2 -y
 # Standing INSIDE the removed tree: it prints main so the wrapper cd's back.
 "$BIN" add insidebr --dirname insidewt >/dev/null 2>&1
 iidx="$("$BIN" list | awk '$2=="insidebr"{print $1}')"
-inside_out="$(cd "$CODE/insidewt" && "$BIN" remove "$iidx" -y</dev/null 2>/dev/null)"
+inside_out="$(cd "$WT/insidewt" && "$BIN" remove "$iidx" -y</dev/null 2>/dev/null)"
 app_phys="$(cd "$APP" && pwd -P)"
 if [ "$inside_out" = "$app_phys" ]; then
   report PASS HAPPY "remove-from-inside prints main" "$(fmt_cmd remove "$iidx" -y)  # cwd inside it"
@@ -1250,10 +1254,30 @@ fi
 
 # -f: a worktree with an untracked file is refused without -f, removed with it.
 "$BIN" add dirty --dirname dirtywt >/dev/null 2>&1
-touch "$CODE/dirtywt/junk.txt"
+touch "$WT/dirtywt/junk.txt"
 didx="$("$BIN" list | awk '$2=="dirty"{print $1}')"
 check "remove dirty refused (no -f)" exit=1 err="modified or untracked files" -- remove "$didx" -y
 check "remove dirty with -f"         exit=0 -- remove "$didx" -y -f
+
+# Bulk remove: the positional list takes several targets at once, comma- or
+# space-separated, one `worktree remove` per target.
+"$BIN" add bulk-a --dirname bulkA >/dev/null 2>&1
+"$BIN" add bulk-b --dirname bulkB >/dev/null 2>&1
+baidx="$("$BIN" list | awk '$2=="bulk-a"{print $1}')"
+bbidx="$("$BIN" list | awk '$2=="bulk-b"{print $1}')"
+check "remove comma list removes both" exit=0 -- remove "$baidx,$bbidx" -y
+check "removed comma target is gone"   exit=1 err="no worktree #$baidx" -- path "$baidx"
+check "removed comma target 2 is gone" exit=1 err="no worktree #$bbidx" -- path "$bbidx"
+
+"$BIN" add bulk-c --dirname bulkC >/dev/null 2>&1
+"$BIN" add bulk-d --dirname bulkD >/dev/null 2>&1
+bcidx="$("$BIN" list | awk '$2=="bulk-c"{print $1}')"
+bdidx="$("$BIN" list | awk '$2=="bulk-d"{print $1}')"
+check "remove space list removes both" exit=0 -- remove "$bcidx" "$bdidx" -y
+check "removed space target is gone"   exit=1 err="no worktree #$bcidx" -- path "$bcidx"
+check "removed space target 2 is gone" exit=1 err="no worktree #$bdidx" -- path "$bdidx"
+
+check "remove dup target errors" exit=1 err="worktree #$didx listed twice" -- remove "$didx,$didx" -y
 
 # --- merge ------------------------------------------------------------------
 # Self-contained repo: merges move branches, so keep them off the shared fixture.
@@ -1331,16 +1355,16 @@ check "merge continue w/o merge"     exit=1 err="no merge in progress" -- merge 
 check "merge abort w/o merge"        exit=1 err="no merge in progress" -- merge --abort -d 1
 
 # Dirty destination takes -f; untracked files alone do not count as dirty.
-touch "$ROOT/mrg/w-dirty/untracked.txt"
+touch "$ROOT/mrg/app-worktrees/w-dirty/untracked.txt"
 check "merge with untracked only ok"  exit=0 err="Merged feat-a into dirtybr" in=y -- merge "$A" -d "$D"
-git -C "$ROOT/mrg/w-dirty" merge -q --abort 2>/dev/null; git -C "$ROOT/mrg/w-dirty" reset -q --hard HEAD~1
+git -C "$ROOT/mrg/app-worktrees/w-dirty" merge -q --abort 2>/dev/null; git -C "$ROOT/mrg/app-worktrees/w-dirty" reset -q --hard HEAD~1
 # Tracked edits must still be refused even when untracked files are also
 # present; the porcelain reports both, and the untracked lines must not mask
 # the tracked ones. Re-create the untracked file so the combined case is real.
-touch "$ROOT/mrg/w-dirty/untracked.txt"
-echo edit >> "$ROOT/mrg/w-dirty/base.txt"
+touch "$ROOT/mrg/app-worktrees/w-dirty/untracked.txt"
+echo edit >> "$ROOT/mrg/app-worktrees/w-dirty/base.txt"
 check "merge into dirty+untracked refused" exit=1 err="uncommitted changes" -- merge "$A" -d "$D"
-rm -f "$ROOT/mrg/w-dirty/untracked.txt"
+rm -f "$ROOT/mrg/app-worktrees/w-dirty/untracked.txt"
 check "merge into dirty refused"     exit=1 err="uncommitted changes" -- merge "$A" -d "$D"
 check "merge into dirty with -F"     exit=0 err="Merged feat-a into dirtybr" in=y -- merge "$A" -d "$D" -F
 
@@ -1362,15 +1386,15 @@ check "merge --ff-only refuses"      exit=1 err="Not possible to fast-forward" i
 check "merge conflict reports files" exit=1 err="shared.txt" in=y -- merge "$C2" -d "$C1"
 check "second merge while stuck"     exit=1 err="already in progress" in=y -- merge -s feat-a -d "$C1"
 check "continue with unresolved"     exit=1 err="merge conflict in" -- merge --continue -d "$C1"
-echo resolved > "$ROOT/mrg/w-cb1/shared.txt"
-git -C "$ROOT/mrg/w-cb1" add shared.txt
+echo resolved > "$ROOT/mrg/app-worktrees/w-cb1/shared.txt"
+git -C "$ROOT/mrg/app-worktrees/w-cb1" add shared.txt
 check "continue after resolve"       exit=0 err="Completed merge" -- merge --continue -d "$C1"
 
 # Conflict -> abort restores the pre-merge state. cb1 has swallowed cb2 by now,
 # so cb3 is the branch that still genuinely conflicts with cb2.
 printf "y\\n" | "$BIN" merge "$M3" -d "$C2" >/dev/null 2>&1
 check "abort a conflicted merge"     exit=0 err="Aborted merge" -- merge --abort -d "$C2"
-if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+if git -C "$ROOT/mrg/app-worktrees/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report FAIL HAPPY "abort clears MERGE_HEAD" "git rev-parse MERGE_HEAD  # in w-cb2" \
     "MERGE_HEAD still present after --abort"
 else
@@ -1388,7 +1412,7 @@ check "theirs + --dry-run"           exit=0 err="merges into" -- merge "$A" -d "
 check "ours + --dry-run"             exit=0 err="merges into" -- merge "$A" -d "$C2" --ours --dry-run
 # Proof it wrote nothing: a dry run that predicted a conflict left no merge
 # behind, so a real merge can still start cleanly afterwards.
-if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+if git -C "$ROOT/mrg/app-worktrees/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report FAIL HAPPY "dry-run leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2" \
     "MERGE_HEAD exists after a dry run"
 else
@@ -1457,7 +1481,7 @@ check "review rejects a source list" exit=1 err="review takes one source" -- rev
 check "review self refused"          exit=1 err="worktree #1 is both the source and the target" -- review 1 -d 1
 check "review -s names the source"   exit=0 err="merges cleanly" -- review -s feat-a -d "$LM"
 # Proof it wrote nothing, exactly as the dry-run block above proves it.
-if git -C "$ROOT/mrg/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+if git -C "$ROOT/mrg/app-worktrees/w-cb2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report FAIL HAPPY "review leaves no merge state" "git rev-parse MERGE_HEAD  # in w-cb2" \
     "MERGE_HEAD exists after a review"
 else
@@ -1502,28 +1526,28 @@ check "list --col 6"                 exit=0 out="ahead 1" -- list --col 1,2,6
 # ours/theirs settle the collision that stopped the plain merge above.
 # cb3 (shared.txt=C) vs w-cb2 (shared.txt=B): theirs takes C, ours keeps B.
 check "merge theirs resolves"        exit=0 err="theirs won conflicts" in=y -- merge "$M3" -d "$C2" --theirs
-if [ "$(cat "$ROOT/mrg/w-cb2/shared.txt")" = "C" ]; then
+if [ "$(cat "$ROOT/mrg/app-worktrees/w-cb2/shared.txt")" = "C" ]; then
   report PASS HAPPY "theirs took the source's side" "cat shared.txt  # in w-cb2"
 else
   report FAIL HAPPY "theirs took the source's side" "cat shared.txt  # in w-cb2" \
-    "shared.txt is '$(cat "$ROOT/mrg/w-cb2/shared.txt")', want C"
+    "shared.txt is '$(cat "$ROOT/mrg/app-worktrees/w-cb2/shared.txt")', want C"
 fi
 
 # cb4 (shared.txt=D) collides with whatever w-cb1 settled on earlier.
-before="$(cat "$ROOT/mrg/w-cb1/shared.txt")"
+before="$(cat "$ROOT/mrg/app-worktrees/w-cb1/shared.txt")"
 check "merge ours keeps our side"    exit=0 err="ours won conflicts" in=y -- merge -s cb4 -d "$C1" --ours
-if [ "$(cat "$ROOT/mrg/w-cb1/shared.txt")" = "$before" ]; then
+if [ "$(cat "$ROOT/mrg/app-worktrees/w-cb1/shared.txt")" = "$before" ]; then
   report PASS HAPPY "ours kept worktree N's side" "cat shared.txt  # in w-cb1"
 else
   report FAIL HAPPY "ours kept worktree N's side" "cat shared.txt  # in w-cb1" \
-    "shared.txt changed to '$(cat "$ROOT/mrg/w-cb1/shared.txt")', want '$before'"
+    "shared.txt changed to '$(cat "$ROOT/mrg/app-worktrees/w-cb1/shared.txt")', want '$before'"
 fi
 
 # 'theirs' on a merge that already stopped: it can't join one, so git-wt offers
 # to abort and redo. Declining must leave the stopped merge exactly as it was.
 printf "y\\n" | "$BIN" merge "$M3" -d "$FF2" >/dev/null 2>&1   # conflict in w-ff2
 check "stuck+theirs declined"        exit=0 err="Aborted." in=n -- merge "$M3" -d "$FF2" --theirs
-if git -C "$ROOT/mrg/w-ff2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+if git -C "$ROOT/mrg/app-worktrees/w-ff2" rev-parse --verify -q MERGE_HEAD >/dev/null; then
   report PASS UNHAPPY "declining keeps the stopped merge" "git rev-parse MERGE_HEAD  # in w-ff2"
 else
   report FAIL UNHAPPY "declining keeps the stopped merge" "git rev-parse MERGE_HEAD  # in w-ff2" \
@@ -1531,11 +1555,11 @@ else
 fi
 # Accepting redoes it from clean, and the source wins.
 check "stuck+theirs accepted"       exit=0 err="theirs won conflicts" in=$'y\ny' -- merge "$M3" -d "$FF2" --theirs
-if [ "$(cat "$ROOT/mrg/w-ff2/shared.txt")" = "C" ]; then
+if [ "$(cat "$ROOT/mrg/app-worktrees/w-ff2/shared.txt")" = "C" ]; then
   report PASS HAPPY "redo let theirs win" "cat shared.txt  # in w-ff2"
 else
   report FAIL HAPPY "redo let theirs win" "cat shared.txt  # in w-ff2" \
-    "shared.txt is '$(cat "$ROOT/mrg/w-ff2/shared.txt")', want C"
+    "shared.txt is '$(cat "$ROOT/mrg/app-worktrees/w-ff2/shared.txt")', want C"
 fi
 
 # Explicit '-d' sanity checks: it takes an option tail like any other form, and
@@ -1550,7 +1574,7 @@ check "list form + short flag order rejected" exit=1 err="unexpected argument fo
 check "bad list + verb order rejected" exit=1 err="unexpected argument for the verb" -- "1,x" merge
 # The real thing: worktree M's branch lands in worktree N.
 check "-d merges the source into it" exit=0 err="Merged feat-a into" in=y -- merge "$A" -d "$LM"
-if [ -f "$ROOT/mrg/w-lm/a.txt" ]; then
+if [ -f "$ROOT/mrg/app-worktrees/w-lm/a.txt" ]; then
   report PASS HAPPY "-d moved the files" "test -f a.txt  # in w-lm"
 else
   report FAIL HAPPY "-d moved the files" "test -f a.txt  # in w-lm" \
@@ -1560,7 +1584,7 @@ fi
 # --squash stages the merge without committing it.
 FF="$(cd "$MRG" && "$BIN" add ffbr --dirname w-ff >/dev/null 2>&1; midx ffbr)"
 check "merge --squash stages only"   exit=0 err="Squashed feat-a into ffbr" in=y -- merge "$A" -d "$FF" --squash
-if [ -n "$(git -C "$ROOT/mrg/w-ff" diff --cached --name-only)" ]; then
+if [ -n "$(git -C "$ROOT/mrg/app-worktrees/w-ff" diff --cached --name-only)" ]; then
   report PASS HAPPY "--squash leaves changes staged" "git diff --cached  # in w-ff"
 else
   report FAIL HAPPY "--squash leaves changes staged" "git diff --cached  # in w-ff" \
@@ -1595,7 +1619,7 @@ SR="$ROOT/syn/origin.git"; SA="$ROOT/syn/app"; mkdir -p "$ROOT/syn"
   echo s > s.txt; git add s.txt; git commit -q -m init; git push -q -u origin main
   git branch feat-s; git branch lonely
   "$BIN" add feat-s --dirname w-feat-s >/dev/null 2>&1
-  git -C "$ROOT/syn/w-feat-s" push -q -u origin feat-s
+  git -C "$ROOT/syn/app-worktrees/w-feat-s" push -q -u origin feat-s
   # lonely is never pushed, so it has no upstream: pull/push fail on it.
   "$BIN" add lonely --dirname w-lonely >/dev/null 2>&1
   git worktree add -q --detach "$ROOT/syn/w-det" HEAD
@@ -1666,11 +1690,11 @@ check "pull takes --ff-only"         exit=0 -- pull 1 --ff-only
 # push -u on a branch with no upstream: a bare 'git push -u' has none to read
 # the remote off of, so git-wt names 'origin lonely' the way you would.
 check "push -u sets the upstream"    exit=0 err="set up to track 'origin/lonely'" -- push "$SL" -u
-if [ "$(git -C "$ROOT/syn/w-lonely" rev-parse --abbrev-ref '@{upstream}' 2>&1)" = "origin/lonely" ]; then
+if [ "$(git -C "$ROOT/syn/app-worktrees/w-lonely" rev-parse --abbrev-ref '@{upstream}' 2>&1)" = "origin/lonely" ]; then
   report PASS HAPPY "push -u left an upstream" "git rev-parse --abbrev-ref @{u}  # in w-lonely"
 else
   report FAIL HAPPY "push -u left an upstream" "git rev-parse --abbrev-ref @{u}  # in w-lonely" \
-    "upstream is '$(git -C "$ROOT/syn/w-lonely" rev-parse --abbrev-ref '@{upstream}' 2>&1)'"
+    "upstream is '$(git -C "$ROOT/syn/app-worktrees/w-lonely" rev-parse --abbrev-ref '@{upstream}' 2>&1)'"
 fi
 check "push -u again is fine"        exit=0 -- push "$SL" -u
 check "push --all sweeps"            exit=0 err="push: 3 ok, 0 failed, 1 skipped" -- push --all

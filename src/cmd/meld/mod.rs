@@ -5,6 +5,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::cli::check_index;
 use crate::cmd::meld::args::MeldArgs;
 use crate::git::{git_bytes, git_stdout, on_path};
 use crate::ui::{color_enabled, paint, GREEN};
@@ -95,11 +96,9 @@ fn run_meld_plain(paths: &[&Path], names: &[String]) -> Result<(), String> {
 /// the positional/`-x` list, `MeldPosition` never does branch lookups.
 fn resolve_position_slot(trees: &[Worktree], s: &str) -> Result<(PathBuf, String), String> {
     if let Ok(n) = s.parse::<usize>() {
-        if n >= 1 && n <= trees.len() {
-            let w = &trees[n - 1];
-            return Ok((w.path.clone(), label(w)));
-        }
-        return Err(format!("no worktree #{n}; there are {} (see 'git-wt list')", trees.len()));
+        let i = check_index(n, trees)?;
+        let w = &trees[i];
+        return Ok((w.path.clone(), label(w)));
     }
     let path = PathBuf::from(s);
     if !path.is_dir() {

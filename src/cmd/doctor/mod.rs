@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::cmd::doctor::args::DoctorArgs;
 use crate::git::{git_quiet, git_run};
 use crate::ui::{color_enabled, paint, DIM, GREEN, RED, YELLOW};
-use crate::worktree::{canon, label, leaf_of, worktrees, Worktree};
+use crate::worktree::{canon, default_worktrees_dir, label, leaf_of, sanitize, worktrees, Worktree};
 
 pub(crate) struct Issue {
     pub(crate) summary: String,
@@ -95,10 +95,15 @@ fn print_report(trees: &[Worktree], color: bool) -> usize {
 }
 
 /// Directories that might hold an orphaned (unregistered) worktree: the
-/// repo root's sibling directory (the old default parent) and its
-/// `.worktrees/` directory (the current one).
+/// repo root's sibling directory (the original default, pre-consolidation),
+/// `<root>/.worktrees/` (a since-retired consolidated default), and
+/// `<repo>-worktrees` (the current default).
 fn orphan_candidates(root: &Path) -> Vec<PathBuf> {
-    let dirs = [root.parent().map(Path::to_path_buf), Some(root.join(".worktrees"))];
+    let dirs = [
+        root.parent().map(Path::to_path_buf),
+        Some(root.join(".worktrees")),
+        Some(default_worktrees_dir(root)),
+    ];
     dirs.into_iter()
         .flatten()
         .filter_map(|dir| std::fs::read_dir(&dir).ok())
@@ -127,11 +132,11 @@ fn repair(root: &Path, trees: &[Worktree]) -> Result<(), String> {
     Ok(())
 }
 
-/// Move every worktree not already under `<root>/.worktrees/` there, via
-/// `git worktree move` (updates the admin link, unlike a plain `mv`). The
-/// main worktree (`root` itself) is never a candidate.
+/// Move every worktree not already under the default `<repo>-worktrees`
+/// directory there, via `git worktree move` (updates the admin link, unlike
+/// a plain `mv`). The main worktree (`root` itself) is never a candidate.
 fn migrate(root: &Path, trees: &[Worktree], color: bool) -> Result<(), String> {
-    let target_dir = root.join(".worktrees");
+    let target_dir = default_worktrees_dir(root);
     let root_c = canon(root);
     let target_c = canon(&target_dir);
 
@@ -186,7 +191,14 @@ fn migrate(root: &Path, trees: &[Worktree], color: bool) -> Result<(), String> {
 
     println!();
     if moved == 0 && failed == 0 {
-        println!("{}", paint("nothing to migrate -- all worktrees already under .worktrees/", GREEN, color));
+        println!(
+            "{}",
+            paint(
+                &format!("nothing to migrate -- all worktrees already under {}", target_dir.display()),
+                GREEN,
+                color
+            )
+        );
         return Ok(());
     }
     println!("{moved} moved, {failed} failed");
@@ -196,11 +208,89 @@ fn migrate(root: &Path, trees: &[Worktree], color: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Rename every worktree folder (wherever it lives) to its branch alone, via
+/// `git worktree move` -- the same admin-link-safe rename `migrate` uses,
+/// just in place rather than relocating. The main worktree and any
+/// detached/bare worktree (no branch to name it after) are never candidates.
+fn rename(root: &Path, trees: &[Worktree], color: bool) -> Result<(), String> {
+    let root_c = canon(root);
+
+    let mut renamed = 0;
+    let mut failed = 0;
+
+    for w in trees {
+        if w.bare {
+            continue;
+        }
+        let Some(branch) = &w.branch else { continue };
+        if canon(&w.path) == root_c {
+            continue;
+        }
+
+        let wanted = sanitize(branch);
+        if leaf_of(&w.path) == wanted {
+            continue;
+        }
+        let parent = match w.path.parent() {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let mut new_path = parent.join(&wanted);
+        let mut n = 2;
+        while new_path.symlink_metadata().is_ok() {
+            new_path = parent.join(format!("{wanted}-{n}"));
+            n += 1;
+        }
+        if n > 2 {
+            eprintln!(
+                "{} {} -- {wanted} taken, using {}",
+                paint("rename", YELLOW, color),
+                w.path.display(),
+                leaf_of(&new_path)
+            );
+        }
+
+        let old_s = w.path.to_string_lossy().to_string();
+        let new_s = new_path.to_string_lossy().to_string();
+        match git_run(root, &["worktree", "move", &old_s, &new_s]) {
+            Ok(_) => {
+                println!("{} {old_s} -> {new_s}", paint("renamed", GREEN, color));
+                renamed += 1;
+            }
+            Err(e) => {
+                eprintln!("{} {old_s}: {e}", paint("failed", RED, color));
+                failed += 1;
+            }
+        }
+    }
+
+    println!();
+    if renamed == 0 && failed == 0 {
+        println!("{}", paint("nothing to rename -- every worktree already matches its branch", GREEN, color));
+        return Ok(());
+    }
+    println!("{renamed} renamed, {failed} failed");
+    if failed > 0 {
+        return Err(format!("{failed} worktree(s) failed to rename (see above)"));
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_doctor(root: &Path, trees: &[Worktree], args: DoctorArgs) -> Result<(), String> {
     let color = color_enabled(std::io::stdout().is_terminal());
 
-    if args.migrate.migrate {
-        return migrate(root, trees, color);
+    if args.migrate.migrate || args.syncname.syncname {
+        if args.migrate.migrate {
+            migrate(root, trees, color)?;
+        }
+        if args.syncname.syncname {
+            // Re-read from disk: a preceding `--migrate` moved paths out
+            // from under the `trees` this function was called with.
+            let fresh = worktrees(root)?;
+            rename(root, &fresh, color)?;
+        }
+        return Ok(());
     }
 
     let total = print_report(trees, color);
@@ -317,13 +407,13 @@ mod tests {
     }
 
     #[test]
-    fn migrate_moves_a_sibling_worktree_under_dot_worktrees() {
+    fn migrate_moves_a_sibling_worktree_under_repo_worktrees() {
         let (root, sibling) = repo_with_sibling_worktree("git-wt-migrate-test");
 
         let trees = worktrees(&root).unwrap();
         migrate(&root, &trees, false).unwrap();
 
-        let new_path = root.join(".worktrees").join("repo-feat");
+        let new_path = root.parent().unwrap().join("repo-worktrees").join("repo-feat");
         assert!(new_path.is_dir(), "expected {new_path:?} to exist");
         assert!(!sibling.exists(), "expected {sibling:?} to be gone");
 
@@ -345,7 +435,7 @@ mod tests {
         migrate(&root, &trees, false).unwrap();
 
         let fresh = worktrees(&root).unwrap();
-        // Second pass finds nothing left outside `.worktrees/`: no path
+        // Second pass finds nothing left outside the target dir: no path
         // should change, and nothing should error.
         migrate(&root, &fresh, false).unwrap();
         let still = worktrees(&root).unwrap();
@@ -362,7 +452,7 @@ mod tests {
         let (root, sibling) = repo_with_sibling_worktree("git-wt-migrate-collision-test");
 
         // Occupy the destination with an unrelated directory first.
-        let dest = root.join(".worktrees").join("repo-feat");
+        let dest = root.parent().unwrap().join("repo-worktrees").join("repo-feat");
         std::fs::create_dir_all(&dest).unwrap();
 
         let trees = worktrees(&root).unwrap();
@@ -371,7 +461,7 @@ mod tests {
         // Moved anyway, under a disambiguated name rather than left behind.
         assert!(!sibling.exists(), "expected {sibling:?} to be gone");
         assert!(dest.is_dir(), "the unrelated directory must be left alone");
-        let renamed = root.join(".worktrees").join("repo-feat-2");
+        let renamed = root.parent().unwrap().join("repo-worktrees").join("repo-feat-2");
         assert!(renamed.is_dir(), "expected {renamed:?} to exist");
 
         let fresh = worktrees(&root).unwrap();
@@ -393,6 +483,73 @@ mod tests {
         assert!(sibling.is_dir(), "a locked worktree must stay put");
 
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn rename_fixes_a_repo_prefixed_leaf_in_place() {
+        let (root, sibling) = repo_with_sibling_worktree("git-wt-rename-test");
+
+        let trees = worktrees(&root).unwrap();
+        rename(&root, &trees, false).unwrap();
+
+        let new_path = sibling.parent().unwrap().join("feat");
+        assert!(new_path.is_dir(), "expected {new_path:?} to exist");
+        assert!(!sibling.exists(), "expected {sibling:?} to be gone");
+
+        let fresh = worktrees(&root).unwrap();
+        assert!(fresh.iter().any(|w| canon(&w.path) == canon(&new_path)));
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn rename_does_not_relocate_a_worktree() {
+        let (root, sibling) = repo_with_sibling_worktree("git-wt-rename-no-move-test");
+
+        let trees = worktrees(&root).unwrap();
+        rename(&root, &trees, false).unwrap();
+
+        let new_path = sibling.parent().unwrap().join("feat");
+        assert_eq!(new_path.parent(), sibling.parent(), "rename must not change the worktree's directory");
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn rename_is_a_no_op_the_second_time() {
+        let (root, _sibling) = repo_with_sibling_worktree("git-wt-rename-idempotent-test");
+
+        let trees = worktrees(&root).unwrap();
+        rename(&root, &trees, false).unwrap();
+
+        let fresh = worktrees(&root).unwrap();
+        rename(&root, &fresh, false).unwrap();
+        let still = worktrees(&root).unwrap();
+        assert_eq!(
+            fresh.iter().map(|w| w.path.clone()).collect::<Vec<_>>(),
+            still.iter().map(|w| w.path.clone()).collect::<Vec<_>>(),
+        );
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn migrate_does_not_rename_an_already_consolidated_worktree() {
+        let (root, sibling) = repo_with_sibling_worktree("git-wt-migrate-no-rename-test");
+
+        let trees = worktrees(&root).unwrap();
+        migrate(&root, &trees, false).unwrap();
+
+        // Second migrate pass: the worktree is already under the target
+        // dir, so a plain `--migrate` must leave its (still repo-prefixed)
+        // name alone -- `--syncname` is the only thing that touches names.
+        let fresh = worktrees(&root).unwrap();
+        migrate(&root, &fresh, false).unwrap();
+        let still_path = root.parent().unwrap().join("repo-worktrees").join("repo-feat");
+        assert!(still_path.is_dir(), "expected {still_path:?} to still exist, untouched");
+
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+        let _ = sibling;
     }
 
     #[test]

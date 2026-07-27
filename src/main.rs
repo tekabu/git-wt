@@ -1,4 +1,4 @@
-//! git-wt — create and manage git worktrees under `<repo>/.worktrees/`,
+//! git-wt — create and manage git worktrees under `<repo>-worktrees/`,
 //! named `<repo-folder>-<sanitized-branch>`.
 //!
 //! Installed on PATH as `git-wt`, so it is also reachable as `git wt`.
@@ -158,20 +158,14 @@ fn run() -> Result<(), String> {
         }
 
         Commands::Remove(args) => {
-            let target = effective_target(args.target.clone(), args.target_flag.target_flag.as_ref())?;
-            // No `-b` to append with, but the target itself could still be a
-            // comma-separated list, so the cardinality check stays.
+            // The positional list is space-separated at the clap level
+            // (each token may itself be a comma-separated sublist), joined
+            // back into one comma list so it feeds the same machinery every
+            // other multi-target verb resolves through.
+            let joined = if args.target.is_empty() { None } else { Some(args.target.join(",")) };
+            let target = effective_target(joined, args.target_flag.target_flag.as_ref())?;
             let idxs = resolve_targets(&trees, target.as_ref(), &[], true, false)?;
-            if idxs.len() > 1 {
-                return Err(format!("remove takes one worktree, got {}", idxs.len()));
-            }
-            let idx = idxs.into_iter().next().expect("len 1");
-            let args = crate::cmd::remove::args::RemoveArgs {
-                target,
-                target_flag: Default::default(),
-                ..args
-            };
-            cmd_remove(&root, &trees, idx, args)
+            cmd_remove(&root, &trees, &idxs, &args)
         }
 
         Commands::Fetch(args) => {

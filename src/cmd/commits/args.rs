@@ -322,7 +322,7 @@ pub(crate) struct CommonCommitsFlags {
 /// `commits`' own flags, on top of what it shares with `log`.
 #[derive(Args, Debug)]
 pub(crate) struct CommitsFlags {
-    /// Worktree number(s) or branch name(s), comma- or space-separated.
+    /// Worktree number(s) or branch name(s), comma-separated.
     #[arg(value_name = "TARGET")]
     pub(crate) worktree_or_branch_list: Option<String>,
 

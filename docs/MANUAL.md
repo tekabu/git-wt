@@ -2,7 +2,7 @@ GIT-WT(1)                       git-wt Manual                       GIT-WT(1)
 
 # NAME
 
-git-wt — worktrees in sibling directories named <repo>-<branch>
+git-wt — worktrees under <repo>/.worktrees/, named <repo>-<branch>
 
 # SYNOPSIS
 
@@ -10,9 +10,10 @@ git-wt — worktrees in sibling directories named <repo>-<branch>
 
 # DESCRIPTION
 
-git-wt manages git worktrees as sibling directories named `<repo>-<branch>`,
-with `/`, ` `, `:` and `\` collapsed to `-`.  Commands are verb-first: name the
-action, then the worktrees or branches it acts on.
+git-wt manages git worktrees under the main worktree's `.worktrees/`
+directory, named `<repo>-<branch>`, with `/`, ` `, `:` and `\` collapsed to
+`-`.  Commands are verb-first: name the action, then the worktrees or
+branches it acts on.
 
 # USAGE
 
@@ -151,7 +152,7 @@ action, then the worktrees or branches it acts on.
 
     -n, --name NAME       Suffix only -> leaf = <repo>-NAME
         --dirname DIR     Whole leaf, verbatim (sanitized); with '/' = a path
-    -p, --parentdir DIR   Parent dir (default: primary worktree's parent)
+    -p, --parentdir DIR   Parent dir (default: primary worktree's '.worktrees/')
         --from REF        Base ref for a NEW branch
                           (default: the branch of the worktree you run from)
         --stay            wrapper: do NOT cd into the new worktree
@@ -847,10 +848,11 @@ branches that are not yet merged.
 
 # ADD
 
-The worktree directory is a sibling of the repo root, named
-<repo-folder>-<branch>, with '/', ' ', ':' and '\\' collapsed to '-'.
+The worktree directory lives under the repo root's '.worktrees/'
+directory, named <repo-folder>-<branch>, with '/', ' ', ':' and '\\'
+collapsed to '-'.
 
-    ~/code/myapp  +  feature/login  ->  ~/code/myapp-feature-login
+    ~/code/myapp  +  feature/login  ->  ~/code/myapp/.worktrees/myapp-feature-login
 
 Branch resolution, in order:
   1. Local branch exists      -> check it out
@@ -886,15 +888,17 @@ history walk:
 
     git-wt doctor              # report only, nothing changed
     git-wt doctor --repair     # attempt to fix what it found
+    git-wt doctor --migrate    # move worktrees into .worktrees/
 
 '--repair' runs 'git worktree repair' over every candidate this repo
 might mean: every worktree's own recorded path (the fix when the *main*
 worktree moved -- each linked worktree's manual '.git' file is rewritten
-using the path 'worktree list' already had), plus every sibling of the
-repo root whose '.git' is a plain file (the fix when a *linked* worktree
-moved -- 'add' puts every worktree it you create there, so one moved by
-hand usually still turns up in the list even though its old recorded
-path does not name it anymore). 'repair' only relinks a candidate whose
+using the path 'worktree list' already had), plus every entry under the
+repo root's '.worktrees/' directory and every sibling of the repo root
+whose '.git' is a plain file (the fix when a *linked* worktree moved --
+'add' puts every worktree it you create there, so one moved by hand
+usually still turns up in the list even though its old recorded path
+does not name it anymore). 'repair' only relinks a candidate whose
 '.git' file already agrees with one of this repo's admin dirs, so
 handing it every candidate is safe: an unrelated directory is left
 untouched. Whatever neither fixes -- a directory truly deleted, not
@@ -902,6 +906,18 @@ moved -- is swept by 'git worktree prune' afterward, which only removes
 entries git already marked prunable. The report then re-runs, so the
 output says what is actually still wrong, not what was true before the
 repair.
+
+'--migrate' is separate from the report/repair flow above: it relocates
+every non-bare worktree not already under the repo root's '.worktrees/'
+directory there (old sibling-directory worktrees from before that became
+the default, or ones parked anywhere else), via 'git worktree move' so
+the admin link is rewritten correctly rather than a plain 'mv'. Each
+worktree keeps its existing directory name, just under the new parent.
+A destination name already taken (by another worktree being migrated, or
+an unrelated directory) is disambiguated with a `-2`, `-3`, ... suffix
+rather than left behind. A worktree 'git worktree move' itself refuses
+(e.g. locked) is reported and left in place; 'migrate' exits nonzero if
+any worktree failed to move.
 
 # STDOUT
 

@@ -11,6 +11,19 @@ pub(crate) fn git_cmd(dir: &Path, args: &[&str]) -> Command {
     c
 }
 
+/// git-wt errors are bare one-liners (no `hint:` follow-ups); git itself
+/// doesn't hold to that, so its relayed stderr gets the same treatment here
+/// that our own errors get everywhere else.
+fn git_error(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("hint:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 /// Run a prepared git command, relaying what it printed. Errors carry stderr.
 ///
 /// Both `git_run` and `git_run_no_editor` end here: they differ only in the
@@ -37,7 +50,7 @@ fn run_and_relay(mut cmd: Command) -> Result<(), String> {
         }
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        Err(git_error(&out.stderr))
     }
 }
 
@@ -62,7 +75,7 @@ pub(crate) fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        Err(git_error(&out.stderr))
     }
 }
 
@@ -74,7 +87,7 @@ pub(crate) fn git_bytes(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     if out.status.success() {
         Ok(out.stdout)
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        Err(git_error(&out.stderr))
     }
 }
 

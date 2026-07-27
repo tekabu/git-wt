@@ -81,10 +81,15 @@ $alias_name() {
       return 0 ;;
     remove|rm)
       # Remove prints the main worktree path when it removed the tree you
-      # were standing in; cd there if it printed one.
-      local d; d="\$(git-wt "\$@")" || return \$?
+      # were standing in; cd there if it printed one. cd even when git-wt
+      # exits nonzero: a worktree can be gone (rmdir'd) before a later step
+      # (e.g. branch delete) fails, and leaving cwd pointed at a deleted
+      # directory breaks every subsequent command. Exit status still
+      # reflects git-wt's own \$rc.
+      local d rc
+      d="\$(git-wt "\$@")"; rc=\$?
       [ -n "\$d" ] && cd "\$d"
-      return 0 ;;
+      return \$rc ;;
     switch|cd|s)
       # Switch verb: switch to the worktree and cd.
       local d; d="\$(git-wt "\$@")" || return \$?

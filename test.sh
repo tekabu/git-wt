@@ -157,6 +157,7 @@ git branch bulk-a
 git branch bulk-b
 git branch bulk-c
 git branch bulk-d
+git branch unmergedbr
 
 # A bare origin with a branch that exists ONLY on the remote, so `add` can
 # exercise the tracking-branch path.
@@ -1251,6 +1252,28 @@ else
   report FAIL HAPPY "remove-from-inside prints main" "$(fmt_cmd remove "$iidx" -y)" \
     "wanted main '$app_phys', got '$inside_out'"
 fi
+
+# -D on an unmerged branch: `worktree remove` still succeeds (dir is gone),
+# `branch -d` refuses (unmerged) and the remaining error must (a) still cd the
+# wrapper back to main -- the tree is already gone, standing pat would leave
+# the shell in a dead directory -- (b) surface git's refusal, and (c) not
+# carry git's own "hint:" lines (git-wt errors are bare one-liners).
+"$BIN" add unmergedbr --dirname unmergedwt >/dev/null 2>&1
+( cd "$WT/unmergedwt" && echo x > u.txt && git add u.txt && git commit -q -m unmerged )
+uidx="$("$BIN" list | awk '$2=="unmergedbr"{print $1}')"
+unmerged_out="$(cd "$WT/unmergedwt" && "$BIN" remove "$uidx" -y -D 2>"$ROOT/unmerged.err")"
+unmerged_code=$?
+unmerged_err="$(cat "$ROOT/unmerged.err")"
+if [ "$unmerged_out" = "$app_phys" ] && [ "$unmerged_code" != 0 ] \
+  && [[ "$unmerged_err" == *"not fully merged"* ]] && [[ "$unmerged_err" != *"hint:"* ]]; then
+  report PASS UNHAPPY "remove -D unmerged still cd's to main" \
+    "$(fmt_cmd remove "$uidx" -y -D)  # cwd inside it, branch unmerged"
+else
+  report FAIL UNHAPPY "remove -D unmerged still cd's to main" \
+    "$(fmt_cmd remove "$uidx" -y -D)" \
+    "wanted main '$app_phys' + nonzero exit + 'not fully merged' + no 'hint:', got out='$unmerged_out' exit=$unmerged_code err='$unmerged_err'"
+fi
+[ -d "$WT/unmergedwt" ] && report FAIL UNHAPPY "remove -D unmerged tree gone" "-" "worktree dir still exists"
 
 # -f: a worktree with an untracked file is refused without -f, removed with it.
 "$BIN" add dirty --dirname dirtywt >/dev/null 2>&1

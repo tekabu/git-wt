@@ -16,6 +16,7 @@ pub(crate) fn cmd_remove(
 ) -> Result<(), String> {
     let cwd = std::env::current_dir().ok().map(|c| canon(&c));
     let mut inside = false;
+    let mut failure: Option<String> = None;
 
     for &idx in idxs {
         let wanted = &trees[idx];
@@ -58,11 +59,20 @@ pub(crate) fn cmd_remove(
         git_run(root, &["worktree", "prune"])?;
 
         let leaf = leaf_of(&wanted.path);
+        // The worktree directory is already gone by this point (removed
+        // above), so a failure here must not bail out via `?`: that would
+        // skip the `inside` print below and leave the caller's shell
+        // sitting in a directory that no longer exists.
         let branch_note = match &wanted.branch {
             Some(b) if args.delete_branch.delete_branch => {
                 let flag = if args.force.force { "-D" } else { "-d" };
-                git_run(root, &["branch", flag, b])?;
-                format!("branch {b} deleted")
+                match git_run(root, &["branch", flag, b]) {
+                    Ok(()) => format!("branch {b} deleted"),
+                    Err(e) => {
+                        failure.get_or_insert(e);
+                        format!("branch {b} not deleted")
+                    }
+                }
             }
             Some(b) => format!("branch {b} kept"),
             None => "detached".into(),
@@ -76,5 +86,8 @@ pub(crate) fn cmd_remove(
             println!("{}", main.path.display());
         }
     }
-    Ok(())
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
